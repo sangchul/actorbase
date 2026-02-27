@@ -50,9 +50,29 @@ Go 라이브러리 형태로 제공되는 actor 기반 분산 key-value 저장�
 
 ---
 
-## 3. 시스템 개요
+## 3. 공통 개발 규칙
 
-### 3.1 핵심 설계 원칙
+### 3.1 설계
+
+- **Clean Architecture**를 기준으로 설계를 검토한다.
+  - 비즈니스 로직(domain)이 인프라(gRPC, etcd, 파일시스템 등)에 의존하지 않도록 의존성 방향을 안쪽으로 유지한다.
+  - Use case, Entity, Interface Adapter, Infrastructure 레이어 경계를 의식하며 구조를 잡는다.
+- 설계 결정 사항은 반드시 문서로 남긴다. 구현 전에 문서를 먼저 작성하고 검토한다.
+
+### 3.2 구현
+
+- **SOLID 원칙**을 가급적 준수한다.
+  - **S** (Single Responsibility): 하나의 타입/함수는 하나의 책임만 가진다.
+  - **O** (Open/Closed): 기존 코드 수정 없이 확장 가능하도록 설계한다.
+  - **L** (Liskov Substitution): interface를 구현한 타입은 상호 대체 가능해야 한다.
+  - **I** (Interface Segregation): 사용하지 않는 메서드를 강제하는 큰 interface보다 작고 구체적인 interface를 선호한다.
+  - **D** (Dependency Inversion): 구체 타입이 아닌 interface에 의존한다.
+
+---
+
+## 4. 시스템 개요
+
+### 4.1 핵심 설계 원칙
 
 - **라이브러리 형태**: 독립 실행 바이너리가 아닌 Go 라이브러리로 배포한다. 사용자는 `import`하여 사용한다.
 - **Actor = Partition**: 하나의 Actor가 하나의 파티션(shard)을 담당하며, 특정 key range를 관리한다.
@@ -62,9 +82,9 @@ Go 라이브러리 형태로 제공되는 actor 기반 분산 key-value 저장�
 
 ---
 
-## 4. Actor 모델
+## 5. Actor 모델
 
-### 4.1 Actor 정의
+### 5.1 Actor 정의
 
 사용자는 아래 Go interface를 구현하여 Actor를 정의한다.
 
@@ -77,7 +97,7 @@ type Actor interface {
 }
 ```
 
-### 4.2 사용 예시
+### 5.2 사용 예시
 
 ```go
 type BucketActor struct {
@@ -105,14 +125,14 @@ func (a *BucketActor) Restore(data []byte) error {
 }
 ```
 
-### 4.3 Actor 생명주기
+### 5.3 Actor 생명주기
 
 - Actor는 활성 상태일 때 메모리에 상주한다.
 - 비활성(idle) 상태가 되면 메모리에서 evict된다.
 - 해당 key range로 요청이 들어오면 Persistent Layer에서 상태를 로드하여 재활성화된다.
 - Actor는 write-back 캐시처럼 동작한다.
 
-### 4.4 Actor 실행 모델
+### 5.4 Actor 실행 모델
 
 - Actor당 단일 스레드(mailbox 기반) 실행을 보장한다.
 - Actor 내부에서 CAS나 트랜잭션 없이 데이터를 직접 수정할 수 있다.
@@ -120,9 +140,9 @@ func (a *BucketActor) Restore(data []byte) error {
 
 ---
 
-## 5. Persistent Layer
+## 6. Persistent Layer
 
-### 5.1 인터페이스 정의
+### 6.1 인터페이스 정의
 
 영속성 백엔드는 플러그인 방식의 Go interface로 추상화한다.
 
@@ -134,7 +154,7 @@ type Store interface {
 }
 ```
 
-### 5.2 사용 예시
+### 6.2 사용 예시
 
 ```go
 system := actorbase.New(actorbase.Config{
@@ -142,7 +162,7 @@ system := actorbase.New(actorbase.Config{
 })
 ```
 
-### 5.3 저장 대상
+### 6.3 저장 대상
 
 Persistent Layer에는 다음 두 가지를 저장한다.
 - **Checkpoint**: Actor 상태의 스냅샷
@@ -150,9 +170,9 @@ Persistent Layer에는 다음 두 가지를 저장한다.
 
 ---
 
-## 6. 장애 복구
+## 7. 장애 복구
 
-### 6.1 복구 전략
+### 7.1 복구 전략
 
 Checkpoint와 WAL을 함께 사용한다. 둘은 대안이 아닌 상호 보완 관계다.
 
@@ -164,16 +184,16 @@ Checkpoint와 WAL을 함께 사용한다. 둘은 대안이 아닌 상호 보완 
 
 이는 PostgreSQL, RocksDB 등 주요 데이터베이스와 동일한 표준 접근 방식이다.
 
-### 6.2 체크포인트 주기
+### 7.2 체크포인트 주기
 
 - 주기적으로 Actor의 in-memory 상태를 Persistent Layer에 저장한다.
 - 구체적인 주기 및 설정 방식은 구현 단계에서 결정한다.
 
 ---
 
-## 7. 클러스터 관리
+## 8. 클러스터 관리
 
-### 7.1 클러스터 메타데이터 저장소
+### 8.1 클러스터 메타데이터 저장소
 
 **etcd**를 클러스터 메타데이터 저장소로 사용한다.
 
@@ -183,7 +203,7 @@ etcd에 저장되는 정보:
 - 리더 정보
 - 라우팅 테이블
 
-### 7.2 클러스터 멤버십
+### 8.2 클러스터 멤버십
 
 별도의 gossip 라이브러리 없이 **etcd lease**를 활용하여 클러스터 멤버십을 관리한다. etcd가 이미 필수 의존성이므로 추가 의존성 없이 구현할 수 있다.
 
@@ -195,7 +215,7 @@ etcd에 저장되는 정보:
 
 gossip 방식 대비 **강한 일관성(linearizable)**으로 멤버십 상태를 확인할 수 있으며, 대상 노드 규모(수십~백 노드)에서 충분한 성능을 제공한다.
 
-### 7.3 Partition Manager (PM)
+### 8.3 Partition Manager (PM)
 
 파티션 토폴로지 관리를 담당하는 별도의 daemon 프로세스다.
 
@@ -230,9 +250,9 @@ PM가 라우팅 테이블 갱신 --> 모든 참여자에 전파
 
 ---
 
-## 8. 클라이언트 라우팅
+## 9. 클라이언트 라우팅
 
-### 8.1 라우팅 방식
+### 9.1 라우팅 방식
 
 - Client Library는 etcd에 직접 접근하지 않는다.
 - **Client Library가 PM에 접속하여 라우팅 테이블을 가져온다.**
@@ -242,7 +262,7 @@ PM가 라우팅 테이블 갱신 --> 모든 참여자에 전파
 
 이 방식은 Kafka 클라이언트의 브로커 메타데이터 조회, Vitess의 vtgate 라우팅과 유사하다.
 
-### 8.2 Client API
+### 9.2 Client API
 
 - **Go SDK만 제공**한다.
 - 초기 범위에서는 외부 클라이언트를 위한 gRPC나 HTTP API를 제공하지 않는다.
@@ -250,9 +270,9 @@ PM가 라우팅 테이블 갱신 --> 모든 참여자에 전파
 
 ---
 
-## 9. 파티션 Split / Migration
+## 10. 파티션 Split / Migration
 
-### 9.1 지원 모드
+### 10.1 지원 모드
 
 세 가지 모드를 모두 지원한다.
 
@@ -266,7 +286,7 @@ MongoDB의 핵심 문제였던 "크기 기반 자동 split만 가능"을 해결�
 
 ---
 
-## 10. 전체 아키텍처
+## 11. 전체 아키텍처
 
 ```
 ┌─────────────────────────────────────────┐
@@ -320,7 +340,7 @@ MongoDB의 핵심 문제였던 "크기 기반 자동 split만 가능"을 해결�
 
 ---
 
-## 11. 활용 예정 라이브러리
+## 12. 활용 예정 라이브러리
 
 | 라이브러리 | 용도 |
 |---|---|
@@ -329,7 +349,7 @@ MongoDB의 핵심 문제였던 "크기 기반 자동 split만 가능"을 해결�
 
 ---
 
-## 12. 미결정 사항 (구현 단계 결정)
+## 13. 미결정 사항 (구현 단계 결정)
 
 | 항목 | 내용 |
 |---|---|
