@@ -22,13 +22,22 @@ actorbase/
 │
 ├── provider/                  # 사용자와의 계약 패키지
 │   ├── actor.go               # Actor, ActorFactory, Context, Message
-│   └── store.go               # Store
+│   ├── store.go               # Store
+│   ├── metrics.go             # Metrics 인터페이스 (Counter, Gauge, Histogram)
+│   └── error.go               # 사용자에게 노출되는 공개 에러 타입
+│
+├── adapter/                   # provider 인터페이스의 기본 구현체
+│   └── prometheus/            # Prometheus 기반 Metrics 구현체 (기본 제공)
+│       └── metrics.go
 │
 ├── internal/                  # 모듈 내 공유 라이브러리 (외부 import 불가)
 │   ├── domain/                # [Entities] 핵심 도메인. 의존성 없음.
 │   │   ├── partition.go       # Partition, KeyRange
 │   │   ├── node.go            # NodeInfo (주소, 상태)
 │   │   └── routing.go         # RoutingTable (KeyRange → NodeInfo 매핑)
+│   │
+│   ├── errors/                # 내부 에러 타입. 외부에 노출되지 않음.
+│   │   └── errors.go          # 내부↔외부 에러 매핑은 추후 별도 정의
 │   │
 │   ├── engine/                # [Use Cases] Actor 실행 엔진. PS가 사용.
 │   │   ├── host.go            # ActorHost: Actor 생명주기 관리 (활성화/비활성화/eviction)
@@ -50,6 +59,7 @@ actorbase/
 │   │   └── manager.go         # 주기적 스냅샷 저장/복원 조율
 │   │
 │   └── transport/             # [Interface Adapters] gRPC 서버/클라이언트 공통
+│       ├── proto/             # .proto 파일 및 generated 코드
 │       ├── server.go
 │       └── client.go
 │
@@ -69,7 +79,9 @@ actorbase/
 └── cmd/
     ├── ps/main.go             # Partition Server 실행 바이너리
     ├── pm/main.go             # Partition Manager 실행 바이너리
-    └── abctl/main.go          # CLI tool: SDK + 운영 기능 (split, migrate, status 등)
+    └── abctl/                 # CLI tool: SDK + 운영 기능 (split, migrate, status 등)
+        ├── main.go
+        └── config.go          # ~/.actorbase/config.yaml 로드 (플래그 > 환경변수 > 파일 순)
 ```
 
 ---
@@ -102,8 +114,10 @@ actorbase/
 - `internal/cluster`, `internal/transport` → `internal/domain` import.
 - `internal/wal`, `internal/checkpoint` → `provider`(Store) import.
 - `ps/`, `pm/`, `sdk/` → `internal/*` + `provider` import.
+- `adapter/prometheus` → `provider`(Metrics) import.
 - `cmd/abctl` → `sdk/` + PM gRPC 클라이언트 import.
 - 인터페이스는 별도 `port/` 패키지 없이 **사용하는 패키지 안에 정의**한다.
+- 로깅은 `log/slog` 표준 라이브러리를 직접 사용한다. 별도 Logger 인터페이스를 두지 않는다.
 
 ---
 
@@ -168,14 +182,16 @@ type Store interface {
 
 | 패키지 | 책임 |
 |---|---|
-| `provider` | 사용자와의 인터페이스 계약 정의 |
+| `provider` | 사용자와의 인터페이스 계약 정의 (Actor, Store, Metrics, 공개 에러) |
+| `adapter/prometheus` | Prometheus 기반 Metrics 기본 구현체 |
 | `internal/domain` | 파티션, 노드, 라우팅 테이블 등 핵심 도메인 타입 |
+| `internal/errors` | 내부 에러 타입 (외부 미노출) |
 | `internal/engine` | Actor 생명주기(활성화/eviction), mailbox, 단일 스레드 실행 보장 |
 | `internal/cluster` | etcd lease 기반 멤버십 등록/감지, 라우팅 테이블 저장/조회 |
 | `internal/rebalance` | 파티션 split/migration 실행 조율 |
 | `internal/wal` | Write-Ahead Log append/replay |
 | `internal/checkpoint` | 주기적 Actor 스냅샷 저장/복원 조율 |
-| `internal/transport` | gRPC 서버/클라이언트 공통 구현 |
+| `internal/transport` | gRPC 서버/클라이언트 공통 구현, proto 파일 관리 |
 | `ps` | Partition Server 조립 및 기동 |
 | `pm` | Partition Manager 조립 및 기동, rebalance 정책 실행 |
 | `sdk` | 클라이언트 앱용 Go SDK (라우팅 조회, 요청 전송) |
@@ -185,12 +201,14 @@ type Store interface {
 
 ---
 
-## 6. 미결정 사항
+## 6. 주요 결정 사항
 
-| 항목 | 내용 |
-|---|---|
-| proto 파일 위치 | `proto/` 최상위 별도 디렉토리 vs `internal/transport/` 안 |
-| 오류 타입 | 공개 error 타입을 `provider/`에 둘지, 각 패키지에서 정의할지 |
-| 로깅 인터페이스 | 공개 Logger 인터페이스 주입 vs `slog` 직접 사용 |
-| 메트릭 수집 | Prometheus 직접 의존 vs 추상화 인터페이스 |
-| abctl 설정 | 설정 파일 형식 및 위치 |
+패키지 구조 설계 과정에서 결정된 사항을 기록한다.
+
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| proto 파일 위치 | `internal/transport/proto/` | 기업 내부용이므로 외부 노출 불필요. transport 구현과 함께 관리. |
+| 오류 타입 | 외부용 `provider/error.go`, 내부용 `internal/errors/` | 사용자에게 노출할 에러와 내부 에러를 명확히 분리. 매핑은 추후 정의. |
+| 로깅 | `log/slog` 직접 사용 | Go 1.21+ 표준. 별도 인터페이스 추상화 불필요. |
+| 메트릭 | `provider/metrics.go` 인터페이스 + `adapter/prometheus/` 기본 구현체 | 테스트 용이성 및 교체 가능성 확보. Prometheus는 기본 제공. |
+| abctl 설정 | `~/.actorbase/config.yaml`. 우선순위: 플래그 > 환경변수 > 설정 파일 | 단일 클러스터 대상. 초기 단순하게 시작하고 추후 보완. |
