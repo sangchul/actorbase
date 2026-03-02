@@ -71,18 +71,17 @@ func (s *etcdRoutingTableStore) Watch(ctx context.Context) <-chan *domain.Routin
 func (s *etcdRoutingTableStore) watchLoop(ctx context.Context, ch chan *domain.RoutingTable) {
 	defer close(ch)
 
-	// 시작 시 현재 테이블을 즉시 전달 (초기 동기화)
+	// 시작 시 현재 테이블을 즉시 전달 (초기 동기화).
+	// 빈 클러스터(테이블 없음)인 경우 nil을 전달하여 Watch 호출자가 준비 완료를 감지할 수 있도록 한다.
 	current, err := s.Load(ctx)
 	if err != nil {
 		slog.Error("routing: initial load failed", "err", err)
 		return
 	}
-	if current != nil {
-		select {
-		case ch <- current:
-		case <-ctx.Done():
-			return
-		}
+	select {
+	case ch <- current: // nil이어도 전달
+	case <-ctx.Done():
+		return
 	}
 
 	watchCh := s.client.Watch(ctx, routingKey)
