@@ -23,9 +23,25 @@
 // Req는 이 Actor가 수신하는 요청 타입, Resp는 응답 타입이다.
 // 사용자가 직접 구현한다.
 type Actor[Req, Resp any] interface {
-    Receive(ctx Context, req Req) (Resp, error)
-    Snapshot() ([]byte, error)  // 체크포인트용 직렬화
-    Restore([]byte) error        // 복구용 역직렬화
+    // Receive는 요청을 처리하고 응답과 WAL 데이터를 반환한다.
+    // walEntry가 nil이면 read-only 연산이며 WAL에 기록하지 않는다.
+    // walEntry가 nil이 아니면 engine이 WALStore에 기록한 뒤 응답을 반환한다.
+    Receive(ctx Context, req Req) (resp Resp, walEntry []byte, err error)
+
+    // Replay는 WAL entry 하나를 Actor 상태에 적용한다.
+    // 복구 시 마지막 checkpoint 이후의 WAL entries를 순서대로 적용하는 데 사용한다.
+    Replay(entry []byte) error
+
+    // Snapshot은 현재 Actor 상태를 직렬화하여 반환한다. (checkpoint용)
+    Snapshot() ([]byte, error)
+
+    // Restore는 Snapshot 데이터로 Actor 상태를 복원한다.
+    Restore(data []byte) error
+
+    // Split은 splitKey 기준으로 상위 절반의 상태를 직렬화하여 반환하고,
+    // 자신의 상태에서 해당 데이터를 제거한다.
+    // engine이 split 실행 시 호출한다.
+    Split(splitKey string) (upperHalf []byte, err error)
 }
 
 // ActorFactory는 파티션 ID마다 새 Actor 인스턴스를 생성하는 함수.
@@ -61,22 +77,35 @@ type BucketActor struct {
     objects map[string]*ObjectMeta
 }
 
-func (a *BucketActor) Receive(ctx provider.Context, req BucketRequest) (BucketResponse, error) {
+func (a *BucketActor) Receive(ctx provider.Context, req BucketRequest) (BucketResponse, []byte, error) {
     switch req.Op {
     case "get":
         obj, ok := a.objects[req.Key]
         if !ok {
-            return BucketResponse{}, provider.ErrNotFound
+            return BucketResponse{}, nil, provider.ErrNotFound
         }
-        return BucketResponse{Meta: obj}, nil
+        return BucketResponse{Meta: obj}, nil, nil // read: walEntry = nil
     case "put":
         a.objects[req.Key] = req.Meta
-        return BucketResponse{}, nil
+        entry := marshalPutOp(req)
+        return BucketResponse{}, entry, nil        // write: walEntry 반환
     case "delete":
         delete(a.objects, req.Key)
-        return BucketResponse{}, nil
+        entry := marshalDeleteOp(req)
+        return BucketResponse{}, entry, nil
     }
-    return BucketResponse{}, fmt.Errorf("unknown op: %s", req.Op)
+    return BucketResponse{}, nil, fmt.Errorf("unknown op: %s", req.Op)
+}
+
+func (a *BucketActor) Replay(entry []byte) error {
+    op := unmarshalOp(entry)
+    switch op.Type {
+    case "put":
+        a.objects[op.Key] = op.Meta
+    case "delete":
+        delete(a.objects, op.Key)
+    }
+    return nil
 }
 ```
 
@@ -227,7 +256,9 @@ var (
 | 항목 | 결정 | 근거 |
 |---|---|---|
 | Actor 타입 파라미터 | 제네릭 `Actor[Req, Resp any]` | 요청/응답 타입을 컴파일 타임에 강제 |
-| Receive 반환값 | `(Resp, error)` | Reply 구조체 불필요. 에러는 무조건 SDK에 전달. |
+| Receive 반환값 | `(Resp, []byte, error)` | walEntry nil이면 read-only. engine이 WAL 기록 후 응답 전달. |
+| Replay 메서드 | `Replay([]byte) error` 추가 | WAL replay와 외부 요청 처리를 명확히 분리. |
+| Split 메서드 | `Split(splitKey string) ([]byte, error)` 추가 | Actor가 자신의 상태를 직접 분리. engine이 split 실행 시 호출. |
 | WAL/Checkpoint 분리 | 별도 인터페이스 | 성격이 달라 백엔드 선택지가 다름 (Redis Stream vs S3 등) |
 | WALStore.ReadFrom 반환 | `[]WALEntry` slice | 단순하게 시작. 대용량 WAL 시 iterator로 교체 검토. |
 | Metrics label 방식 | 가변 인자 `string` | 단순하게 시작. 타입 안전성은 추후 보완. |

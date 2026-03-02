@@ -76,6 +76,10 @@ type Config[Req, Resp any] struct {
     IdleTimeout   time.Duration // Actor가 이 시간 동안 메시지 없으면 evict. 기본값: 5분
     EvictInterval time.Duration // eviction 검사 주기. 기본값: 1분
 
+    // CheckpointScheduler 설정
+    CheckpointInterval     time.Duration // 주기적 checkpoint 간격. 기본값: 구현 단계에서 결정
+    CheckpointWALThreshold int           // 이 수만큼 WAL entry가 쌓이면 자동 checkpoint. 기본값: 구현 단계에서 결정
+
     // etcd 설정
     EtcdLeaseTTL time.Duration // 노드 lease TTL. 기본값: 10초
 }
@@ -128,6 +132,7 @@ Start:
   3. <초기 RoutingTable 수신 대기>         // 준비 전 요청 수락 방지
   4. grpcSrv.Serve(listener)              // gRPC 수신 시작 (비동기)
   5. go evictionScheduler.Start(ctx)      // idle Actor eviction 시작
+  6. go checkpointScheduler.Start(ctx)    // 주기적 Actor checkpoint 시작
   6. <-ctx.Done()
   7. graceful shutdown (아래 참조)
 ```
