@@ -488,7 +488,7 @@ interval마다:
 
 ## 알려진 한계
 
-- **Checkpoint 중 지연**: checkpoint 신호가 오면 inCh가 일시 중단된다. 이 시간(drain 대기 + Snapshot + CheckpointStore 저장)만큼 해당 파티션 요청이 대기한다. 중단 시간은 CheckpointStore 저장 성능에 의존하며, 구현 후 측정이 필요하다.
+- **Checkpoint 중 지연**: checkpoint 신호가 오면 inCh가 일시 중단된다. 이 시간(drain 대기 + Snapshot + CheckpointStore 저장)만큼 해당 파티션 요청이 대기한다. 중단 시간은 CheckpointStore 저장 성능에 의존하며, 구현 후 측정이 필요하다. partition state가 매우 커질 경우 pause time이 길어질 수 있으며, 이 경우 incremental checkpoint(변경분만 저장 후 백그라운드 병합) 또는 copy-on-write 방식(drain 후 상태 복사본을 별도 goroutine에서 저장)을 검토한다.
 - **WAL flush 실패 시 Actor evict**: 실패한 배치의 Actor를 evict하면 마지막 checkpoint 상태로 돌아간다. 해당 배치에서 처리된 write 연산은 유실된다. 더 정교한 재시도 처리는 구현 후 검토한다.
 - **Group commit 성능 가설 미검증**: WALFlusher 배칭이 단일 스레드 IO 대비 처리량을 실질적으로 향상시키는지는 구현 후 벤치마크로 확인한다.
 - **mailbox 버퍼 크기**: 기본값 미결정. 구현 단계에서 벤치마크로 결정한다.
