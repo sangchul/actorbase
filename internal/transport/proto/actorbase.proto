@@ -1,0 +1,123 @@
+syntax = "proto3";
+
+package actorbase.v1;
+
+option go_package = "github.com/oomymy/actorbase/internal/transport/proto;actorbasepb";
+
+// ─────────────────────────────────────────────────────────
+// Data Plane: SDK → PS
+// ─────────────────────────────────────────────────────────
+
+service PartitionService {
+  // Send는 partitionID의 Actor에게 요청을 전달하고 응답을 반환한다.
+  // payload는 Codec으로 직렬화된 사용자 정의 Req 타입이다.
+  // 에러는 gRPC status code로 전달한다.
+  rpc Send(SendRequest) returns (SendResponse);
+}
+
+message SendRequest {
+  string partition_id = 1;
+  bytes  payload      = 2; // Codec.Marshal(req)
+}
+
+message SendResponse {
+  bytes payload = 1; // Codec.Marshal(resp)
+}
+
+// ─────────────────────────────────────────────────────────
+// Management Plane: SDK/abctl → PM
+// ─────────────────────────────────────────────────────────
+
+service PartitionManagerService {
+  // WatchRouting은 연결 즉시 현재 라우팅 테이블을 전송하고,
+  // 이후 변경이 생길 때마다 스트리밍으로 push한다.
+  rpc WatchRouting(WatchRoutingRequest) returns (stream RoutingTableProto);
+
+  // RequestSplit은 파티션 split을 PM에 요청한다.
+  rpc RequestSplit(SplitRequest) returns (SplitResponse);
+
+  // RequestMigrate는 파티션 migration을 PM에 요청한다.
+  rpc RequestMigrate(MigrateRequest) returns (MigrateResponse);
+}
+
+message WatchRoutingRequest {
+  string client_id = 1;
+}
+
+message SplitRequest {
+  string partition_id = 1;
+  string split_key    = 2;
+}
+
+message SplitResponse {
+  string new_partition_id = 1;
+}
+
+message MigrateRequest {
+  string partition_id   = 1;
+  string target_node_id = 2;
+}
+
+message MigrateResponse {}
+
+// ─────────────────────────────────────────────────────────
+// Control Plane: PM → PS
+// ─────────────────────────────────────────────────────────
+
+service PartitionControlService {
+  // ExecuteSplit은 PM이 PS에게 파티션 split을 명령한다.
+  rpc ExecuteSplit(ExecuteSplitRequest) returns (ExecuteSplitResponse);
+
+  // ExecuteMigrateOut은 PM이 PS에게 파티션을 대상 노드로 이동시키도록 명령한다.
+  rpc ExecuteMigrateOut(ExecuteMigrateOutRequest) returns (ExecuteMigrateOutResponse);
+
+  // PreparePartition은 PM이 target PS에게 파티션을 CheckpointStore에서 로드하도록 명령한다.
+  rpc PreparePartition(PreparePartitionRequest) returns (PreparePartitionResponse);
+}
+
+message ExecuteSplitRequest {
+  string partition_id     = 1;
+  string split_key        = 2;
+  string new_partition_id = 3;
+}
+
+message ExecuteSplitResponse {}
+
+message ExecuteMigrateOutRequest {
+  string partition_id    = 1;
+  string target_node_id  = 2;
+  string target_address  = 3;
+}
+
+message ExecuteMigrateOutResponse {}
+
+message PreparePartitionRequest {
+  string partition_id    = 1;
+  string key_range_start = 2; // target PS가 올바른 파티션인지 검증용
+  string key_range_end   = 3;
+}
+
+message PreparePartitionResponse {}
+
+// ─────────────────────────────────────────────────────────
+// Shared Messages
+// ─────────────────────────────────────────────────────────
+
+message RoutingTableProto {
+  int64                    version = 1;
+  repeated RouteEntryProto entries = 2;
+}
+
+message RouteEntryProto {
+  string     partition_id    = 1;
+  string     key_range_start = 2;
+  string     key_range_end   = 3;
+  string     node_id         = 4;
+  string     node_address    = 5;
+  NodeStatus node_status     = 6;
+}
+
+enum NodeStatus {
+  NODE_STATUS_ACTIVE   = 0;
+  NODE_STATUS_DRAINING = 1;
+}

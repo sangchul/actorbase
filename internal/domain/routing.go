@@ -6,10 +6,22 @@ import (
 	"sort"
 )
 
+// PartitionStatus는 파티션의 현재 운영 상태.
+type PartitionStatus int
+
+const (
+	// PartitionStatusActive: 정상 운영 중. 요청 수락.
+	PartitionStatusActive PartitionStatus = iota
+
+	// PartitionStatusDraining: migration 진행 중. 새 요청 거부(ErrPartitionBusy).
+	PartitionStatusDraining
+)
+
 // RouteEntry는 파티션과 그 파티션을 호스팅하는 노드의 쌍.
 type RouteEntry struct {
-	Partition Partition
-	Node      NodeInfo
+	Partition       Partition
+	Node            NodeInfo
+	PartitionStatus PartitionStatus
 }
 
 // RoutingTable은 파티션→노드 매핑 테이블.
