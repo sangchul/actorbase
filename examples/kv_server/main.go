@@ -1,6 +1,9 @@
-// cmd/ps는 actorbase Partition Server 실행 바이너리 예시다.
-// 내장 KV Actor (string key → []byte value)를 사용하여 PS를 기동한다.
-// 개발/테스트 용도이며, 실제 배포 시에는 사용자 정의 Actor로 교체한다.
+// examples/kv_server는 actorbase Partition Server를 KV Actor로 실행하는 예시다.
+//
+// ps 패키지가 제공하는 플랫폼 위에 사용자 정의 Actor(kvActor)를 올려서
+// 인메모리 key-value 저장소를 구동한다.
+//
+// 실제 배포 시에는 이 파일을 참고하여 원하는 Actor 구현으로 교체한다.
 package main
 
 import (
@@ -104,7 +107,8 @@ func main() {
 	nodeID := flag.String("node-id", "", "Unique node ID (default: hostname)")
 	addr := flag.String("addr", ":7001", "gRPC listen address")
 	etcdAddrs := flag.String("etcd", "localhost:2379", "etcd endpoints (comma-separated)")
-	dataDir := flag.String("data-dir", "/tmp/actorbase-ps", "WAL and checkpoint base directory")
+	dataDir := flag.String("data-dir", "/tmp/actorbase-ps", "WAL base directory (node-local)")
+	checkpointDir := flag.String("checkpoint-dir", "", "Checkpoint base directory (shared storage). Defaults to <data-dir>/checkpoint")
 	flag.Parse()
 
 	if *nodeID == "" {
@@ -116,13 +120,17 @@ func main() {
 		*nodeID = hostname
 	}
 
+	if *checkpointDir == "" {
+		*checkpointDir = *dataDir + "/checkpoint"
+	}
+
 	walStore, err := fs.NewWALStore(*dataDir + "/wal")
 	if err != nil {
 		slog.Error("failed to create WAL store", "err", err)
 		os.Exit(1)
 	}
 
-	cpStore, err := fs.NewCheckpointStore(*dataDir + "/checkpoint")
+	cpStore, err := fs.NewCheckpointStore(*checkpointDir)
 	if err != nil {
 		slog.Error("failed to create checkpoint store", "err", err)
 		os.Exit(1)

@@ -48,8 +48,8 @@ func NewClient[Req, Resp any](cfg Config[Req, Resp]) (*Client[Req, Resp], error)
 }
 
 // Start는 PM WatchRouting 스트림을 시작하고 첫 라우팅 테이블을 수신할 때까지 대기한다.
-// 이후 ctx 취소 시까지 백그라운드에서 라우팅 업데이트를 수신한다.
-// 종료 시 모든 PS 연결을 닫는다.
+// 첫 테이블 수신 후 즉시 반환하며, 이후 라우팅 업데이트와 연결 정리는 백그라운드에서 처리된다.
+// Start가 nil을 반환한 이후에는 Send를 즉시 호출해도 안전하다.
 func (c *Client[Req, Resp]) Start(ctx context.Context) error {
 	ch := c.pmClient.WatchRouting(ctx, c.cfg.ClientID)
 
@@ -64,11 +64,12 @@ func (c *Client[Req, Resp]) Start(ctx context.Context) error {
 		return ctx.Err()
 	}
 
-	// 이후 업데이트를 백그라운드에서 처리
-	go c.consumeRouting(ctx, ch)
+	// 이후 업데이트 수신 및 종료 시 연결 정리를 백그라운드에서 처리
+	go func() {
+		c.consumeRouting(ctx, ch)
+		c.connPool.Close() //nolint:errcheck
+	}()
 
-	<-ctx.Done()
-	c.connPool.Close() //nolint:errcheck
 	return nil
 }
 
