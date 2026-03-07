@@ -192,6 +192,15 @@ func (h *ActorHost[Req, Resp]) Evict(ctx context.Context, partitionID string) er
 // EvictAll은 모든 활성 Actor를 evict한다. 서버 종료 시 호출한다.
 func (h *ActorHost[Req, Resp]) EvictAll(ctx context.Context) error
 
+// Activate는 partitionID Actor를 명시적으로 활성화한다.
+// 이미 활성화된 경우 no-op. migration target PS의 PreparePartition 처리 시 사용한다.
+func (h *ActorHost[Req, Resp]) Activate(ctx context.Context, partitionID string) error
+
+// Split은 partitionID Actor를 splitKey 기준으로 두 파티션으로 분리한다.
+// Actor가 비활성이면 먼저 활성화한다 (checkpoint + WAL replay).
+// 분리 완료 후 두 Actor 모두 활성 상태로 등록된다.
+func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error
+
 // IdleActors는 lastMsg가 idleSince 이전인 partitionID 목록을 반환한다.
 // EvictionScheduler가 주기적으로 호출한다.
 func (h *ActorHost[Req, Resp]) IdleActors(idleSince time.Time) []string
@@ -201,19 +210,38 @@ func (h *ActorHost[Req, Resp]) IdleActors(idleSince time.Time) []string
 func (h *ActorHost[Req, Resp]) ActivePartitions() []string
 ```
 
-### 활성화 흐름 (activate, 비공개)
+### Split 처리 흐름
 
 ```
-activate(partitionID):
-  1. CheckpointStore.Load(partitionID)
-       → (snapshotData, checkpointLSN) 언패킹
-  2. actor = Factory(partitionID)
-  3. actor.Restore(snapshotData)          // 스냅샷 복원
-  4. WALStore.ReadFrom(partitionID, checkpointLSN+1)
-  5. for entry in walEntries:
-         actor.Replay(entry.Data)         // WAL replay
-  6. mailbox 생성 및 goroutine 시작
-  7. actors 맵에 등록
+Split(ctx, partitionID, splitKey, newPartitionID):
+  1. getOrActivate(ctx, partitionID)
+     └ 비활성 시: checkpoint + WAL replay 후 mailbox 등록 (Activate와 동일)
+  2. mailbox.split(ctx, splitKey)   // Actor goroutine 내 순차 처리
+     └ Actor.Split(splitKey) → upperHalf []byte
+  3. mailbox.checkpoint(ctx)        // 하위 파티션 checkpoint 저장
+  4. saveRawCheckpoint(ctx, newPartitionID, lsn=0, upperHalf)
+  5. Activate(ctx, newPartitionID)  // 상위 파티션 활성화
+```
+
+> **Split이 actor 비활성 시에도 동작하는 이유**: `getOrActivate`로 먼저 checkpoint + WAL replay를 수행하여 현재 상태를 메모리에 올린 뒤 split을 진행한다. split은 actor를 미리 활성화할 필요가 없다.
+
+### 활성화 흐름 (getOrActivate, 비공개)
+
+동시에 동일 파티션 활성화 요청이 오면 하나만 실행하고 나머지는 대기한다.
+
+```
+getOrActivate(partitionID):
+  actors 맵에 이미 있으면 → ready 채널 대기 후 반환 (no-op)
+  없으면 → placeholder 등록 후 doActivate:
+    1. CheckpointStore.Load(partitionID)
+         → (snapshotData, checkpointLSN) 언패킹
+    2. actor = Factory(partitionID)
+    3. actor.Restore(snapshotData)          // 스냅샷 복원 (없으면 skip)
+    4. WALStore.ReadFrom(partitionID, checkpointLSN+1)
+    5. for entry in walEntries:
+           actor.Replay(entry.Data)         // WAL replay
+    6. mailbox 생성 및 goroutine 시작
+    7. ready 채널 close (대기 중인 goroutine 해제)
 ```
 
 > **CheckpointStore LSN 저장 방식:** engine이 `Snapshot()` 반환값 앞에 checkpoint LSN(8 bytes, big-endian)을 prepend하여 저장한다. 사용자는 이 구조를 알 필요 없다.

@@ -31,7 +31,8 @@ type Config struct {
 }
 ```
 
-> PM은 PS와 달리 etcd에 자신을 노드로 등록하지 않는다. PM은 조율자이며 파티션을 보유하지 않는다.
+> PM은 PS와 달리 NodeRegistry(`/actorbase/nodes/`)에 등록하지 않는다. PM은 파티션을 보유하지 않는 조율자다.
+> 단, PS가 PM 없이 기동되는 것을 방지하기 위해 별도 presence 키(`/actorbase/pm/{addr}`)를 lease로 등록한다.
 
 ---
 
@@ -42,9 +43,10 @@ type Config struct {
 // 컴포넌트를 조립하고 gRPC 서버를 기동·관리한다.
 type Server struct {
     cfg          Config
-    routingStore *cluster.RoutingTableStore
-    nodeRegistry *cluster.NodeRegistry
-    membership   *cluster.MembershipWatcher
+    etcdCli      *clientv3.Client
+    routingStore cluster.RoutingTableStore
+    nodeRegistry cluster.NodeRegistry
+    membership   cluster.MembershipWatcher
     splitter     *rebalance.Splitter
     migrator     *rebalance.Migrator
     connPool     *transport.ConnPool
@@ -94,15 +96,16 @@ NewServer:
 
 ```
 Start:
-  1. currentRT = routingStore.Load()        // 현재 라우팅 테이블 조회
-  2. routing.Store(currentRT)               // 초기값 설정
-  3. go s.watchRouting(ctx)                 // etcd watch → 구독자 broadcast
-  4. go s.watchMembership(ctx)              // 노드 join/leave → Policy 호출
-  5. if currentRT == nil:
+  1. cluster.RegisterPM(ctx, etcdCli, cfg.ListenAddr)  // etcd에 PM presence 등록
+  2. currentRT = routingStore.Load()        // 현재 라우팅 테이블 조회
+  3. routing.Store(currentRT)               // 초기값 설정
+  4. go s.watchRouting(ctx)                 // etcd watch → 구독자 broadcast
+  5. go s.watchMembership(ctx)              // 노드 join/leave → Policy 호출
+  6. if currentRT == nil:
        go s.bootstrap(ctx)                  // 첫 PS 등록 대기 후 초기 테이블 생성
-  6. grpcSrv.Serve(listener)               // gRPC 수신 시작 (비동기)
-  7. <-ctx.Done()
-  8. graceful shutdown (아래 참조)
+  7. grpcSrv.Serve(listener)               // gRPC 수신 시작 (비동기)
+  8. <-ctx.Done()
+  9. graceful shutdown (아래 참조)
 ```
 
 ### 종료 순서 (graceful shutdown)
@@ -151,6 +154,9 @@ func (s *Server) broadcast(rt *domain.RoutingTable) {
 
 ### watchMembership (내부)
 
+NodeLeft 시 Policy와 무관하게 항상 `failoverNode`를 실행한다.
+`Policy.OnNodeLeft`는 장애 복구 이후의 추가 rebalance 정책(부하 분산 등)에만 활용한다.
+
 ```go
 func (s *Server) watchMembership(ctx context.Context) {
     ch := s.membership.Watch(ctx)
@@ -159,11 +165,34 @@ func (s *Server) watchMembership(ctx context.Context) {
         case cluster.NodeJoined:
             s.cfg.Policy.OnNodeJoined(ctx, event.Node)
         case cluster.NodeLeft:
+            go s.failoverNode(ctx, event.Node) // Policy 무관, 항상 실행
             s.cfg.Policy.OnNodeLeft(ctx, event.Node)
         }
     }
 }
 ```
+
+### failoverNode (내부)
+
+```go
+// failoverNode는 죽은 노드의 파티션을 다른 active 노드로 failover한다.
+// NodeLeft 이벤트마다 실행된다. graceful drain 완료 후 NodeLeft가 발생하면
+// 라우팅 테이블에 해당 노드 파티션이 없으므로 no-op으로 종료된다.
+func (s *Server) failoverNode(ctx context.Context, deadNode domain.NodeInfo)
+```
+
+```
+failoverNode(deadNode):
+  1. opMu.Lock()  // split/migrate와 직렬화
+  2. routingStore.Load() → rt
+  3. nodeRegistry.ListNodes() → 현재 살아있는 노드 목록
+  4. rt.Entries()에서 deadNode.ID 소유 파티션 순회:
+       target = pickTarget(nodes, excludeNodeID=deadNode.ID)
+       if target == "": log warn, skip (가용 노드 없음)
+       else: migrator.Failover(ctx, partitionID, target)
+```
+
+> `pickTarget`은 현재 단순히 첫 번째 active 노드를 선택한다. 메트릭 기반 부하 균등 선택은 추후 구현.
 
 ### bootstrap (내부)
 
@@ -180,7 +209,7 @@ func (s *Server) bootstrap(ctx context.Context)
 
 ## manager_handler.go
 
-SDK/abctl → PM management plane 핸들러. `PartitionManagerService` RPC 세 개를 구현한다.
+SDK/abctl → PM management plane 핸들러. `PartitionManagerService` RPC 네 개를 구현한다.
 
 ```go
 // managerHandler는 PartitionManagerService gRPC 핸들러.
@@ -207,6 +236,13 @@ func (h *managerHandler) RequestMigrate(
     ctx context.Context,
     req *pb.MigrateRequest,
 ) (*pb.MigrateResponse, error)
+
+// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
+// nodeRegistry.ListNodes()로 etcd에서 직접 조회한다.
+func (h *managerHandler) ListMembers(
+    ctx context.Context,
+    req *pb.ListMembersRequest,
+) (*pb.ListMembersResponse, error)
 ```
 
 ### WatchRouting 처리 흐름
@@ -277,11 +313,11 @@ type RebalancePolicy interface {
 ```go
 // ManualPolicy는 자동 rebalance를 수행하지 않는다.
 // split/migrate는 오직 명시적 RPC(RequestSplit, RequestMigrate)로만 발생한다.
-// 노드 장애 발생 시 운영자가 직접 abctl로 처리해야 한다.
+// 노드 장애 시 파티션 failover는 PM 서버 레벨의 failoverNode가 자동으로 처리한다.
 type ManualPolicy struct{}
 
 func (p *ManualPolicy) OnNodeJoined(ctx context.Context, node domain.NodeInfo) {} // no-op
-func (p *ManualPolicy) OnNodeLeft(ctx context.Context, node domain.NodeInfo)  {} // no-op
+func (p *ManualPolicy) OnNodeLeft(ctx context.Context, node domain.NodeInfo)   {} // no-op
 ```
 
 ---
@@ -293,9 +329,9 @@ func (p *ManualPolicy) OnNodeLeft(ctx context.Context, node domain.NodeInfo)  {}
 // split/migrate를 자동으로 수행한다.
 //
 // 동작 방식:
-//   - OnNodeJoined: 가장 부하가 높은 파티션들을 새 노드로 migrate하여 균등 분배.
-//   - OnNodeLeft:   해당 노드의 파티션을 부하가 낮은 다른 노드로 migrate.
-//   - 주기적 검사: split 임계치를 초과한 파티션을 자동으로 split.
+//   - OnNodeJoined: 가장 부하가 높은 파티션들을 새 노드로 migrate하여 균등 분배. (미구현)
+//   - OnNodeLeft:   장애 복구는 PM 서버 레벨의 failoverNode가 처리. Policy는 no-op.
+//   - 주기적 검사: split 임계치를 초과한 파티션을 자동으로 split. (미구현)
 //
 // 메트릭 수집 방식은 구현 단계에서 결정한다.
 // (Prometheus HTTP scraping 또는 PS가 PM에 주기적으로 push하는 방식 중 선택)
@@ -341,8 +377,9 @@ func (p *AutoRebalancePolicy) Start(ctx context.Context)
 | RebalancePolicy 인터페이스 | `OnNodeJoined / OnNodeLeft` | Policy를 교체 가능하게 분리. 초기엔 ManualPolicy로 시작. |
 | 초기 라우팅 테이블 생성 | PM bootstrap 시 첫 PS 등록 후 etcd CAS로 생성 | PM이 클러스터 상태를 초기화하는 단일 권한. 중복 생성 방어. |
 | AutoRebalancePolicy opMu 공유 | Server.opMu 포인터 전달 | Policy 내부에서도 split/migrate를 직렬화해야 하므로 동일 mutex 공유. |
-| Policy.OnNodeLeft에서 Migrate | Policy 내부에서 migrator.Migrate 직접 호출 | RPC 경유 불필요. PM 내부 로직이므로 직접 의존성 주입. |
-| PM etcd 등록 없음 | PM은 NodeRegistry에 등록하지 않음 | PM은 파티션 보유자가 아닌 조율자. PS만 등록. |
+| NodeLeft 장애 복구 위치 | PM 서버 레벨 `failoverNode` (Policy 무관) | ManualPolicy 사용자도 자동 failover 혜택. Policy는 proactive rebalance만 담당. |
+| Failover vs Migrate 분리 | `Migrator.Failover`: ExecuteMigrateOut 건너뜀 | source PS 죽었으면 gRPC 호출 불가. 마지막 checkpoint에서 target PS 직접 복원. |
+| PM presence 등록 | PM 기동 시 etcd `/actorbase/pm/{addr}`에 lease로 등록 | PS가 PM 없이 기동되는 것을 방지. NodeRegistry와 별개 키 공간. |
 
 ---
 
@@ -352,4 +389,5 @@ func (p *AutoRebalancePolicy) Start(ctx context.Context)
 - **PM 재시작 중 in-flight 연산**: PM이 split/migrate 도중 재시작되면 rebalance.md의 실패 복구 전략이 적용된다. 단, PM이 재시작 후 자동으로 복구를 수행하지는 않는다. 운영자가 상태를 확인하고 필요 시 수동으로 완료해야 한다.
 - **WatchRouting 구독자 누수**: 클라이언트가 비정상 종료하면 stream.Context()가 취소되어 unsubscribe가 호출된다. gRPC keepalive가 비정상 종료를 감지하는 시간만큼 구독자가 잠시 남아있을 수 있다. keepalive 파라미터는 구현 단계에서 결정한다.
 - **AutoRebalancePolicy 구현 미완**: 메트릭 수집 방식·임계치·split/migrate 결정 알고리즘은 구현 단계에서 결정한다.
-- **ManualPolicy + NodeLeft**: ManualPolicy에서 노드가 영구 장애나면 해당 노드의 파티션은 라우팅 테이블에 여전히 남아있어 SDK가 접근을 시도한다. 운영자가 직접 `abctl migrate`로 파티션을 다른 노드로 옮겨야 한다.
+- **단일 PS 클러스터에서 장애**: 가용 target 노드가 없으면 failoverNode가 파티션을 재배치하지 못한다. 파티션에 대한 접근이 etcd TTL 만료 이후에도 복구되지 않는다.
+- **Failover 중 data loss (fs WAL)**: source PS가 예기치 않게 죽으면 로컬 디스크의 WAL 데이터를 target PS가 접근할 수 없다. networked WALStore(Redis Streams 등) 사용 시 해소된다.

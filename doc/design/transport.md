@@ -67,7 +67,7 @@ syntax = "proto3";
 
 package actorbase.v1;
 
-option go_package = "actorbase/internal/transport/proto;actorbasepb";
+option go_package = "github.com/oomymy/actorbase/internal/transport/proto;actorbasepb";
 
 // ─────────────────────────────────────────────────────────
 // Data Plane: SDK → PS
@@ -104,6 +104,9 @@ service PartitionManagerService {
 
   // RequestMigrate는 파티션 migration을 PM에 요청한다.
   rpc RequestMigrate(MigrateRequest) returns (MigrateResponse);
+
+  // ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
 }
 
 message WatchRoutingRequest {
@@ -126,6 +129,18 @@ message MigrateRequest {
 
 message MigrateResponse {}
 
+message ListMembersRequest {}
+
+message MemberInfo {
+  string     node_id = 1;
+  string     address = 2;
+  NodeStatus status  = 3;
+}
+
+message ListMembersResponse {
+  repeated MemberInfo members = 1;
+}
+
 // ─────────────────────────────────────────────────────────
 // Control Plane: PM → PS
 // ─────────────────────────────────────────────────────────
@@ -136,6 +151,9 @@ service PartitionControlService {
 
   // ExecuteMigrateOut은 PM이 PS에게 파티션을 대상 노드로 이동시키도록 명령한다.
   rpc ExecuteMigrateOut(ExecuteMigrateOutRequest) returns (ExecuteMigrateOutResponse);
+
+  // PreparePartition은 PM이 target PS에게 파티션을 CheckpointStore에서 로드하도록 명령한다.
+  rpc PreparePartition(PreparePartitionRequest) returns (PreparePartitionResponse);
 }
 
 message ExecuteSplitRequest {
@@ -153,6 +171,14 @@ message ExecuteMigrateOutRequest {
 }
 
 message ExecuteMigrateOutResponse {}
+
+message PreparePartitionRequest {
+  string partition_id    = 1;
+  string key_range_start = 2; // target PS가 올바른 파티션인지 검증용
+  string key_range_end   = 3;
+}
+
+message PreparePartitionResponse {}
 
 // ─────────────────────────────────────────────────────────
 // Shared Messages
@@ -299,6 +325,16 @@ func (c *PMClient) WatchRouting(ctx context.Context, clientID string) <-chan *do
 
 func (c *PMClient) RequestSplit(ctx context.Context, partitionID, splitKey string) (newPartitionID string, err error)
 func (c *PMClient) RequestMigrate(ctx context.Context, partitionID, targetNodeID string) error
+
+// MemberInfo는 PS 노드 정보를 담는다.
+type MemberInfo struct {
+    NodeID  string
+    Address string
+    Status  domain.NodeStatus
+}
+
+// ListMembers는 PM에서 현재 등록된 PS 노드 목록을 조회한다.
+func (c *PMClient) ListMembers(ctx context.Context) ([]MemberInfo, error)
 ```
 
 ### PSControlClient (PM → PS, control plane)
@@ -314,6 +350,7 @@ func NewPSControlClient(conn *grpc.ClientConn) *PSControlClient
 
 func (c *PSControlClient) ExecuteSplit(ctx context.Context, partitionID, splitKey, newPartitionID string) error
 func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, partitionID, targetNodeID, targetAddr string) error
+func (c *PSControlClient) PreparePartition(ctx context.Context, partitionID, keyRangeStart, keyRangeEnd string) error
 ```
 
 ---

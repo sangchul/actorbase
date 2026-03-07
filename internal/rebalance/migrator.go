@@ -148,6 +148,74 @@ func buildMigratedTable(rt *domain.RoutingTable, partitionID string, targetNode 
 	return domain.NewRoutingTable(rt.Version()+1, entries)
 }
 
+// Failover는 응답 불가능한 source PS의 partitionID를 targetNodeID로 이동시킨다.
+// ExecuteMigrateOut을 건너뛰고 target PS에서 마지막 checkpoint + WAL replay로 복원한다.
+// WALStore가 networked store(e.g. Redis Streams)이면 data loss 없음.
+// fs 기반 WALStore라면 마지막 checkpoint 이후 WAL 데이터는 소실된다.
+func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID string) error {
+	// 1. 라우팅 테이블 조회 및 검증
+	rt, err := m.routingStore.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("load routing table: %w", err)
+	}
+	if rt == nil {
+		return fmt.Errorf("routing table is empty")
+	}
+
+	entry, ok := rt.LookupByPartition(partitionID)
+	if !ok {
+		return fmt.Errorf("partition %s not found", partitionID)
+	}
+
+	// 2. target 노드 검증
+	nodes, err := m.nodeRegistry.ListNodes(ctx)
+	if err != nil {
+		return fmt.Errorf("list nodes: %w", err)
+	}
+	targetNode, found := findNode(nodes, targetNodeID)
+	if !found {
+		return fmt.Errorf("target node %s not found", targetNodeID)
+	}
+	if targetNode.Status != domain.NodeStatusActive {
+		return fmt.Errorf("target node %s is not active", targetNodeID)
+	}
+
+	// 3. 라우팅 → Draining (SDK: ErrPartitionBusy → 재시도 대기)
+	drainingRT, err := buildDrainingTable(rt, partitionID)
+	if err != nil {
+		return fmt.Errorf("build draining routing table: %w", err)
+	}
+	if err := m.routingStore.Save(ctx, drainingRT); err != nil {
+		return fmt.Errorf("save draining routing table: %w", err)
+	}
+
+	// 4. [ExecuteMigrateOut 건너뜀 — source PS 죽음]
+
+	// 5. target PS에 PreparePartition 명령 (checkpoint + WAL replay로 복원)
+	targetConn, err := m.connPool.Get(targetNode.Address)
+	if err != nil {
+		m.revertToActive(ctx, rt)
+		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
+	}
+	targetCtrl := transport.NewPSControlClient(targetConn)
+	kr := entry.Partition.KeyRange
+	if err := targetCtrl.PreparePartition(ctx, partitionID, kr.Start, kr.End); err != nil {
+		m.revertToActive(ctx, rt)
+		return fmt.Errorf("prepare partition on target PS: %w", err)
+	}
+
+	// 6. 라우팅 → targetNode Active
+	finalRT, err := buildMigratedTable(rt, partitionID, targetNode)
+	if err != nil {
+		return fmt.Errorf("build migrated routing table: %w", err)
+	}
+	if err := m.routingStore.Save(ctx, finalRT); err != nil {
+		return fmt.Errorf("save final routing table: %w", err)
+	}
+
+	return nil
+}
+
 func findNode(nodes []domain.NodeInfo, nodeID string) (domain.NodeInfo, bool) {
 	for _, n := range nodes {
 		if n.ID == nodeID {

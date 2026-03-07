@@ -6,6 +6,7 @@
 //
 // 명령:
 //
+//	members                             현재 PS 노드 목록 출력
 //	routing                             현재 라우팅 테이블 출력
 //	split <partition-id> <split-key>    파티션 split 요청
 //	migrate <partition-id> <node-id>    파티션 migrate 요청
@@ -38,6 +39,8 @@ func main() {
 	cfg := loadConfig(*pmFlag)
 
 	switch flag.Arg(0) {
+	case "members":
+		cmdMembers(cfg)
 	case "routing":
 		cmdRouting(cfg)
 	case "split":
@@ -66,6 +69,7 @@ Global flags:
   -pm string   PM gRPC address (default from ~/.actorbase/config.json or ACTORBASE_PM_ADDR env)
 
 Commands:
+  members                               List active PS nodes
   routing                               Print current routing table
   split <partition-id> <split-key>      Split a partition at the given key
   migrate <partition-id> <node-id>      Migrate a partition to the target node
@@ -80,6 +84,34 @@ func newPMClient(pmAddr string) *transport.PMClient {
 		os.Exit(1)
 	}
 	return transport.NewPMClient(conn)
+}
+
+func cmdMembers(cfg *Config) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	members, err := client.ListMembers(ctx)
+	if err != nil {
+		slog.Error("list members failed", "err", err)
+		os.Exit(1)
+	}
+
+	if len(members) == 0 {
+		fmt.Println("no members registered")
+		return
+	}
+
+	fmt.Printf("%-36s  %-20s  %s\n", "NODE-ID", "ADDRESS", "STATUS")
+	fmt.Printf("%-36s  %-20s  %s\n",
+		"------------------------------------", "--------------------", "------")
+	for _, m := range members {
+		status := "active"
+		if m.Status != 0 {
+			status = "draining"
+		}
+		fmt.Printf("%-36s  %-20s  %s\n", m.NodeID, m.Address, status)
+	}
 }
 
 func cmdRouting(cfg *Config) {

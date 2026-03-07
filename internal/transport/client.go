@@ -193,6 +193,34 @@ func (c *PMClient) RequestMigrate(ctx context.Context, partitionID, targetNodeID
 	return fromGRPCStatus(err)
 }
 
+// MemberInfo는 PS 노드 정보를 담는다.
+type MemberInfo struct {
+	NodeID  string
+	Address string
+	Status  domain.NodeStatus
+}
+
+// ListMembers는 PM에서 현재 등록된 PS 노드 목록을 조회한다.
+func (c *PMClient) ListMembers(ctx context.Context) ([]MemberInfo, error) {
+	resp, err := c.client.ListMembers(ctx, &pb.ListMembersRequest{})
+	if err != nil {
+		return nil, fromGRPCStatus(err)
+	}
+	members := make([]MemberInfo, len(resp.Members))
+	for i, m := range resp.Members {
+		var status domain.NodeStatus
+		if m.Status == pb.NodeStatus_NODE_STATUS_DRAINING {
+			status = domain.NodeStatusDraining
+		}
+		members[i] = MemberInfo{
+			NodeID:  m.NodeId,
+			Address: m.Address,
+			Status:  status,
+		}
+	}
+	return members, nil
+}
+
 // ── PSControlClient (PM → PS, control plane) ─────────────────────────────────
 
 // PSControlClient는 PM이 PS에게 split/migrate를 명령하는 데 사용한다.

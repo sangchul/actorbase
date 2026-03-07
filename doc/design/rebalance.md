@@ -164,19 +164,29 @@ func (s *Splitter) Split(ctx context.Context, partitionID, splitKey string) (new
 ```go
 // Migrator는 파티션 migration을 조율한다.
 type Migrator struct {
-    routingStore *cluster.RoutingTableStore
-    nodeRegistry *cluster.NodeRegistry
+    routingStore cluster.RoutingTableStore
+    nodeRegistry cluster.NodeRegistry
     connPool     *transport.ConnPool
 }
 
 func NewMigrator(
-    routingStore *cluster.RoutingTableStore,
-    nodeRegistry *cluster.NodeRegistry,
+    routingStore cluster.RoutingTableStore,
+    nodeRegistry cluster.NodeRegistry,
     connPool     *transport.ConnPool,
 ) *Migrator
 
-// Migrate는 partitionID를 targetNodeID로 이동시킨다.
+// Migrate는 source PS가 살아있을 때 partitionID를 targetNodeID로 이동시킨다.
+// ExecuteMigrateOut → PreparePartition → 라우팅 갱신 순으로 진행한다.
 func (m *Migrator) Migrate(ctx context.Context, partitionID, targetNodeID string) error
+
+// Failover는 응답 불가능한 source PS의 partitionID를 targetNodeID로 이동시킨다.
+// ExecuteMigrateOut을 건너뛰고 target PS에서 마지막 checkpoint + WAL replay로 복원한다.
+// PM이 NodeLeft 이벤트 감지 시 호출한다.
+//
+// Data loss 여부:
+//   - networked WALStore(e.g. Redis Streams) → loss 없음 (WAL replay로 완전 복원)
+//   - fs 기반 WALStore → 마지막 checkpoint 이후 WAL 데이터 소실 가능
+func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID string) error
 ```
 
 #### 검증 조건
@@ -185,6 +195,37 @@ func (m *Migrator) Migrate(ctx context.Context, partitionID, targetNodeID string
 - `targetNodeID`가 NodeRegistry에 존재하고 Active 상태여야 한다.
 - source 노드와 target 노드가 달라야 한다.
 - 파티션이 이미 Draining 상태이면 에러 반환. (중복 migration 방지)
+
+---
+
+## Failover (장애 복구)
+
+source PS가 죽었을 때 PM이 자동으로 파티션을 다른 PS로 복구하는 경로.
+`Migrate`와 달리 `ExecuteMigrateOut`을 건너뛴다.
+
+### 흐름
+
+```
+[PM: Migrator.Failover]          [Target PS]
+      │
+      │ 1. 라우팅 테이블 조회 + target 노드 검증
+      │ 2. RoutingTable → Draining
+      │    (SDK: ErrPartitionBusy → 대기)
+      │
+      │    [ExecuteMigrateOut 건너뜀 — source PS 죽음]
+      │
+      │── PreparePartition ──────────────────────▶│
+      │                                           │ 3. CheckpointStore에서 로드
+      │                                           │    + WALStore.ReadFrom (WAL replay)
+      │◀── success ────────────────────────────────│
+      │
+      │ 4. RoutingTable → targetNode (Active)
+      │    etcd 저장 → PS·SDK에 전파
+```
+
+> source PS의 마지막 checkpoint 이후 WAL replay 범위는 WALStore 구현에 따라 다르다.
+> fs WAL(로컬 디스크)이면 target PS가 source의 WAL을 읽지 못하므로 해당 데이터는 소실된다.
+> networked WAL(Redis Streams 등)이면 target PS가 동일 store에서 WAL을 읽어 완전 복원한다.
 
 ### 실패 복구 전략
 

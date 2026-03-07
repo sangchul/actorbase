@@ -2,7 +2,6 @@ package policy
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -56,35 +55,9 @@ func NewAutoRebalancePolicy(
 // TODO: 메트릭 수집 방식 확정 후 실제 부하 기반 선택 로직 구현.
 func (p *AutoRebalancePolicy) OnNodeJoined(_ context.Context, _ domain.NodeInfo) {}
 
-// OnNodeLeft는 떠난 노드의 파티션을 다른 active 노드로 migrate한다.
-func (p *AutoRebalancePolicy) OnNodeLeft(ctx context.Context, node domain.NodeInfo) {
-	p.opMu.Lock()
-	defer p.opMu.Unlock()
-
-	rt, err := p.routingStore.Load(ctx)
-	if err != nil || rt == nil {
-		return
-	}
-
-	nodes, err := p.nodeRegistry.ListNodes(ctx)
-	if err != nil || len(nodes) == 0 {
-		return
-	}
-
-	for _, entry := range rt.Entries() {
-		if entry.Node.ID != node.ID {
-			continue
-		}
-		target := pickLeastLoaded(nodes, node.ID)
-		if target == "" {
-			slog.Warn("auto rebalance: no available target node", "partition", entry.Partition.ID)
-			continue
-		}
-		if err := p.migrator.Migrate(ctx, entry.Partition.ID, target); err != nil {
-			slog.Error("auto rebalance: migrate failed", "partition", entry.Partition.ID, "target", target, "err", err)
-		}
-	}
-}
+// OnNodeLeft는 노드 장애 시 추가 rebalance 정책을 실행한다.
+// 파티션 failover 자체는 PM 서버 레벨의 failoverNode가 처리하므로 여기서는 수행하지 않는다.
+func (p *AutoRebalancePolicy) OnNodeLeft(_ context.Context, _ domain.NodeInfo) {}
 
 // Start는 주기적 메트릭 검사 루프를 시작한다.
 // AutoRebalancePolicy 사용 시 Server.Start 내에서 goroutine으로 호출한다.
@@ -105,14 +78,3 @@ func (p *AutoRebalancePolicy) Start(ctx context.Context) {
 // checkAndSplit은 split 임계치를 초과한 파티션을 자동으로 split한다.
 // TODO: Prometheus scraping으로 파티션별 RPS 조회 후 임계치 초과 시 split 구현.
 func (p *AutoRebalancePolicy) checkAndSplit(_ context.Context) {}
-
-// pickLeastLoaded는 excludeNodeID를 제외한 active 노드 중 부하가 낮은 노드 ID를 반환한다.
-// 현재는 단순히 첫 번째 active 노드를 반환한다. (메트릭 기반 선택은 추후 구현)
-func pickLeastLoaded(nodes []domain.NodeInfo, excludeNodeID string) string {
-	for _, n := range nodes {
-		if n.ID != excludeNodeID && n.Status == domain.NodeStatusActive {
-			return n.ID
-		}
-	}
-	return ""
-}

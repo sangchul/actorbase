@@ -3,6 +3,7 @@ package pm
 import (
 	"context"
 
+	"github.com/oomymy/actorbase/internal/domain"
 	"github.com/oomymy/actorbase/internal/transport"
 	pb "github.com/oomymy/actorbase/internal/transport/proto"
 )
@@ -74,4 +75,28 @@ func (h *managerHandler) RequestMigrate(
 		return nil, transport.ToGRPCStatus(err)
 	}
 	return &pb.MigrateResponse{}, nil
+}
+
+// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
+func (h *managerHandler) ListMembers(
+	ctx context.Context,
+	_ *pb.ListMembersRequest,
+) (*pb.ListMembersResponse, error) {
+	nodes, err := h.server.nodeRegistry.ListNodes(ctx)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	members := make([]*pb.MemberInfo, len(nodes))
+	for i, n := range nodes {
+		var status pb.NodeStatus
+		if n.Status == domain.NodeStatusDraining {
+			status = pb.NodeStatus_NODE_STATUS_DRAINING
+		}
+		members[i] = &pb.MemberInfo{
+			NodeId:  n.ID,
+			Address: n.Address,
+			Status:  status,
+		}
+	}
+	return &pb.ListMembersResponse{Members: members}, nil
 }

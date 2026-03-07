@@ -130,6 +130,7 @@ const (
 	PartitionManagerService_WatchRouting_FullMethodName   = "/actorbase.v1.PartitionManagerService/WatchRouting"
 	PartitionManagerService_RequestSplit_FullMethodName   = "/actorbase.v1.PartitionManagerService/RequestSplit"
 	PartitionManagerService_RequestMigrate_FullMethodName = "/actorbase.v1.PartitionManagerService/RequestMigrate"
+	PartitionManagerService_ListMembers_FullMethodName    = "/actorbase.v1.PartitionManagerService/ListMembers"
 )
 
 // PartitionManagerServiceClient is the client API for PartitionManagerService service.
@@ -143,6 +144,8 @@ type PartitionManagerServiceClient interface {
 	RequestSplit(ctx context.Context, in *SplitRequest, opts ...grpc.CallOption) (*SplitResponse, error)
 	// RequestMigrate는 파티션 migration을 PM에 요청한다.
 	RequestMigrate(ctx context.Context, in *MigrateRequest, opts ...grpc.CallOption) (*MigrateResponse, error)
+	// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
+	ListMembers(ctx context.Context, in *ListMembersRequest, opts ...grpc.CallOption) (*ListMembersResponse, error)
 }
 
 type partitionManagerServiceClient struct {
@@ -192,6 +195,16 @@ func (c *partitionManagerServiceClient) RequestMigrate(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *partitionManagerServiceClient) ListMembers(ctx context.Context, in *ListMembersRequest, opts ...grpc.CallOption) (*ListMembersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMembersResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_ListMembers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PartitionManagerServiceServer is the server API for PartitionManagerService service.
 // All implementations must embed UnimplementedPartitionManagerServiceServer
 // for forward compatibility.
@@ -203,6 +216,8 @@ type PartitionManagerServiceServer interface {
 	RequestSplit(context.Context, *SplitRequest) (*SplitResponse, error)
 	// RequestMigrate는 파티션 migration을 PM에 요청한다.
 	RequestMigrate(context.Context, *MigrateRequest) (*MigrateResponse, error)
+	// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
+	ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error)
 	mustEmbedUnimplementedPartitionManagerServiceServer()
 }
 
@@ -221,6 +236,9 @@ func (UnimplementedPartitionManagerServiceServer) RequestSplit(context.Context, 
 }
 func (UnimplementedPartitionManagerServiceServer) RequestMigrate(context.Context, *MigrateRequest) (*MigrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestMigrate not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMembers not implemented")
 }
 func (UnimplementedPartitionManagerServiceServer) mustEmbedUnimplementedPartitionManagerServiceServer() {
 }
@@ -291,6 +309,24 @@ func _PartitionManagerService_RequestMigrate_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PartitionManagerService_ListMembers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMembersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).ListMembers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_ListMembers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).ListMembers(ctx, req.(*ListMembersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PartitionManagerService_ServiceDesc is the grpc.ServiceDesc for PartitionManagerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -305,6 +341,10 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RequestMigrate",
 			Handler:    _PartitionManagerService_RequestMigrate_Handler,
+		},
+		{
+			MethodName: "ListMembers",
+			Handler:    _PartitionManagerService_ListMembers_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

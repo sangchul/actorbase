@@ -82,6 +82,10 @@ type Config[Req, Resp any] struct {
 
     // etcd 설정
     EtcdLeaseTTL time.Duration // 노드 lease TTL. 기본값: 10초
+
+    // graceful shutdown 설정
+    DrainTimeout    time.Duration // 파티션 선이전 최대 대기 시간. 기본값: 60초
+    ShutdownTimeout time.Duration // EvictAll 최대 대기 시간. 기본값: 30초
 }
 ```
 
@@ -95,9 +99,10 @@ type Config[Req, Resp any] struct {
 type Server[Req, Resp any] struct {
     cfg       Config[Req, Resp]
     actorHost *engine.ActorHost[Req, Resp]
-    registry  *cluster.NodeRegistry
-    rtStore   *cluster.RoutingTableStore
+    registry  cluster.NodeRegistry
+    rtStore   cluster.RoutingTableStore
     grpcSrv   *grpc.Server
+    etcdCli   *clientv3.Client
     routing   atomic.Pointer[domain.RoutingTable] // 현재 라우팅 테이블. lock-free 읽기.
 }
 
@@ -127,28 +132,56 @@ NewServer:
 
 ```
 Start:
-  1. go registry.Register(ctx, myNode)    // etcd 등록 + keepalive 시작
-  2. go s.watchRouting(ctx)               // RoutingTable watch (초기값 즉시 수신)
-  3. <초기 RoutingTable 수신 대기>         // 준비 전 요청 수락 방지
-  4. grpcSrv.Serve(listener)              // gRPC 수신 시작 (비동기)
-  5. go evictionScheduler.Start(ctx)      // idle Actor eviction 시작
-  6. go checkpointScheduler.Start(ctx)    // 주기적 Actor checkpoint 시작
-  6. <-ctx.Done()
-  7. graceful shutdown (아래 참조)
+  1. cluster.WaitForPM(ctx, etcdCli)      // PM이 etcd에 등록될 때까지 대기 (최대 10초)
+  2. go registry.Register(ctx, myNode)    // etcd 등록 + keepalive 시작
+  3. rtCh = rtStore.Watch(ctx)            // RoutingTable watch 시작
+  4. <초기 RoutingTable 수신 대기>         // 준비 전 요청 수락 방지
+  5. go s.watchRouting(ctx, rtCh)         // 이후 라우팅 갱신 백그라운드 처리
+  6. grpcSrv.Serve(listener)              // gRPC 수신 시작 (비동기)
+  7. go evictionScheduler.Start(ctx)      // idle Actor eviction 시작
+  8. go checkpointScheduler.Start(ctx)    // 주기적 Actor checkpoint 시작
+  9. <-ctx.Done()
+  10. graceful shutdown (아래 참조)
 ```
 
-> **초기 RoutingTable 수신 대기**: `RoutingTableStore.Watch`는 시작 시 현재 테이블을 즉시 전달한다 (cluster.md 참조). 빈 클러스터(테이블 없음)인 경우에도 Watch가 nil을 전달하는 시점을 기다려 준비 완료로 간주한다. 대기 없이 요청을 수락하면 라우팅 검증이 불가능하다.
+> **PM 가드**: PS 기동 시 etcd에 PM presence 키(`/actorbase/pm/`)가 없으면 최대 10초 대기한다. PM이 기동되지 않은 상태에서 PS가 먼저 뜨는 것을 방지한다.
+>
+> **초기 RoutingTable 수신 대기**: `RoutingTableStore.Watch`는 시작 시 현재 테이블을 즉시 전달한다. 빈 클러스터(테이블 없음)인 경우에도 Watch가 nil을 전달하는 시점을 기다려 준비 완료로 간주한다.
 
 ### 종료 순서 (graceful shutdown)
 
 ```
 ctx 취소 시:
-  1. grpcSrv.GracefulStop()             // 진행 중인 RPC 완료 대기 후 수신 중단
-  2. actorHost.EvictAll(shutdownCtx)    // 모든 Actor checkpoint 저장
-  3. registry.Deregister(ctx, nodeID)  // etcd lease 즉시 revoke
+  1. drainPartitions(drainCtx)          // 파티션 선이전: 다른 PS로 migrate 요청
+                                        // gRPC 서버가 살아있는 동안 실행해야 PM이
+                                        // ExecuteMigrateOut을 호출할 수 있다.
+  2. grpcSrv.GracefulStop()             // 진행 중인 RPC 완료 대기 후 수신 중단
+  3. actorHost.EvictAll(shutdownCtx)    // drain 실패 파티션 대비 safety checkpoint
+  4. registry.Deregister(ctx, nodeID)  // etcd lease 즉시 revoke
 ```
 
-> `EvictAll`에는 별도 `shutdownCtx` (예: 30초 타임아웃)를 사용한다. 원래 ctx가 이미 취소됐기 때문이다.
+> `drainPartitions`에는 `DrainTimeout`(기본 60초) 타임아웃을 사용한다. 타임아웃 초과 시 남은 파티션은 etcd NodeLeft 이벤트 후 PM의 `failoverNode`가 처리한다.
+>
+> `EvictAll`에는 별도 `ShutdownTimeout`(기본 30초)을 사용한다. 원래 ctx가 이미 취소됐기 때문이다.
+
+### drainPartitions (내부)
+
+PS 종료 전 자신의 파티션을 PM에 위임하는 절차.
+
+```
+drainPartitions(ctx):
+  1. cluster.GetPMAddr(ctx, etcdCli)   // etcd에서 PM 주소 조회
+  2. PMClient 생성 (transport.NewPMClient)
+  3. PMClient.ListMembers()            // 가용 노드 목록 조회
+  4. 현재 routing.Load()에서 내 파티션 추출 (entry.Node.ID == myNodeID)
+  5. for each 파티션:
+       target = targets[round-robin] (나 제외 active 노드)
+       PMClient.RequestMigrate(partitionID, target.NodeID)
+       → PM: Draining → ExecuteMigrateOut(나) → PreparePartition(target) → routing 갱신
+  6. 실패 파티션: 로그만 남기고 계속. NodeLeft 후 failoverNode가 처리.
+```
+
+> drain 완료 후 NodeLeft 이벤트가 발생해도 라우팅 테이블에 이 노드의 파티션이 없으므로 `failoverNode`는 no-op으로 종료된다.
 
 ### watchRouting (내부)
 

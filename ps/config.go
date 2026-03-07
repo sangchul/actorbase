@@ -8,12 +8,13 @@ import (
 )
 
 const (
-	defaultIdleTimeout             = 5 * time.Minute
-	defaultEvictInterval           = 1 * time.Minute
-	defaultCheckpointInterval      = 1 * time.Minute
-	defaultCheckpointWALThreshold  = 100
-	defaultEtcdLeaseTTL            = 10 * time.Second
-	defaultShutdownTimeout         = 30 * time.Second
+	defaultIdleTimeout            = 5 * time.Minute
+	defaultEvictInterval          = 1 * time.Minute
+	defaultCheckpointInterval     = 1 * time.Minute
+	defaultCheckpointWALThreshold = 100
+	defaultEtcdLeaseTTL           = 10 * time.Second
+	defaultDrainTimeout           = 60 * time.Second
+	defaultShutdownTimeout        = 30 * time.Second
 )
 
 // Config는 PS 생성에 필요한 모든 설정과 의존성을 담는다.
@@ -51,6 +52,7 @@ type Config[Req, Resp any] struct {
 	EtcdLeaseTTL time.Duration // 노드 lease TTL. 기본값: 10초
 
 	// graceful shutdown 설정
+	DrainTimeout    time.Duration // 파티션 선이전 최대 대기 시간. 기본값: 60초
 	ShutdownTimeout time.Duration // EvictAll 최대 대기 시간. 기본값: 30초
 }
 
@@ -69,6 +71,9 @@ func (c *Config[Req, Resp]) setDefaults() {
 	}
 	if c.EtcdLeaseTTL <= 0 {
 		c.EtcdLeaseTTL = defaultEtcdLeaseTTL
+	}
+	if c.DrainTimeout <= 0 {
+		c.DrainTimeout = defaultDrainTimeout
 	}
 	if c.ShutdownTimeout <= 0 {
 		c.ShutdownTimeout = defaultShutdownTimeout

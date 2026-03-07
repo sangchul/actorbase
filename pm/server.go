@@ -24,6 +24,7 @@ import (
 // 컴포넌트를 조립하고 gRPC 서버를 기동·관리한다.
 type Server struct {
 	cfg          Config
+	etcdCli      *clientv3.Client
 	routingStore cluster.RoutingTableStore
 	nodeRegistry cluster.NodeRegistry
 	membership   cluster.MembershipWatcher
@@ -79,6 +80,7 @@ func NewServer(cfg Config) (*Server, error) {
 
 	s := &Server{
 		cfg:          cfg,
+		etcdCli:      etcdCli,
 		routingStore: routingStore,
 		nodeRegistry: nodeRegistry,
 		membership:   membership,
@@ -96,31 +98,36 @@ func NewServer(cfg Config) (*Server, error) {
 
 // Start는 PM을 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
 func (s *Server) Start(ctx context.Context) error {
-	// 1. 현재 라우팅 테이블 조회 및 초기값 설정
+	// 1. etcd에 PM 존재를 등록 (PS가 PM 가동 여부를 확인하는 데 사용)
+	if err := cluster.RegisterPM(ctx, s.etcdCli, s.cfg.ListenAddr); err != nil {
+		return fmt.Errorf("pm: register presence: %w", err)
+	}
+
+	// 2. 현재 라우팅 테이블 조회 및 초기값 설정
 	currentRT, err := s.routingStore.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("pm: load routing table: %w", err)
 	}
 	s.routing.Store(currentRT)
 
-	// 2. etcd watch → 구독자 broadcast
+	// 3. etcd watch → 구독자 broadcast
 	go s.watchRouting(ctx)
 
-	// 3. 노드 join/leave → Policy 호출
+	// 4. 노드 join/leave → Policy 호출
 	go s.watchMembership(ctx)
 
-	// 4. AutoRebalancePolicy Start (해당하는 경우)
+	// 5. AutoRebalancePolicy Start (해당하는 경우)
 	type starter interface{ Start(ctx context.Context) }
 	if st, ok := s.cfg.Policy.(starter); ok {
 		go st.Start(ctx)
 	}
 
-	// 5. 빈 클러스터면 첫 PS 등록 대기 후 초기 테이블 생성
+	// 6. 빈 클러스터면 첫 PS 등록 대기 후 초기 테이블 생성
 	if currentRT == nil {
 		go s.bootstrap(ctx)
 	}
 
-	// 6. gRPC 수신 시작
+	// 7. gRPC 수신 시작
 	lis, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("pm: listen %s: %w", s.cfg.ListenAddr, err)
@@ -130,14 +137,14 @@ func (s *Server) Start(ctx context.Context) error {
 		grpcErrCh <- s.grpcSrv.Serve(lis)
 	}()
 
-	// 7. ctx 취소 대기
+	// 8. ctx 취소 대기
 	select {
 	case <-ctx.Done():
 	case err := <-grpcErrCh:
 		return fmt.Errorf("pm: grpc server error: %w", err)
 	}
 
-	// 8. Graceful shutdown
+	// 9. Graceful shutdown
 	s.grpcSrv.GracefulStop()
 	s.connPool.Close() //nolint:errcheck
 	return nil
@@ -169,7 +176,8 @@ func (s *Server) broadcast(rt *domain.RoutingTable) {
 	}
 }
 
-// watchMembership은 노드 join/leave 이벤트를 감지하여 Policy를 호출한다.
+// watchMembership은 노드 join/leave 이벤트를 감지하여 처리한다.
+// NodeLeft 시: Policy와 무관하게 항상 failoverNode 실행 후 Policy.OnNodeLeft 호출.
 func (s *Server) watchMembership(ctx context.Context) {
 	ch := s.membership.Watch(ctx)
 	for event := range ch {
@@ -177,9 +185,57 @@ func (s *Server) watchMembership(ctx context.Context) {
 		case cluster.NodeJoined:
 			s.cfg.Policy.OnNodeJoined(ctx, event.Node)
 		case cluster.NodeLeft:
+			go s.failoverNode(ctx, event.Node)
 			s.cfg.Policy.OnNodeLeft(ctx, event.Node)
 		}
 	}
+}
+
+// failoverNode는 죽은 노드의 파티션을 다른 active 노드로 failover한다.
+// Policy와 무관하게 NodeLeft 시 항상 실행된다.
+// graceful drain이 완료된 PS는 이미 파티션이 없으므로 no-op.
+func (s *Server) failoverNode(ctx context.Context, deadNode domain.NodeInfo) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	rt, err := s.routingStore.Load(ctx)
+	if err != nil || rt == nil {
+		return
+	}
+
+	nodes, err := s.nodeRegistry.ListNodes(ctx)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range rt.Entries() {
+		if entry.Node.ID != deadNode.ID {
+			continue
+		}
+		target := pickTarget(nodes, deadNode.ID)
+		if target == "" {
+			slog.Warn("pm: failover: no available target node",
+				"partition", entry.Partition.ID, "dead_node", deadNode.ID)
+			continue
+		}
+		if err := s.migrator.Failover(ctx, entry.Partition.ID, target); err != nil {
+			slog.Error("pm: failover failed",
+				"partition", entry.Partition.ID, "target", target, "err", err)
+		} else {
+			slog.Info("pm: failover complete",
+				"partition", entry.Partition.ID, "from", deadNode.ID, "to", target)
+		}
+	}
+}
+
+// pickTarget은 excludeNodeID를 제외한 active 노드 중 하나를 반환한다.
+func pickTarget(nodes []domain.NodeInfo, excludeNodeID string) string {
+	for _, n := range nodes {
+		if n.ID != excludeNodeID && n.Status == domain.NodeStatusActive {
+			return n.ID
+		}
+	}
+	return ""
 }
 
 // bootstrap은 첫 번째 PS가 등록될 때까지 기다린 후 초기 라우팅 테이블을 생성한다.

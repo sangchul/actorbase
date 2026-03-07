@@ -3,6 +3,7 @@ package ps
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync/atomic"
 	"time"
@@ -94,7 +95,12 @@ func NewServer[Req, Resp any](cfg Config[Req, Resp]) (*Server[Req, Resp], error)
 
 // Start는 PS를 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
 func (s *Server[Req, Resp]) Start(ctx context.Context) error {
-	// 1. etcd 노드 등록 시작 (백그라운드)
+	// 1. PM이 기동 중인지 확인 (etcd에 PM presence 키가 있어야 함)
+	if err := cluster.WaitForPM(ctx, s.etcdCli); err != nil {
+		return err
+	}
+
+	// 2. etcd 노드 등록 시작 (백그라운드)
 	node := domain.NodeInfo{
 		ID:      s.cfg.NodeID,
 		Address: s.cfg.Addr,
@@ -102,7 +108,7 @@ func (s *Server[Req, Resp]) Start(ctx context.Context) error {
 	}
 	go s.registry.Register(ctx, node) //nolint:errcheck
 
-	// 2. 라우팅 테이블 watch 시작 + 초기값 수신 대기
+	// 3. 라우팅 테이블 watch 시작 + 초기값 수신 대기
 	rtCh := s.rtStore.Watch(ctx)
 	firstRT, ok := <-rtCh
 	if !ok {
@@ -110,10 +116,10 @@ func (s *Server[Req, Resp]) Start(ctx context.Context) error {
 	}
 	s.routing.Store(firstRT) // nil이어도 저장 (빈 클러스터 허용)
 
-	// 3. 이후 라우팅 갱신을 백그라운드에서 처리
+	// 4. 이후 라우팅 갱신을 백그라운드에서 처리
 	go s.watchRouting(ctx, rtCh)
 
-	// 4. gRPC 서버 시작
+	// 5. gRPC 서버 시작
 	lis, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.cfg.Addr, err)
@@ -123,22 +129,22 @@ func (s *Server[Req, Resp]) Start(ctx context.Context) error {
 		grpcErrCh <- s.grpcSrv.Serve(lis)
 	}()
 
-	// 5. EvictionScheduler 시작
+	// 6. EvictionScheduler 시작
 	evictSched := engine.NewEvictionScheduler[Req, Resp](s.actorHost, s.cfg.IdleTimeout, s.cfg.EvictInterval)
 	go evictSched.Start(ctx)
 
-	// 6. CheckpointScheduler 시작
+	// 7. CheckpointScheduler 시작
 	cpSched := engine.NewCheckpointScheduler[Req, Resp](s.actorHost, s.cfg.CheckpointInterval)
 	go cpSched.Start(ctx)
 
-	// 7. ctx 취소 대기
+	// 8. ctx 취소 대기
 	select {
 	case <-ctx.Done():
 	case err := <-grpcErrCh:
 		return fmt.Errorf("grpc server error: %w", err)
 	}
 
-	// 8. Graceful shutdown
+	// 9. Graceful shutdown
 	return s.shutdown()
 }
 
@@ -149,22 +155,86 @@ func (s *Server[Req, Resp]) watchRouting(ctx context.Context, ch <-chan *domain.
 }
 
 func (s *Server[Req, Resp]) shutdown() error {
-	// 1. gRPC: 진행 중인 RPC 완료 대기 후 중단
+	// 1. 파티션 선이전: 가용한 다른 PS로 migrate 요청.
+	// gRPC 서버가 살아있는 동안 실행해야 PM이 ExecuteMigrateOut을 호출할 수 있다.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), s.cfg.DrainTimeout)
+	defer drainCancel()
+	s.drainPartitions(drainCtx)
+
+	// 2. gRPC: 진행 중인 RPC 완료 대기 후 중단
 	s.grpcSrv.GracefulStop()
 
-	// 2. 모든 Actor checkpoint 저장 (별도 timeout context 사용)
+	// 3. 모든 Actor checkpoint 저장 (drain 실패 파티션 대비 safety)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
 	if err := s.actorHost.EvictAll(shutdownCtx); err != nil {
-		// eviction 실패는 로그만 남기고 계속 진행
 		_ = err
 	}
 
-	// 3. etcd lease 즉시 revoke
+	// 4. etcd lease 즉시 revoke
 	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer deregCancel()
 	_ = s.registry.Deregister(deregCtx, s.cfg.NodeID)
 
-	// 4. etcd 클라이언트 종료
+	// 5. etcd 클라이언트 종료
 	return s.etcdCli.Close()
+}
+
+// drainPartitions는 이 PS가 담당하는 모든 파티션을 다른 PS로 migrate 요청한다.
+// 일부 실패해도 계속 진행한다. 실패한 파티션은 etcd lease 만료 후 PM의 failoverNode가 처리한다.
+func (s *Server[Req, Resp]) drainPartitions(ctx context.Context) {
+	// 1. etcd에서 PM 주소 조회
+	pmAddr, err := cluster.GetPMAddr(ctx, s.etcdCli)
+	if err != nil {
+		slog.Warn("ps: drain: cannot get PM address, skipping drain", "err", err)
+		return
+	}
+
+	// 2. PM 연결
+	pool := transport.NewConnPool()
+	defer pool.Close() //nolint:errcheck
+	pmConn, err := pool.Get(pmAddr)
+	if err != nil {
+		slog.Warn("ps: drain: cannot connect to PM", "pm_addr", pmAddr, "err", err)
+		return
+	}
+	pmClient := transport.NewPMClient(pmConn)
+
+	// 3. 가용 노드 목록 조회
+	members, err := pmClient.ListMembers(ctx)
+	if err != nil {
+		slog.Warn("ps: drain: cannot list members", "err", err)
+		return
+	}
+	targets := make([]transport.MemberInfo, 0, len(members))
+	for _, m := range members {
+		if m.NodeID != s.cfg.NodeID && m.Status == domain.NodeStatusActive {
+			targets = append(targets, m)
+		}
+	}
+	if len(targets) == 0 {
+		slog.Warn("ps: drain: no available target nodes, skipping drain")
+		return
+	}
+
+	// 4. 현재 라우팅에서 내 파티션 추출
+	rt := s.routing.Load()
+	if rt == nil {
+		return
+	}
+	var i int
+	for _, entry := range rt.Entries() {
+		if entry.Node.ID != s.cfg.NodeID {
+			continue
+		}
+		target := targets[i%len(targets)]
+		i++
+		if err := pmClient.RequestMigrate(ctx, entry.Partition.ID, target.NodeID); err != nil {
+			slog.Error("ps: drain: migrate failed",
+				"partition", entry.Partition.ID, "target", target.NodeID, "err", err)
+		} else {
+			slog.Info("ps: drain: partition migrated",
+				"partition", entry.Partition.ID, "target", target.NodeID)
+		}
+	}
 }

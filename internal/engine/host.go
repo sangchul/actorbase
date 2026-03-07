@@ -156,19 +156,12 @@ func (h *ActorHost[Req, Resp]) Activate(ctx context.Context, partitionID string)
 }
 
 // Split은 partitionID Actor를 splitKey 기준으로 두 파티션으로 분리한다.
+// Actor가 비활성이면 먼저 활성화한다 (checkpoint + WAL replay).
 // 분리 완료 후 두 Actor 모두 활성 상태로 등록된다.
 func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error {
-	h.mu.Lock()
-	entry, ok := h.actors[partitionID]
-	h.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("partition %s is not active", partitionID)
-	}
-
-	select {
-	case <-entry.ready:
-	case <-ctx.Done():
-		return provider.ErrTimeout
+	entry, err := h.getOrActivate(ctx, partitionID)
+	if err != nil {
+		return err
 	}
 
 	// 1. Actor goroutine 내에서 split 실행

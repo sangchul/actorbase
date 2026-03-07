@@ -9,6 +9,7 @@ PS·PM이 사용한다. SDK는 etcd에 직접 접근하지 않는다.
 - `registry.go`   — NodeRegistry: etcd lease 기반 노드 등록/조회
 - `membership.go` — MembershipWatcher: 노드 join/leave 이벤트 감지
 - `routing.go`    — RoutingTableStore: 라우팅 테이블 저장/조회/watch
+- `pm.go`         — PM presence 등록/감지 (RegisterPM, WaitForPM)
 
 ---
 
@@ -17,12 +18,14 @@ PS·PM이 사용한다. SDK는 etcd에 직접 접근하지 않는다.
 ```
 /actorbase/nodes/{nodeID}   → NodeInfo JSON  (TTL lease)
 /actorbase/routing          → RoutingTable JSON (no TTL)
+/actorbase/pm/{addr}        → PM 주소 (TTL lease, PM presence 표시용)
 ```
 
 | 키 | 쓰는 주체 | 읽는 주체 |
 |---|---|---|
 | `/actorbase/nodes/{nodeID}` | PS (register/deregister) | PM (ListNodes, MembershipWatcher) |
 | `/actorbase/routing` | PM | PS (Watch) |
+| `/actorbase/pm/{addr}` | PM (RegisterPM) | PS (WaitForPM, 기동 전 확인) |
 
 ---
 
@@ -69,31 +72,21 @@ etcd ←── watch(1개) ── PM ── gRPC push ──→ PS (1,000대)
 ## registry.go
 
 ```go
-// NodeRegistry는 etcd lease를 활용한 노드 등록/조회를 담당한다.
-//
-// PS 시작 시 Register를 호출하여 자신을 클러스터에 등록한다.
-// 내부적으로 lease를 생성하고 ctx가 살아있는 동안 주기적으로 갱신(keepalive)한다.
-// lease가 만료되면 etcd가 해당 노드 키를 자동으로 삭제한다.
-type NodeRegistry struct {
-    client *clientv3.Client
-    ttl    time.Duration // lease TTL
+// NodeRegistry는 클러스터 노드 등록/해제/조회를 담당하는 인터페이스.
+type NodeRegistry interface {
+    // Register는 node를 etcd에 등록하고, ctx가 취소될 때까지 lease를 갱신한다.
+    // ctx 취소 시 keepalive를 중단하고 반환한다. (lease는 TTL 후 자동 만료)
+    // graceful shutdown 시에는 Deregister를 별도로 호출한다.
+    Register(ctx context.Context, node domain.NodeInfo) error
+
+    // Deregister는 nodeID의 lease를 즉시 revoke하여 클러스터에서 제거한다.
+    Deregister(ctx context.Context, nodeID string) error
+
+    // ListNodes는 현재 등록된 (살아있는) 모든 노드를 반환한다.
+    ListNodes(ctx context.Context) ([]domain.NodeInfo, error)
 }
 
-func NewNodeRegistry(client *clientv3.Client, ttl time.Duration) *NodeRegistry
-
-// Register는 node를 etcd에 등록하고, ctx가 취소될 때까지 lease를 갱신한다.
-// lease 갱신은 내부 goroutine에서 처리한다.
-// ctx 취소 시 keepalive를 중단하고 반환한다. (lease는 TTL 후 자동 만료)
-// graceful shutdown 시에는 Deregister를 별도로 호출한다.
-func (r *NodeRegistry) Register(ctx context.Context, node domain.NodeInfo) error
-
-// Deregister는 nodeID의 lease를 즉시 revoke하여 클러스터에서 제거한다.
-// graceful shutdown 시 TTL 만료를 기다리지 않고 즉시 제거하는 데 사용한다.
-func (r *NodeRegistry) Deregister(ctx context.Context, nodeID string) error
-
-// ListNodes는 현재 등록된 (살아있는) 모든 노드를 반환한다.
-// /actorbase/nodes/ 프리픽스를 가진 모든 키를 조회한다.
-func (r *NodeRegistry) ListNodes(ctx context.Context) ([]domain.NodeInfo, error)
+func NewNodeRegistry(client *clientv3.Client, ttl time.Duration) NodeRegistry
 ```
 
 ### PS 생명주기와 Register
@@ -126,19 +119,17 @@ type NodeEvent struct {
     Node domain.NodeInfo
 }
 
-// MembershipWatcher는 etcd watch를 통해 노드 join/leave 이벤트를 감지한다.
+// MembershipWatcher는 노드 join/leave 이벤트를 감지하는 인터페이스.
 // PM이 사용한다. 노드 장애 감지 및 파티션 재배치 트리거에 활용한다.
-type MembershipWatcher struct {
-    client *clientv3.Client
+type MembershipWatcher interface {
+    // Watch는 노드 join/leave 이벤트 채널을 반환한다.
+    // etcd watch가 끊겼다가 재연결되면 현재 전체 노드 목록을 다시 읽어
+    // 놓친 이벤트를 보정한다.
+    // ctx 취소 시 채널이 닫힌다.
+    Watch(ctx context.Context) <-chan NodeEvent
 }
 
-func NewMembershipWatcher(client *clientv3.Client) *MembershipWatcher
-
-// Watch는 노드 join/leave 이벤트 채널을 반환한다.
-// etcd watch가 끊겼다가 재연결되면 현재 전체 노드 목록을 다시 읽어
-// 놓친 이벤트를 보정한다.
-// ctx 취소 시 채널이 닫힌다.
-func (w *MembershipWatcher) Watch(ctx context.Context) <-chan NodeEvent
+func NewMembershipWatcher(client *clientv3.Client) MembershipWatcher
 ```
 
 ### Watch 재연결 보정
@@ -160,28 +151,24 @@ reconnect 시:
 ## routing.go
 
 ```go
-// RoutingTableStore는 etcd에서 라우팅 테이블을 저장/조회/감시한다.
-//
-// PM: 파티션 토폴로지 변경 시 Save 호출
-// PS: 시작 시 첫 이벤트 수신, 이후 Watch로 변경 감지
-type RoutingTableStore struct {
-    client *clientv3.Client
+// RoutingTableStore는 라우팅 테이블 저장/조회/감시를 담당하는 인터페이스.
+// PM: 파티션 토폴로지 변경 시 Save 호출.
+// PS: Watch로 변경 감지.
+type RoutingTableStore interface {
+    // Save는 라우팅 테이블을 저장소에 저장한다.
+    Save(ctx context.Context, rt *domain.RoutingTable) error
+
+    // Load는 현재 라우팅 테이블을 조회한다.
+    // 데이터가 없으면 (nil, nil)을 반환한다.
+    Load(ctx context.Context) (*domain.RoutingTable, error)
+
+    // Watch는 라우팅 테이블이 변경될 때마다 새 테이블을 전달하는 채널을 반환한다.
+    // Watch 시작 시 현재 테이블을 즉시 한 번 전달한다. (초기 상태 동기화)
+    // ctx 취소 시 채널이 닫힌다.
+    Watch(ctx context.Context) <-chan *domain.RoutingTable
 }
 
-func NewRoutingTableStore(client *clientv3.Client) *RoutingTableStore
-
-// Save는 라우팅 테이블을 etcd에 저장한다.
-// PM은 단일 인스턴스이므로 동시성 제어 없이 단순 Put을 사용한다.
-func (s *RoutingTableStore) Save(ctx context.Context, rt *domain.RoutingTable) error
-
-// Load는 etcd에서 현재 라우팅 테이블을 조회한다.
-// 키가 없으면 (nil, nil)을 반환한다. (빈 클러스터)
-func (s *RoutingTableStore) Load(ctx context.Context) (*domain.RoutingTable, error)
-
-// Watch는 라우팅 테이블이 변경될 때마다 새 테이블을 전달하는 채널을 반환한다.
-// Watch 시작 시 현재 테이블을 즉시 한 번 전달한다. (초기 상태 동기화)
-// ctx 취소 시 채널이 닫힌다.
-func (s *RoutingTableStore) Watch(ctx context.Context) <-chan *domain.RoutingTable
+func NewRoutingTableStore(client *clientv3.Client) RoutingTableStore
 ```
 
 ### etcd 직렬화 (내부 DTO)
@@ -222,9 +209,46 @@ type routeEntryDTO struct {
 
 ---
 
+## pm.go
+
+PS가 PM 없이 기동되는 것을 방지하기 위한 PM presence 관리 유틸리티.
+
+```go
+// RegisterPM은 PM을 etcd에 lease로 등록한다.
+// 등록 성공 후 즉시 반환하며, keepalive와 ctx 취소 시 revoke는 내부 goroutine에서 처리한다.
+// PM Start() 초반에 호출한다.
+func RegisterPM(ctx context.Context, client *clientv3.Client, pmAddr string) error
+
+// GetPMAddr는 etcd에서 PM 주소를 조회한다.
+// PS의 drainPartitions에서 PMClient 생성 시 사용한다.
+func GetPMAddr(ctx context.Context, client *clientv3.Client) (string, error)
+
+// WaitForPM은 etcd에 PM이 등록될 때까지 최대 10초 기다린다.
+// PM이 없으면 에러를 반환한다. PS Start() 초반에 호출한다.
+func WaitForPM(ctx context.Context, client *clientv3.Client) error
+```
+
+### 동작 방식
+
+```
+PM 기동 시:
+  RegisterPM → etcd /actorbase/pm/{addr} 키를 10초 TTL lease로 등록
+               keepalive goroutine이 ctx 취소까지 갱신
+               ctx 취소 시 goroutine이 lease revoke
+
+PS 기동 시:
+  WaitForPM → /actorbase/pm/ prefix로 Get
+              키가 있으면 즉시 반환 (PM 확인됨)
+              키가 없으면 watch로 최대 10초 대기
+              10초 내 PM이 등록되지 않으면 에러 반환 → PS 기동 실패
+```
+
+---
+
 ## 알려진 한계
 
 - **PS etcd watch 확장성**: 노드 1,000대 = etcd watch 1,000개. 현재 규모에서는 허용 가능하나, 규모가 커지면 PM이 PS에도 gRPC push하는 방식으로 전환이 필요하다.
 - **RoutingTable 크기**: 파티션 수가 매우 많아지면 etcd 단일 키의 JSON이 커진다. 현재 설계 목표 규모에서는 허용 가능할 것으로 예상하나, 구현 후 측정이 필요하다.
 - **PM HA 미지원**: RoutingTableStore.Save에 동시성 제어가 없으므로 PM 단일 인스턴스일 때만 안전하다. PM HA는 향후 과제.
 - **NodeLeft 이벤트 지연**: lease TTL 동안 장애 노드가 살아있는 것으로 간주된다. TTL 값은 구현 단계에서 결정한다.
+- **PM presence WaitForPM 타임아웃**: PS 기동 시 PM이 없으면 10초 대기 후 에러. PM이 기동 중인 경우 최대 10초 지연이 발생할 수 있다.

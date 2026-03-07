@@ -107,8 +107,8 @@ func main() {
 	nodeID := flag.String("node-id", "", "Unique node ID (default: hostname)")
 	addr := flag.String("addr", ":7001", "gRPC listen address")
 	etcdAddrs := flag.String("etcd", "localhost:2379", "etcd endpoints (comma-separated)")
-	dataDir := flag.String("data-dir", "/tmp/actorbase-ps", "WAL base directory (node-local)")
-	checkpointDir := flag.String("checkpoint-dir", "", "Checkpoint base directory (shared storage). Defaults to <data-dir>/checkpoint")
+	walDir := flag.String("wal-dir", "/tmp/actorbase-ps/wal", "WAL directory (node-local)")
+	checkpointDir := flag.String("checkpoint-dir", "/tmp/actorbase-ps/checkpoint", "Checkpoint directory (shared across PS nodes)")
 	flag.Parse()
 
 	if *nodeID == "" {
@@ -120,11 +120,7 @@ func main() {
 		*nodeID = hostname
 	}
 
-	if *checkpointDir == "" {
-		*checkpointDir = *dataDir + "/checkpoint"
-	}
-
-	walStore, err := fs.NewWALStore(*dataDir + "/wal")
+	walStore, err := fs.NewWALStore(*walDir)
 	if err != nil {
 		slog.Error("failed to create WAL store", "err", err)
 		os.Exit(1)
@@ -157,7 +153,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("starting PS", "node-id", *nodeID, "addr", *addr)
+	slog.Info("starting PS", "node-id", *nodeID, "addr", *addr, "wal-dir", *walDir, "checkpoint-dir", *checkpointDir)
 	if err := srv.Start(ctx); err != nil {
 		slog.Error("PS stopped with error", "err", err)
 		os.Exit(1)
