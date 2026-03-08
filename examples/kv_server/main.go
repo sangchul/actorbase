@@ -107,8 +107,8 @@ func main() {
 	nodeID := flag.String("node-id", "", "Unique node ID (default: hostname)")
 	addr := flag.String("addr", ":7001", "gRPC listen address")
 	etcdAddrs := flag.String("etcd", "localhost:2379", "etcd endpoints (comma-separated)")
-	walDir := flag.String("wal-dir", "/tmp/actorbase-ps/wal", "WAL directory (node-local)")
-	checkpointDir := flag.String("checkpoint-dir", "/tmp/actorbase-ps/checkpoint", "Checkpoint directory (shared across PS nodes)")
+	walDir := flag.String("wal-dir", "/tmp/actorbase/wal", "WAL directory (shared across PS nodes, partitioned by partition ID)")
+	checkpointDir := flag.String("checkpoint-dir", "/tmp/actorbase/checkpoint", "Checkpoint directory (shared across PS nodes)")
 	flag.Parse()
 
 	if *nodeID == "" {

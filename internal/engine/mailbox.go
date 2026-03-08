@@ -174,8 +174,9 @@ func (m *mailbox[Req, Resp]) close() {
 func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCtx) {
 	defer close(m.doneCh)
 
-	pendingWAL := 0         // WALFlusher에 제출했지만 아직 미확인 write 수
+	pendingWAL := 0          // WALFlusher에 제출했지만 아직 미확인 write 수
 	walsSinceCheckpoint := 0 // 마지막 checkpoint 이후 확인된 WAL entry 수
+	dirty := false           // WAL 없이 상태가 변경된 경우 (e.g. split). checkpoint skip 방지용.
 
 	draining := false         // true이면 inCh/splitCh 일시 중단 (checkpoint drain 대기)
 	var drainDone chan<- error // 현재 drain의 완료 채널. nil이면 자동 트리거.
@@ -183,6 +184,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 	doCheckpoint := func(lsn uint64) error {
 		err := m.checkpointFn(lsn)
 		walsSinceCheckpoint = 0
+		dirty = false
 		return err
 	}
 
@@ -227,8 +229,11 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 			m.lastMsg.Store(time.Now())
 
 		case req := <-splitCh:
-			upperHalf, err := safeSplit(actor, req.splitKey)
+			upperHalf, err := safeSplit(actor, actCtx, req.splitKey)
 			req.done <- splitResult{upperHalf: upperHalf, err: err}
+			if err == nil {
+				dirty = true // WAL 없이 actor 상태가 변경됨 → checkpoint skip 방지
+			}
 
 		case lsn := <-m.walConfirmedCh:
 			pendingWAL--
@@ -259,6 +264,11 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 			}
 
 		case req := <-m.checkpointCh:
+			if walsSinceCheckpoint == 0 && !dirty {
+				// 마지막 checkpoint 이후 변경 없음 → skip
+				req.done <- nil
+				continue
+			}
 			if pendingWAL == 0 {
 				req.done <- doCheckpoint(m.confirmedLSN.Load())
 			} else if draining {
@@ -276,6 +286,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 func safeReceive[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx, req Req) (resp Resp, walEntry []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			actCtx.logger.Error("actor panicked in Receive", "panic", r)
 			err = provider.ErrActorPanicked
 		}
 	}()
@@ -283,9 +294,10 @@ func safeReceive[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx
 }
 
 // safeSplit은 Actor.Split을 호출하고 panic을 ErrActorPanicked로 변환한다.
-func safeSplit[Req, Resp any](actor provider.Actor[Req, Resp], splitKey string) (upperHalf []byte, err error) {
+func safeSplit[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx, splitKey string) (upperHalf []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			actCtx.logger.Error("actor panicked in Split", "panic", r)
 			err = provider.ErrActorPanicked
 		}
 	}()

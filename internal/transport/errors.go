@@ -2,6 +2,7 @@ package transport
 
 import (
 	"errors"
+	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -55,7 +56,13 @@ func fromGRPCStatus(err error) error {
 	case codes.DeadlineExceeded:
 		return provider.ErrTimeout
 	case codes.Internal:
-		return provider.ErrActorPanicked
+		// ErrActorPanicked만 codes.Internal로 인코딩된다.
+		// 그 외 Internal은 서버 내부 오류로 메시지를 보존한다.
+		if errors.Is(provider.ErrActorPanicked, fmt.Errorf("%s", st.Message())) ||
+			st.Message() == provider.ErrActorPanicked.Error() {
+			return provider.ErrActorPanicked
+		}
+		return fmt.Errorf("internal server error: %s", st.Message())
 	default:
 		return err
 	}

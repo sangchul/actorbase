@@ -256,9 +256,12 @@ func (h *ActorHost[Req, Resp]) getOrActivate(ctx context.Context, partitionID st
 
 // doActivate는 Actor를 초기화하고 mailbox를 시작한다.
 func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID string, entry *actorEntry[Req, Resp]) error {
+	slog.Info("activating actor", "partition_id", partitionID)
+
 	// 1. Checkpoint 로드
 	raw, err := h.cfg.CheckpointStore.Load(ctx, partitionID)
 	if err != nil {
+		slog.Error("activate: load checkpoint failed", "partition_id", partitionID, "err", err)
 		return fmt.Errorf("load checkpoint: %w", err)
 	}
 
@@ -268,11 +271,13 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 		fromLSN = binary.BigEndian.Uint64(raw[:8])
 		snapshotData = raw[8:]
 	}
+	slog.Info("activate: checkpoint loaded", "partition_id", partitionID, "lsn", fromLSN, "snapshot_bytes", len(snapshotData))
 
 	// 2. Actor 생성 및 복원
 	actor := h.cfg.Factory(partitionID)
 	if len(snapshotData) > 0 {
 		if err := actor.Restore(snapshotData); err != nil {
+			slog.Error("activate: restore snapshot failed", "partition_id", partitionID, "err", err)
 			return fmt.Errorf("restore snapshot: %w", err)
 		}
 	}
@@ -281,10 +286,13 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 	// fromLSN=0 (checkpoint 없음)이어도 WAL에 entry가 있으면 replay해야 한다.
 	entries, err := h.cfg.WALStore.ReadFrom(ctx, partitionID, fromLSN+1)
 	if err != nil {
+		slog.Error("activate: read WAL failed", "partition_id", partitionID, "from_lsn", fromLSN+1, "err", err)
 		return fmt.Errorf("read WAL: %w", err)
 	}
+	slog.Info("activate: WAL replay", "partition_id", partitionID, "entries", len(entries))
 	for _, e := range entries {
 		if err := actor.Replay(e.Data); err != nil {
+			slog.Error("activate: WAL replay failed", "partition_id", partitionID, "lsn", e.LSN, "err", err)
 			return fmt.Errorf("replay WAL entry LSN=%d: %w", e.LSN, err)
 		}
 	}
@@ -324,6 +332,7 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 	entry.mailbox = mb
 
 	go mb.run(actor, actorCtx{partitionID: partitionID, logger: logger})
+	slog.Info("actor activated", "partition_id", partitionID, "wal_replayed", len(entries))
 	return nil
 }
 

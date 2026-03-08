@@ -1,0 +1,3 @@
+bin/
+default.etcd/
+/kv_longrun
