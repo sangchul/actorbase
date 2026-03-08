@@ -151,11 +151,10 @@ type Config[Req, Resp any] struct {
     Factory              provider.ActorFactory[Req, Resp]
     CheckpointStore      provider.CheckpointStore
     WALStore             provider.WALStore
-    MailboxSize          int           // mailbox 버퍼 크기. 기본값은 구현 시 결정.
-    FlushSize            int           // WAL 배치 최대 크기
-    FlushInterval        time.Duration // WAL 배치 최대 대기 시간
-    CheckpointInterval   time.Duration // 주기적 checkpoint 간격. CheckpointScheduler가 사용.
-    CheckpointWALThreshold int         // 이 수만큼 WAL entry가 쌓이면 자동 checkpoint.
+    MailboxSize          int           // mailbox 버퍼 크기. 기본값: 64
+    FlushSize            int           // WAL 배치 최대 크기. 기본값: 32
+    FlushInterval        time.Duration // WAL 배치 최대 대기 시간. 기본값: 10ms
+    CheckpointWALThreshold int         // 이 수만큼 WAL entry가 쌓이면 자동 checkpoint. 0이면 비활성.
     Metrics              provider.Metrics
 }
 
@@ -164,14 +163,14 @@ type ActorHost[Req, Resp any] struct {
     cfg     Config[Req, Resp]
     actors  map[string]*actorEntry[Req, Resp] // partitionID → actorEntry
     mu      sync.Mutex
-    flusher *WALFlusher
+    flusher *walFlusher
+    hostCtx context.Context
+    cancel  context.CancelFunc
 }
 
 type actorEntry[Req, Resp any] struct {
-    actor        provider.Actor[Req, Resp]
-    mailbox      *mailbox[Req, Resp]
-    lastMsg      atomic.Value  // time.Time; EvictionScheduler가 사용
-    confirmedLSN atomic.Uint64 // WALFlusher가 확인한 마지막 LSN; CheckpointScheduler가 참조
+    mailbox *mailbox[Req, Resp]
+    ready   chan struct{} // 활성화 완료 시 close. 동시 활성화 요청 조율용.
 }
 
 func NewActorHost[Req, Resp any](cfg Config[Req, Resp]) *ActorHost[Req, Resp]
@@ -228,20 +227,23 @@ Split(ctx, partitionID, splitKey, newPartitionID):
 ### 활성화 흐름 (getOrActivate, 비공개)
 
 동시에 동일 파티션 활성화 요청이 오면 하나만 실행하고 나머지는 대기한다.
+`actorEntry.ready` 채널을 이용해 "활성화 진행 중" 상태를 표시하고 완료 시 close한다.
 
 ```
 getOrActivate(partitionID):
-  actors 맵에 이미 있으면 → ready 채널 대기 후 반환 (no-op)
-  없으면 → placeholder 등록 후 doActivate:
+  actors 맵에 이미 있으면 → entry.ready 채널 대기 후 반환 (no-op)
+  없으면 → placeholder(ready 채널만 있는 entry) 등록 후 doActivate:
     1. CheckpointStore.Load(partitionID)
-         → (snapshotData, checkpointLSN) 언패킹
+         → raw[:8] = checkpointLSN (big-endian uint64)
+           raw[8:] = snapshotData
     2. actor = Factory(partitionID)
     3. actor.Restore(snapshotData)          // 스냅샷 복원 (없으면 skip)
     4. WALStore.ReadFrom(partitionID, checkpointLSN+1)
     5. for entry in walEntries:
            actor.Replay(entry.Data)         // WAL replay
-    6. mailbox 생성 및 goroutine 시작
-    7. ready 채널 close (대기 중인 goroutine 해제)
+    6. mailbox 생성 및 goroutine 시작       // actor는 mailbox 내부에서 관리
+    7. close(entry.ready)                   // 대기 중인 goroutine 해제
+  doActivate 실패 시: actors 맵에서 제거 후 ready close (대기자 에러 전달)
 ```
 
 > **CheckpointStore LSN 저장 방식:** engine이 `Snapshot()` 반환값 앞에 checkpoint LSN(8 bytes, big-endian)을 prepend하여 저장한다. 사용자는 이 구조를 알 필요 없다.
@@ -252,8 +254,9 @@ getOrActivate(partitionID):
 
 ```go
 // envelope은 Actor에 전달할 메시지 하나.
+// ctx는 envelope에 포함하지 않는다. send() 메서드에서 ctx를 직접 사용하며,
+// Actor goroutine 내부에서는 ctx를 참조할 필요가 없다.
 type envelope[Req, Resp any] struct {
-    ctx     context.Context
     req     Req
     replyCh chan<- result[Resp]
 }
@@ -288,9 +291,10 @@ type mailbox[Req, Resp any] struct {
 
 func newMailbox[Req, Resp any](
     inSize         int,
-    outCh          chan<- actorOutput[Resp],
-    checkpointFn   func(ctx context.Context, lsn uint64) error, // Snapshot+Save+Trim 수행
+    submitCh       chan<- walPending,     // WALFlusher.submitCh
+    checkpointFn   checkpointFn,         // Snapshot+Save+Trim 수행 클로저
     walThreshold   int,
+    onWALError     func(),               // WAL flush 실패 시 호출 (actor evict)
 ) *mailbox[Req, Resp]
 
 // send는 req를 inCh에 넣고 result를 기다린다.
@@ -307,7 +311,14 @@ func (m *mailbox[Req, Resp]) close()
 ### mailbox goroutine (run) 처리 흐름
 
 ```go
-func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], partitionID string) {
+// actorCtx는 mailbox goroutine에 전달되는 불변 컨텍스트.
+// Actor.Receive 호출 시 ctx 인자로 전달되며, 로깅에도 사용된다.
+type actorCtx struct {
+    partitionID string
+    logger      *slog.Logger
+}
+
+func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCtx) {
     pendingWAL := 0           // WALFlusher에 제출했지만 아직 확인 안 된 write 수
     confirmedLSN := uint64(0) // WALFlusher가 마지막으로 확인한 LSN
     walsSinceCheckpoint := 0  // 마지막 checkpoint 이후 확인된 WAL entry 수
@@ -326,7 +337,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], partitionID st
             if !ok {
                 return
             }
-            resp, walEntry, err := safeReceive(actor, env) // panic recover 포함
+            resp, walEntry, err := safeReceive(actor, actCtx, env.req) // panic recover 포함
 
             if walEntry == nil || err != nil {
                 env.replyCh <- result[Resp]{resp: resp, err: err}
@@ -383,7 +394,9 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], partitionID st
 }
 ```
 
-> `safeReceive`는 `Actor.Receive` 호출을 `recover`로 감싸 panic 발생 시 `provider.ErrActorPanicked`를 반환한다.
+> `safeReceive`는 `Actor.Receive` 호출을 `recover`로 감싸 panic 발생 시 panic 값을 로깅하고 `provider.ErrActorPanicked`를 반환한다.
+>
+> `safeSplit`도 동일하게 `Actor.Split` 호출에 `recover`를 적용한다. 두 함수 모두 `actorCtx`를 받아 파티션 ID와 함께 구조화된 로그를 남긴다.
 
 > `checkpointFn`은 `ActorHost`가 mailbox 생성 시 주입하는 클로저. `actor.Snapshot()` 호출, LSN prepend, `CheckpointStore.Save`, `WALStore.TrimBefore`를 순서대로 수행한다. mailbox goroutine 내에서 호출되므로 `actor.Snapshot()`이 thread-safe하게 실행된다.
 
@@ -510,7 +523,7 @@ interval마다:
 | checkpointFn 주입 | ActorHost가 클로저로 mailbox에 주입 | Snapshot은 mailbox goroutine 내에서 호출해야 thread-safe. 저장 로직은 ActorHost가 소유. |
 | actorOutput 타입 소거 | `reply func(lsn uint64, err error)` 클로저 사용 | WALFlusher를 제네릭으로 만들지 않아도 됨 |
 | panic 처리 | `safeReceive`에서 recover → ErrActorPanicked | Actor 오류가 전체 PS를 다운시키지 않음 |
-| WAL flush 실패 시 | 해당 batch의 reply(0, err) 호출 후 Actor evict | 이미 변경된 메모리 상태와 WAL 불일치 방지 |
+| WAL flush 실패 시 | `onWALError` 콜백으로 actors 맵에서 제거 (checkpoint 없이 evict) | 이미 변경된 메모리 상태와 WAL 불일치 방지 |
 
 ---
 

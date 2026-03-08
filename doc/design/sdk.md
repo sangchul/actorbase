@@ -70,13 +70,16 @@ Start(ctx):
        case rt := <-ch: routing.Store(rt)
        case <-ctx.Done(): return ctx.Err()
        }
-  3. go c.consumeRouting(ctx, ch)  // 이후 업데이트를 백그라운드에서 처리
-  4. <-ctx.Done()
-  5. connPool.Close()
-  6. return nil
+  3. go func() {
+         c.consumeRouting(ctx, ch)  // 이후 업데이트를 백그라운드에서 처리
+         c.connPool.Close()         // ctx 취소 → 스트림 종료 → 커넥션 정리
+     }()
+  4. return nil  // 첫 RT 수신 즉시 반환. 이후 Send 바로 사용 가능.
 ```
 
-> 2번에서 첫 라우팅 테이블을 받기 전까지 Start가 블로킹된다. Start가 반환되면 Send를 즉시 호출해도 라우팅 테이블이 항상 준비된 상태임을 보장한다. PM이 연결 즉시 현재 테이블을 push하므로(transport.md 참조) 대기 시간은 RTT 수준이다.
+> Start는 첫 라우팅 테이블 수신 후 즉시 반환한다. ctx 취소 시 cleanup(connPool.Close)은 내부 goroutine에서 처리된다.
+>
+> 이전 설계(ctx.Done() 블로킹)에서 race condition이 발견되어 수정됨: goroutine으로 Start를 실행하면 첫 RT 저장 전에 Send가 호출될 수 있는 문제가 있었다. 현재 구현에서는 Start 반환 후 Send를 goroutine 없이 바로 호출할 수 있다.
 
 ### consumeRouting (내부)
 

@@ -20,17 +20,15 @@ ps 설계 과정에서 `internal/engine` 패키지의 `ActorHost`에 두 개의 
 
 ```go
 // Split은 partitionID Actor를 splitKey 기준으로 두 파티션으로 분리한다.
-// 내부적으로 Actor.Split(splitKey)를 호출하여 상태를 분리한다.
+// Actor가 비활성이면 먼저 getOrActivate로 활성화한다.
 // 분리 완료 후 두 Actor(원본 하위 절반 + 신규 상위 절반) 모두 ActorHost에 활성 상태로 등록된다.
 //
 // 실행 순서:
-//   1. 원본 Actor의 mailbox에 split 신호를 보내고 처리 대기
-//   2. Actor.Split(splitKey) → upperHalf
-//   3. 하위 파티션 checkpoint 저장 (원본 Actor의 변경된 상태)
-//   4. Factory(newPartitionID)로 신규 Actor 생성
-//   5. newActor.Restore(upperHalf)
-//   6. 상위 파티션 checkpoint 저장
-//   7. 신규 Actor mailbox 생성 후 actors 맵에 등록
+//   1. getOrActivate(partitionID)      // 비활성 시 checkpoint + WAL replay 후 활성화
+//   2. mailbox.split(splitKey)         // Actor goroutine 내에서 Actor.Split 호출 → upperHalf
+//   3. mailbox.checkpoint()            // 하위 파티션 checkpoint 저장
+//   4. saveRawCheckpoint(newPartitionID, lsn=0, upperHalf)  // 상위 파티션 checkpoint 저장
+//   5. Activate(newPartitionID)        // CheckpointStore에서 로드하여 활성화
 func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error
 
 // Activate는 partitionID Actor를 명시적으로 활성화한다.
@@ -306,7 +304,7 @@ PreparePartition(req):
 |---|---|---|
 | 라우팅 테이블 보관 방식 | `atomic.Pointer[domain.RoutingTable]` | 매 요청마다 호출되는 핫패스에서 잠금 없이 읽기 가능 |
 | 초기 라우팅 수신 대기 | gRPC Serve 전에 첫 Watch 이벤트 대기 | 라우팅 없이 요청 수락 시 모든 요청이 ErrPartitionNotOwned |
-| graceful shutdown 순서 | GracefulStop → EvictAll → Deregister | RPC 완료 후 checkpoint 저장, 그 다음 etcd에서 제거. 역순이면 장애 노드로 오인 가능. |
+| graceful shutdown 순서 | drainPartitions → GracefulStop → EvictAll → Deregister | drain 선행으로 정상 파티션 이전. RPC 완료 후 safety checkpoint, 마지막에 etcd 제거. |
 | 파티션 소유 검증 위치 | partitionHandler (gRPC 핸들러) | engine(ActorHost)은 소유 개념 없이 partitionID를 키로만 관리. 라우팅 검증은 PS 레이어 책임. |
 | Split/Activate 위치 | engine.ActorHost 메서드로 추가 | Actor 생명주기 조작(상태 분리, checkpoint)은 engine 책임. PS는 단순 위임. |
 | shutdown 타임아웃 | EvictAll에 별도 context 사용 | 기동 ctx가 취소됐으므로 deadline 없는 context를 재사용할 수 없음 |
