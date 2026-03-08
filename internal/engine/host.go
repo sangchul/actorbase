@@ -290,8 +290,15 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 		return fmt.Errorf("read WAL: %w", err)
 	}
 	slog.Info("activate: WAL replay", "partition_id", partitionID, "entries", len(entries))
-	for _, e := range entries {
+	for i, e := range entries {
 		if err := actor.Replay(e.Data); err != nil {
+			// 마지막 엔트리가 실패하면 crash 중 부분 기록된 partial write로 간주하고 스킵.
+			// 중간 엔트리 실패는 실제 손상이므로 에러 반환.
+			if i == len(entries)-1 {
+				slog.Warn("activate: last WAL entry may be truncated (partial write?), skipping",
+					"partition_id", partitionID, "lsn", e.LSN, "err", err)
+				break
+			}
 			slog.Error("activate: WAL replay failed", "partition_id", partitionID, "lsn", e.LSN, "err", err)
 			return fmt.Errorf("replay WAL entry LSN=%d: %w", e.LSN, err)
 		}

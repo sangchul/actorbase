@@ -83,6 +83,7 @@ service PartitionService {
 message SendRequest {
   string partition_id = 1;
   bytes  payload      = 2; // Codec.Marshal(req)
+  string actor_type   = 3; // PS가 올바른 dispatcher로 라우팅하는 데 사용
 }
 
 message SendResponse {
@@ -116,6 +117,7 @@ message WatchRoutingRequest {
 message SplitRequest {
   string partition_id = 1;
   string split_key    = 2; // 새 파티션의 시작 키
+  string actor_type   = 3; // PM이 라우팅 테이블에서 검증에 사용
 }
 
 message SplitResponse {
@@ -125,6 +127,7 @@ message SplitResponse {
 message MigrateRequest {
   string partition_id   = 1;
   string target_node_id = 2;
+  string actor_type     = 3; // PM이 라우팅 테이블에서 검증에 사용
 }
 
 message MigrateResponse {}
@@ -160,6 +163,7 @@ message ExecuteSplitRequest {
   string partition_id     = 1;
   string split_key        = 2;
   string new_partition_id = 3; // PM이 미리 할당한 새 파티션 ID
+  string actor_type       = 4; // PS가 올바른 dispatcher로 라우팅하는 데 사용
 }
 
 message ExecuteSplitResponse {}
@@ -168,6 +172,7 @@ message ExecuteMigrateOutRequest {
   string partition_id    = 1;
   string target_node_id  = 2;
   string target_address  = 3; // gRPC 접속 주소. PS가 직접 연결할 수 있도록 전달.
+  string actor_type      = 4; // PS가 올바른 dispatcher로 라우팅하는 데 사용
 }
 
 message ExecuteMigrateOutResponse {}
@@ -176,6 +181,7 @@ message PreparePartitionRequest {
   string partition_id    = 1;
   string key_range_start = 2; // target PS가 올바른 파티션인지 검증용
   string key_range_end   = 3;
+  string actor_type      = 4; // PS가 올바른 dispatcher로 라우팅하는 데 사용
 }
 
 message PreparePartitionResponse {}
@@ -196,6 +202,7 @@ message RouteEntryProto {
   string     node_id         = 4;
   string     node_address    = 5;
   NodeStatus node_status     = 6;
+  string     actor_type      = 7; // Partition.ActorType
 }
 
 enum NodeStatus {
@@ -261,8 +268,8 @@ grpcSrv := transport.NewGRPCServer(transport.ServerConfig{
     ListenAddr: cfg.ListenAddr,
     Metrics:    cfg.Metrics,
 })
-pb.RegisterPartitionServiceServer(grpcSrv, &partitionHandler{host: actorHost})
-pb.RegisterPartitionControlServiceServer(grpcSrv, &controlHandler{host: actorHost})
+pb.RegisterPartitionServiceServer(grpcSrv, &partitionHandler{dispatchers: dispatchers})
+pb.RegisterPartitionControlServiceServer(grpcSrv, &controlHandler{dispatchers: dispatchers})
 ```
 
 ---
@@ -306,7 +313,7 @@ func NewPSClient(conn *grpc.ClientConn, codec provider.Codec) *PSClient
 // Send는 partitionID의 Actor에게 req를 전달하고 Resp를 반환한다.
 // payload 직렬화/역직렬화는 Codec이 담당한다.
 // gRPC status error는 provider error로 변환하여 반환한다.
-func (c *PSClient) Send(ctx context.Context, partitionID string, req any, respPtr any) error
+func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req any, respPtr any) error
 ```
 
 ### PMClient (SDK/abctl → PM, management plane)
@@ -328,8 +335,8 @@ func NewPMClient(conn *grpc.ClientConn) *PMClient
 // ctx 취소 시 채널이 닫힌다.
 func (c *PMClient) WatchRouting(ctx context.Context, clientID string) <-chan *domain.RoutingTable
 
-func (c *PMClient) RequestSplit(ctx context.Context, partitionID, splitKey string) (newPartitionID string, err error)
-func (c *PMClient) RequestMigrate(ctx context.Context, partitionID, targetNodeID string) error
+func (c *PMClient) RequestSplit(ctx context.Context, actorType, partitionID, splitKey string) (newPartitionID string, err error)
+func (c *PMClient) RequestMigrate(ctx context.Context, actorType, partitionID, targetNodeID string) error
 
 // MemberInfo는 PS 노드 정보를 담는다.
 type MemberInfo struct {
@@ -353,9 +360,9 @@ type PSControlClient struct {
 
 func NewPSControlClient(conn *grpc.ClientConn) *PSControlClient
 
-func (c *PSControlClient) ExecuteSplit(ctx context.Context, partitionID, splitKey, newPartitionID string) error
-func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, partitionID, targetNodeID, targetAddr string) error
-func (c *PSControlClient) PreparePartition(ctx context.Context, partitionID, keyRangeStart, keyRangeEnd string) error
+func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, newPartitionID string) error
+func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string) error
+func (c *PSControlClient) PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string) error
 ```
 
 ---

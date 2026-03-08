@@ -19,6 +19,7 @@ type Config[Req, Resp any] struct {
     // ─── 필수 (사용자 제공) ───────────────────────────────────────
 
     PMAddr string         // PM gRPC 주소 ("host:port")
+    TypeID string         // 이 Client가 대상으로 하는 actor type 식별자 (예: "kv", "bucket")
     Codec  provider.Codec // PS와 동일한 구현체를 주입해야 한다
 
     // ─── 선택 (기본값 있음) ───────────────────────────────────────
@@ -97,12 +98,12 @@ func (c *Client[Req, Resp]) consumeRouting(ctx context.Context, ch <-chan *domai
 Send(ctx, key, req):
   for attempt := 0; attempt <= MaxRetries; attempt++:
     1. rt = c.routing.Load()
-    2. entry, ok = rt.Lookup(key)
+    2. entry, ok = rt.Lookup(TypeID, key)
        └ ok == false → ErrPartitionNotOwned 즉시 반환
                         (키를 커버하는 파티션 없음 = 클러스터 설계 오류)
     3. conn = connPool.Get(entry.Node.Address)
     4. psClient = transport.NewPSClient(conn, codec)
-    5. resp, err = psClient.Send(ctx, entry.Partition.ID, req)
+    5. resp, err = psClient.Send(ctx, TypeID, entry.Partition.ID, req)
     6. err == nil → return resp, nil
     7. switch err:
        ┌ ErrNotFound      → 즉시 반환 (재시도 불가. Actor가 키 없다고 응답.)
@@ -124,6 +125,7 @@ Send(ctx, key, req):
 
 | 항목 | 결정 | 근거 |
 |---|---|---|
+| TypeID 필드 | `Config.TypeID string` | 하나의 Client 인스턴스는 단일 actor type만 대상. `rt.Lookup(TypeID, key)` 호출 시 사용. |
 | 라우팅 테이블 보관 방식 | `atomic.Pointer[domain.RoutingTable]` | 매 Send마다 호출되는 핫패스에서 잠금 없이 읽기 가능 |
 | Start 블로킹 | 첫 라우팅 수신까지 대기 | Send 호출 시 라우팅이 반드시 준비되어 있음을 보장. nil 체크 불필요. |
 | 재시도 대기 방식 | sleep(RetryInterval) | consumeRouting이 백그라운드에서 routing을 갱신. 복잡한 버전 동기화 불필요. |

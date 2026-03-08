@@ -104,6 +104,7 @@ go build -o bin/kv_server ./examples/kv_server
 go build -o bin/kv_client ./examples/kv_client
 go build -o bin/pm        ./cmd/pm
 go build -o bin/abctl     ./cmd/abctl
+go build -o bin/kv_stress ./examples/kv_stress
 ```
 
 ### 환경 변수 (공통)
@@ -149,13 +150,16 @@ etcd
 **터미널 2: PM 기동**
 
 ```bash
-./bin/pm -addr :8000 -etcd $ETCD_ADDR
+./bin/pm -addr :8000 -etcd $ETCD_ADDR -actor-types kv
 ```
+
+`-actor-types`는 bootstrap 시 생성할 actor type 목록이다 (쉼표 구분).
+복수 타입 예시: `-actor-types bucket,object`
 
 예상 로그:
 
 ```
-starting PM addr=:8000
+starting PM addr=:8000 actor_types=kv
 ```
 
 **터미널 3: PS-1 기동**
@@ -178,7 +182,7 @@ starting PS node-id=ps-1 addr=localhost:8001
 PM 로그에서 bootstrap 완료 메시지 확인:
 
 ```
-pm bootstrap: initial routing table created partitionID=<uuid> node=ps-1
+pm bootstrap: initial routing table created actor_types=[kv] node=ps-1
 ```
 
 **터미널 4: 멤버 확인**
@@ -206,17 +210,17 @@ ps-1                                  localhost:8001        active
 ```
 Version: 1
 
-PARTITION-ID                          KEY-START         KEY-END           NODE-ID                               NODE-ADDR
-------------------------------------  ----------------  ----------------  ------------------------------------  -----------
-<uuid>                                (start)           (end)             ps-1                                  localhost:8001
+PARTITION-ID                          ACTOR-TYPE    KEY-START         KEY-END           NODE-ID                               NODE-ADDR
+------------------------------------  ------------  ----------------  ----------------  ------------------------------------  -----------
+<uuid>                                kv            (start)           (end)             ps-1                                  localhost:8001
 ```
 
 ### 검증 포인트
 
 - [ ] PM 기동 시 라우팅 테이블 없음 (`currentRT == nil`) 상태에서 bootstrap 고루틴이 시작된다.
-- [ ] PS-1 등록 후 PM이 `NodeJoined` 이벤트를 수신하고 초기 테이블을 생성한다.
+- [ ] PS-1 등록 후 PM이 `NodeJoined` 이벤트를 수신하고 `kv` actor type의 초기 파티션을 생성한다.
 - [ ] `abctl members`로 ps-1이 active 상태로 등록된 것을 확인한다.
-- [ ] `abctl routing`으로 Version 1, 전체 범위 `["", "")` 파티션을 확인한다.
+- [ ] `abctl routing`으로 Version 1, actor_type=kv, 전체 범위 `["", "")` 파티션을 확인한다.
 
 ---
 
@@ -297,7 +301,8 @@ not found (expected)
 PARTITION_ID="<위에서 확인한 파티션 ID>"
 
 # "m" 기준으로 split: [""..m) 과 [m.."") 두 파티션 생성
-./bin/abctl -pm $PM_ADDR split $PARTITION_ID m
+# actor-type을 명시해야 한다 (안전 검증용 — PM이 라우팅 테이블의 실제 값과 비교)
+./bin/abctl -pm $PM_ADDR split kv $PARTITION_ID m
 ```
 
 예상 출력:
@@ -318,10 +323,10 @@ new partition ID: <new-uuid>
 ```
 Version: 2
 
-PARTITION-ID                          KEY-START         KEY-END           NODE-ID     NODE-ADDR
-------------------------------------  ----------------  ----------------  ----------  ----------------
-<original-uuid>                       (start)           m                 ps-1        localhost:8001
-<new-uuid>                            m                 (end)             ps-1        localhost:8001
+PARTITION-ID                          ACTOR-TYPE    KEY-START         KEY-END           NODE-ID     NODE-ADDR
+------------------------------------  ------------  ----------------  ----------------  ----------  ----------------
+<original-uuid>                       kv            (start)           m                 ps-1        localhost:8001
+<new-uuid>                            kv            m                 (end)             ps-1        localhost:8001
 ```
 
 ### 검증 포인트
@@ -376,7 +381,8 @@ ps-2                                  localhost:8002        active
 ./bin/abctl -pm $PM_ADDR routing
 NEW_PARTITION_ID="<split에서 생성된 상위 파티션 ID>"
 
-./bin/abctl -pm $PM_ADDR migrate $NEW_PARTITION_ID ps-2
+# actor-type을 명시해야 한다 (안전 검증용)
+./bin/abctl -pm $PM_ADDR migrate kv $NEW_PARTITION_ID ps-2
 ```
 
 예상 출력:
@@ -396,10 +402,10 @@ migrate successful
 ```
 Version: 3
 
-PARTITION-ID                          KEY-START         KEY-END           NODE-ID     NODE-ADDR
-------------------------------------  ----------------  ----------------  ----------  ----------------
-<original-uuid>                       (start)           m                 ps-1        localhost:8001
-<new-uuid>                            m                 (end)             ps-2        localhost:8002
+PARTITION-ID                          ACTOR-TYPE    KEY-START         KEY-END           NODE-ID     NODE-ADDR
+------------------------------------  ------------  ----------------  ----------------  ----------  ----------------
+<original-uuid>                       kv            (start)           m                 ps-1        localhost:8001
+<new-uuid>                            kv            m                 (end)             ps-2        localhost:8002
 ```
 
 ### 검증 포인트
@@ -511,10 +517,10 @@ pm: failover complete partition=<uuid> from=ps-1 to=ps-2
 ```
 Version: 4
 
-PARTITION-ID                          KEY-START         KEY-END           NODE-ID     NODE-ADDR
-------------------------------------  ----------------  ----------------  ----------  ----------------
-<original-uuid>                       (start)           m                 ps-2        localhost:8002
-<new-uuid>                            m                 (end)             ps-2        localhost:8002
+PARTITION-ID                          ACTOR-TYPE    KEY-START         KEY-END           NODE-ID     NODE-ADDR
+------------------------------------  ------------  ----------------  ----------------  ----------  ----------------
+<original-uuid>                       kv            (start)           m                 ps-2        localhost:8002
+<new-uuid>                            kv            m                 (end)             ps-2        localhost:8002
 ```
 
 **Failover 후 WAL replay 검증**
@@ -600,10 +606,10 @@ ps-2                                  localhost:8002        active
 ```
 Version: 4
 
-PARTITION-ID                          KEY-START         KEY-END           NODE-ID     NODE-ADDR
-------------------------------------  ----------------  ----------------  ----------  ----------------
-<original-uuid>                       (start)           m                 ps-2        localhost:8002
-<new-uuid>                            m                 (end)             ps-2        localhost:8002
+PARTITION-ID                          ACTOR-TYPE    KEY-START         KEY-END           NODE-ID     NODE-ADDR
+------------------------------------  ------------  ----------------  ----------------  ----------  ----------------
+<original-uuid>                       kv            (start)           m                 ps-2        localhost:8002
+<new-uuid>                            kv            m                 (end)             ps-2        localhost:8002
 ```
 
 **데이터 정합성 확인**
@@ -659,7 +665,7 @@ kv_stress는 60초 동안 100ms 간격으로 set 요청을 반복하며 success/
 
 ```bash
 PARTITION_ID="<현재 파티션 ID>"
-./bin/abctl -pm $PM_ADDR split $PARTITION_ID k
+./bin/abctl -pm $PM_ADDR split kv $PARTITION_ID k
 ```
 
 ### 예상 동작

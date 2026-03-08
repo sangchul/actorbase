@@ -128,10 +128,10 @@ func cmdRouting(cfg *Config) {
 	}
 
 	fmt.Printf("Version: %d\n\n", rt.Version())
-	fmt.Printf("%-36s  %-16s  %-16s  %-36s  %s\n",
-		"PARTITION-ID", "KEY-START", "KEY-END", "NODE-ID", "NODE-ADDR")
-	fmt.Printf("%-36s  %-16s  %-16s  %-36s  %s\n",
-		"------------------------------------", "----------------", "----------------",
+	fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
+		"PARTITION-ID", "ACTOR-TYPE", "KEY-START", "KEY-END", "NODE-ID", "NODE-ADDR")
+	fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
+		"------------------------------------", "------------", "----------------", "----------------",
 		"------------------------------------", "-----------")
 	for _, e := range rt.Entries() {
 		start := e.Partition.KeyRange.Start
@@ -142,8 +142,8 @@ func cmdRouting(cfg *Config) {
 		if end == "" {
 			end = "(end)"
 		}
-		fmt.Printf("%-36s  %-16s  %-16s  %-36s  %s\n",
-			e.Partition.ID, start, end, e.Node.ID, e.Node.Address)
+		fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
+			e.Partition.ID, e.Partition.ActorType, start, end, e.Node.ID, e.Node.Address)
 	}
 }
 

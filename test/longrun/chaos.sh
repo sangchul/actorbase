@@ -38,10 +38,11 @@ log() {
 }
 
 # 라우팅 테이블 파싱: 한 줄에 id\tstart\tend\tnode (탭 구분)
-# 출력 형식: PARTITION-ID  KEY-START  KEY-END  NODE-ID  NODE-ADDR (공백 구분)
+# 출력 형식: PARTITION-ID  ACTOR-TYPE  KEY-START  KEY-END  NODE-ID  NODE-ADDR
+# $1=PARTITION-ID  $2=ACTOR-TYPE  $3=KEY-START  $4=KEY-END  $5=NODE-ID
 get_routing_entries() {
   "$ABCTL" -pm "$PM_ADDR" routing 2>/dev/null \
-    | awk 'NR>4 && $1!="" && $1!~"^-" {print $1"\t"$2"\t"$3"\t"$4}'
+    | awk 'NR>4 && $1!="" && $1!~"^-" {print $1"\t"$3"\t"$4"\t"$5}'
 }
 
 # "key:NNNNNNNN" → 정수, "(start)" → -1, "(end)" → 10000

@@ -24,9 +24,14 @@ type Config struct {
     ListenAddr    string   // gRPC 수신 주소 ("host:port")
     EtcdEndpoints []string // etcd 엔드포인트 목록
 
+    // ActorTypes는 bootstrap 시 생성할 actor type 목록.
+    // 첫 번째 PS가 등록될 때 각 actor type마다 전체 키 범위를 담당하는 초기 파티션을 생성한다.
+    // 최소 1개 이상 지정해야 한다.
+    ActorTypes []string
+
     // ─── 선택 (기본값 있음) ───────────────────────────────────────
 
-    Metrics provider.Metrics      // nil이면 no-op 구현체 사용
+    Metrics provider.Metrics       // nil이면 no-op 구현체 사용
     Policy  policy.RebalancePolicy // nil이면 ManualPolicy 사용
 }
 ```
@@ -200,7 +205,7 @@ failoverNode(deadNode):
 
 ```go
 // bootstrap은 첫 번째 PS가 등록될 때까지 기다린 후 초기 라우팅 테이블을 생성한다.
-// 초기 파티션: 전체 키 범위 ["", "") → 첫 번째 PS
+// 초기 파티션: cfg.ActorTypes 각 타입마다 전체 키 범위 ["", "") → 첫 번째 PS
 // etcd CAS(Compare-And-Swap)로 중복 생성을 방어한다.
 func (s *Server) bootstrap(ctx context.Context)
 ```
@@ -270,7 +275,7 @@ WatchRouting(req, stream):
 RequestSplit(req):
   1. server.opMu.Lock()
   2. defer server.opMu.Unlock()
-  3. newPartitionID, err = server.splitter.Split(ctx, req.PartitionID, req.SplitKey)
+  3. newPartitionID, err = server.splitter.Split(ctx, req.ActorType, req.PartitionID, req.SplitKey)
      └ Splitter 내부에서 ExecuteSplit RPC → routing table 갱신까지 수행
   4. return &SplitResponse{NewPartitionID: newPartitionID}
 ```
@@ -281,7 +286,7 @@ RequestSplit(req):
 RequestMigrate(req):
   1. server.opMu.Lock()
   2. defer server.opMu.Unlock()
-  3. err = server.migrator.Migrate(ctx, req.PartitionID, req.TargetNodeID)
+  3. err = server.migrator.Migrate(ctx, req.ActorType, req.PartitionID, req.TargetNodeID)
      └ Migrator 내부에서 Draining 표시 → ExecuteMigrateOut → PreparePartition → routing 갱신까지 수행
   4. return &MigrateResponse{}
 ```
@@ -375,6 +380,7 @@ func (p *AutoRebalancePolicy) Start(ctx context.Context)
 | 라우팅 테이블 broadcast 방식 | `atomic.Pointer` (최신값) + `chan struct{}` (신호) | 빠른 연속 변경 시 중간 값 skip. SDK는 최신 라우팅만 필요. |
 | split/migrate 직렬화 | `opMu sync.Mutex` | 단순하고 안전. PM 단일 인스턴스 환경에서 충분. |
 | RebalancePolicy 인터페이스 | `OnNodeJoined / OnNodeLeft` | Policy를 교체 가능하게 분리. 초기엔 ManualPolicy로 시작. |
+| ActorTypes 필드 | `Config.ActorTypes []string` | bootstrap 시 각 actor type마다 초기 파티션 생성. 다중 actor type 클러스터 지원. |
 | 초기 라우팅 테이블 생성 | PM bootstrap 시 첫 PS 등록 후 etcd CAS로 생성 | PM이 클러스터 상태를 초기화하는 단일 권한. 중복 생성 방어. |
 | AutoRebalancePolicy opMu 공유 | Server.opMu 포인터 전달 | Policy 내부에서도 split/migrate를 직렬화해야 하므로 동일 mutex 공유. |
 | NodeLeft 장애 복구 위치 | PM 서버 레벨 `failoverNode` (Policy 무관) | ManualPolicy 사용자도 자동 failover 혜택. Policy는 proactive rebalance만 담당. |
