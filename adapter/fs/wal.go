@@ -36,26 +36,36 @@ func NewWALStore(baseDir string) (*WALStore, error) {
 	return &WALStore{baseDir: baseDir}, nil
 }
 
-// Append는 파티션의 WAL에 엔트리를 추가하고 부여된 LSN을 반환한다.
-func (s *WALStore) Append(_ context.Context, partitionID string, data []byte) (uint64, error) {
+// AppendBatch는 파티션의 WAL에 여러 엔트리를 추가하고 각 LSN을 반환한다.
+// 하나의 락 획득으로 연속된 LSN을 할당하고 파일을 기록한다.
+func (s *WALStore) AppendBatch(_ context.Context, partitionID string, data [][]byte) ([]uint64, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	dir := filepath.Join(s.baseDir, partitionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return 0, fmt.Errorf("fs.WALStore: create partition dir: %w", err)
+		return nil, fmt.Errorf("fs.WALStore: create partition dir: %w", err)
 	}
 
-	lsn, err := s.nextLSN(dir)
+	startLSN, err := s.nextLSN(dir)
 	if err != nil {
-		return 0, fmt.Errorf("fs.WALStore: resolve next LSN: %w", err)
+		return nil, fmt.Errorf("fs.WALStore: resolve next LSN: %w", err)
 	}
 
-	path := filepath.Join(dir, lsnToName(lsn))
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return 0, fmt.Errorf("fs.WALStore: write entry: %w", err)
+	lsns := make([]uint64, len(data))
+	for i, d := range data {
+		lsn := startLSN + uint64(i)
+		path := filepath.Join(dir, lsnToName(lsn))
+		if err := os.WriteFile(path, d, 0o644); err != nil {
+			return nil, fmt.Errorf("fs.WALStore: write entry LSN=%d: %w", lsn, err)
+		}
+		lsns[i] = lsn
 	}
-	return lsn, nil
+	return lsns, nil
 }
 
 // ReadFrom은 fromLSN 이상의 모든 WAL 엔트리를 순서대로 반환한다.

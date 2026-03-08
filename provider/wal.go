@@ -12,8 +12,11 @@ type WALEntry struct {
 // append-only이며 LSN 기반으로 순차 조회한다.
 // 사용자가 직접 구현한다. (Redis Stream, Kafka 등)
 type WALStore interface {
-	// Append는 파티션의 WAL에 엔트리를 추가하고 부여된 LSN을 반환한다.
-	Append(ctx context.Context, partitionID string, data []byte) (lsn uint64, err error)
+	// AppendBatch는 파티션의 WAL에 여러 엔트리를 원자적으로 추가하고
+	// 각 엔트리에 부여된 LSN을 순서대로 반환한다.
+	// 반환 슬라이스의 길이는 data 슬라이스의 길이와 같다.
+	// 일부만 성공하는 부분 실패는 허용하지 않는다 — 에러 시 전체 실패.
+	AppendBatch(ctx context.Context, partitionID string, data [][]byte) (lsns []uint64, err error)
 
 	// ReadFrom은 fromLSN 이상의 모든 WAL 엔트리를 순서대로 반환한다.
 	// 복구 시 checkpoint LSN 이후부터 replay하는 데 사용한다.

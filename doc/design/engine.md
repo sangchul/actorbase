@@ -31,7 +31,7 @@ Receive(req) →
         │  (배치 누적: flushSize 또는 flushInterval 기준)
         │
         ▼
-  WALStore.Append() (배치)
+  WALStore.AppendBatch() (partitionID별 그룹화)
         │
   성공 → 각 reply(lsn, nil)  →  caller에게 응답
   실패 → 각 reply(0, err)
@@ -119,7 +119,7 @@ Split(partitionID, splitKey, newPartitionID):
 
 **mailbox**: Actor당 하나. 단일 goroutine이 inCh에서 순차적으로 메시지를 처리하여 단일 스레드 실행을 보장한다. checkpoint 요청 수신 시 inCh를 일시 중단하고 pendingWAL == 0 후 Snapshot을 찍는다.
 
-**WALFlusher**: 공유 goroutine 하나. submitCh로 각 mailbox의 WAL entry를 수신·배치 누적 후 WALStore.Append 호출. 결과를 `reply func(lsn uint64, err error)` 클로저로 각 mailbox에 피드백한다. 클로저 사용으로 WALFlusher 자체는 제네릭이 불필요하다.
+**WALFlusher**: 공유 goroutine 하나. submitCh로 각 mailbox의 WAL entry를 수신·배치 누적 후, partitionID별로 그룹화하여 WALStore.AppendBatch를 파티션당 1회 호출한다. 결과를 `reply func(lsn uint64, err error)` 클로저로 각 mailbox에 피드백한다. 클로저 사용으로 WALFlusher 자체는 제네릭이 불필요하다.
 
 **EvictionScheduler**: 주기적으로 IdleActors를 조회하여 Evict 호출.
 

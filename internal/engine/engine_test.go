@@ -110,13 +110,17 @@ func newMemWALStore() *memWALStore {
 	}
 }
 
-func (s *memWALStore) Append(_ context.Context, partitionID string, data []byte) (uint64, error) {
+func (s *memWALStore) AppendBatch(_ context.Context, partitionID string, data [][]byte) ([]uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.nextLSN[partitionID]++
-	lsn := s.nextLSN[partitionID]
-	s.entries[partitionID] = append(s.entries[partitionID], provider.WALEntry{LSN: lsn, Data: data})
-	return lsn, nil
+	lsns := make([]uint64, len(data))
+	for i, d := range data {
+		s.nextLSN[partitionID]++
+		lsn := s.nextLSN[partitionID]
+		s.entries[partitionID] = append(s.entries[partitionID], provider.WALEntry{LSN: lsn, Data: d})
+		lsns[i] = lsn
+	}
+	return lsns, nil
 }
 
 func (s *memWALStore) ReadFrom(_ context.Context, partitionID string, fromLSN uint64) ([]provider.WALEntry, error) {

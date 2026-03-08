@@ -14,16 +14,41 @@ func newTestWALStore(t *testing.T) *WALStore {
 	return s
 }
 
-func TestWALStore_AppendMonotonicallyIncreasesLSN(t *testing.T) {
+func appendOne(t *testing.T, s *WALStore, partitionID string, data []byte) uint64 {
+	t.Helper()
+	lsns, err := s.AppendBatch(context.Background(), partitionID, [][]byte{data})
+	if err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	return lsns[0]
+}
+
+func TestWALStore_AppendBatch_MonotonicallyIncreasesLSN(t *testing.T) {
 	ctx := context.Background()
 	s := newTestWALStore(t)
 
-	lsn1, _ := s.Append(ctx, "p1", []byte("a"))
-	lsn2, _ := s.Append(ctx, "p1", []byte("b"))
-	lsn3, _ := s.Append(ctx, "p1", []byte("c"))
+	lsns, err := s.AppendBatch(ctx, "p1", [][]byte{[]byte("a"), []byte("b"), []byte("c")})
+	if err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	if len(lsns) != 3 {
+		t.Fatalf("expected 3 LSNs, got %d", len(lsns))
+	}
+	if !(lsns[0] < lsns[1] && lsns[1] < lsns[2]) {
+		t.Errorf("LSN not monotonically increasing: %v", lsns)
+	}
+}
 
-	if !(lsn1 < lsn2 && lsn2 < lsn3) {
-		t.Errorf("LSN not monotonically increasing: %d, %d, %d", lsn1, lsn2, lsn3)
+func TestWALStore_AppendBatch_Empty(t *testing.T) {
+	ctx := context.Background()
+	s := newTestWALStore(t)
+
+	lsns, err := s.AppendBatch(ctx, "p1", nil)
+	if err != nil {
+		t.Fatalf("AppendBatch with nil: %v", err)
+	}
+	if len(lsns) != 0 {
+		t.Errorf("expected 0 LSNs, got %d", len(lsns))
 	}
 }
 
@@ -31,11 +56,9 @@ func TestWALStore_ReadFrom_All(t *testing.T) {
 	ctx := context.Background()
 	s := newTestWALStore(t)
 
-	lsn1, _ := s.Append(ctx, "p1", []byte("entry-1"))
-	s.Append(ctx, "p1", []byte("entry-2"))
-	s.Append(ctx, "p1", []byte("entry-3"))
+	lsns, _ := s.AppendBatch(ctx, "p1", [][]byte{[]byte("entry-1"), []byte("entry-2"), []byte("entry-3")})
 
-	entries, err := s.ReadFrom(ctx, "p1", lsn1)
+	entries, err := s.ReadFrom(ctx, "p1", lsns[0])
 	if err != nil {
 		t.Fatalf("ReadFrom: %v", err)
 	}
@@ -51,16 +74,14 @@ func TestWALStore_ReadFrom_Partial(t *testing.T) {
 	ctx := context.Background()
 	s := newTestWALStore(t)
 
-	s.Append(ctx, "p1", []byte("a"))
-	lsn2, _ := s.Append(ctx, "p1", []byte("b"))
-	s.Append(ctx, "p1", []byte("c"))
+	lsns, _ := s.AppendBatch(ctx, "p1", [][]byte{[]byte("a"), []byte("b"), []byte("c")})
 
-	entries, err := s.ReadFrom(ctx, "p1", lsn2)
+	entries, err := s.ReadFrom(ctx, "p1", lsns[1])
 	if err != nil {
 		t.Fatalf("ReadFrom: %v", err)
 	}
 	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries from lsn2, got %d", len(entries))
+		t.Fatalf("expected 2 entries from lsns[1], got %d", len(entries))
 	}
 	if string(entries[0].Data) != "b" {
 		t.Errorf("expected b, got %q", entries[0].Data)
@@ -84,12 +105,9 @@ func TestWALStore_TrimBefore(t *testing.T) {
 	ctx := context.Background()
 	s := newTestWALStore(t)
 
-	s.Append(ctx, "p1", []byte("a"))
-	s.Append(ctx, "p1", []byte("b"))
-	lsn3, _ := s.Append(ctx, "p1", []byte("c"))
-	s.Append(ctx, "p1", []byte("d"))
+	lsns, _ := s.AppendBatch(ctx, "p1", [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d")})
 
-	if err := s.TrimBefore(ctx, "p1", lsn3); err != nil {
+	if err := s.TrimBefore(ctx, "p1", lsns[2]); err != nil {
 		t.Fatalf("TrimBefore: %v", err)
 	}
 
@@ -118,8 +136,8 @@ func TestWALStore_PartitionsAreIsolated(t *testing.T) {
 	ctx := context.Background()
 	s := newTestWALStore(t)
 
-	s.Append(ctx, "p1", []byte("p1-data"))
-	s.Append(ctx, "p2", []byte("p2-data"))
+	s.AppendBatch(ctx, "p1", [][]byte{[]byte("p1-data")})
+	s.AppendBatch(ctx, "p2", [][]byte{[]byte("p2-data")})
 
 	p1, _ := s.ReadFrom(ctx, "p1", 1)
 	p2, _ := s.ReadFrom(ctx, "p2", 1)
@@ -136,16 +154,26 @@ func TestWALStore_AppendAfterTrim(t *testing.T) {
 	ctx := context.Background()
 	s := newTestWALStore(t)
 
-	s.Append(ctx, "p1", []byte("a"))
-	lsn2, _ := s.Append(ctx, "p1", []byte("b"))
+	lsns1, _ := s.AppendBatch(ctx, "p1", [][]byte{[]byte("a"), []byte("b")})
+	s.TrimBefore(ctx, "p1", lsns1[1])
 
-	s.TrimBefore(ctx, "p1", lsn2)
-
-	lsn3, err := s.Append(ctx, "p1", []byte("c"))
+	lsns2, err := s.AppendBatch(ctx, "p1", [][]byte{[]byte("c")})
 	if err != nil {
-		t.Fatalf("Append after trim: %v", err)
+		t.Fatalf("AppendBatch after trim: %v", err)
 	}
-	if lsn3 <= lsn2 {
-		t.Errorf("LSN after trim should be greater than previous: lsn2=%d lsn3=%d", lsn2, lsn3)
+	if lsns2[0] <= lsns1[1] {
+		t.Errorf("LSN after trim should be greater than previous: lsns1[1]=%d lsns2[0]=%d", lsns1[1], lsns2[0])
+	}
+}
+
+func TestWALStore_AppendBatch_LSNContinuousAcrossBatches(t *testing.T) {
+	ctx := context.Background()
+	s := newTestWALStore(t)
+
+	lsns1, _ := s.AppendBatch(ctx, "p1", [][]byte{[]byte("a"), []byte("b")})
+	lsns2, _ := s.AppendBatch(ctx, "p1", [][]byte{[]byte("c"), []byte("d")})
+
+	if lsns2[0] != lsns1[1]+1 {
+		t.Errorf("LSN should be continuous across batches: lsns1=%v lsns2=%v", lsns1, lsns2)
 	}
 }

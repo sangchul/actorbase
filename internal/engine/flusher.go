@@ -45,12 +45,34 @@ func (f *walFlusher) start(ctx context.Context) {
 		if len(pending) == 0 {
 			return
 		}
-		for _, p := range pending {
-			lsn, err := f.walStore.Append(ctx, p.partitionID, p.entry)
-			if err != nil {
-				p.reply(0, err)
-			} else {
-				p.reply(lsn, nil)
+
+		// partitionID별로 그룹화: 순서를 보존하기 위해 첫 등장 순서로 정렬된 슬라이스 사용
+		type group struct {
+			data    [][]byte
+			indices []int // pending 슬라이스에서의 원래 위치
+		}
+		order := make([]string, 0, len(pending))
+		groups := make(map[string]*group, len(pending))
+		for i, p := range pending {
+			g, exists := groups[p.partitionID]
+			if !exists {
+				g = &group{}
+				groups[p.partitionID] = g
+				order = append(order, p.partitionID)
+			}
+			g.data = append(g.data, p.entry)
+			g.indices = append(g.indices, i)
+		}
+
+		for _, partitionID := range order {
+			g := groups[partitionID]
+			lsns, err := f.walStore.AppendBatch(ctx, partitionID, g.data)
+			for j, idx := range g.indices {
+				if err != nil {
+					pending[idx].reply(0, err)
+				} else {
+					pending[idx].reply(lsns[j], nil)
+				}
 			}
 		}
 		pending = pending[:0]
