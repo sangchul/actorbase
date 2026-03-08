@@ -88,7 +88,7 @@ func (c *Client[Req, Resp]) Send(ctx context.Context, key string, req Req) (Resp
 
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		rt := c.routing.Load()
-		entry, ok := rt.Lookup(key)
+		entry, ok := rt.Lookup(c.cfg.TypeID, key)
 		if !ok {
 			return zero, provider.ErrPartitionNotOwned
 		}
@@ -100,7 +100,7 @@ func (c *Client[Req, Resp]) Send(ctx context.Context, key string, req Req) (Resp
 
 		psClient := transport.NewPSClient(conn, c.cfg.Codec)
 		var resp Resp
-		err = psClient.Send(ctx, entry.Partition.ID, req, &resp)
+		err = psClient.Send(ctx, c.cfg.TypeID, entry.Partition.ID, req, &resp)
 		if err == nil {
 			return resp, nil
 		}

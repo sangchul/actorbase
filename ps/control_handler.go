@@ -4,27 +4,35 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/oomymy/actorbase/internal/engine"
-	pb "github.com/oomymy/actorbase/internal/transport/proto"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/oomymy/actorbase/internal/transport"
+	pb "github.com/oomymy/actorbase/internal/transport/proto"
 )
 
 // controlHandler는 PartitionControlService gRPC 핸들러.
 // PM → PS control plane 요청을 처리한다.
-type controlHandler[Req, Resp any] struct {
+// req.ActorType으로 올바른 actorDispatcher를 선택한다.
+type controlHandler struct {
 	pb.UnimplementedPartitionControlServiceServer
 
-	host   *engine.ActorHost[Req, Resp]
-	nodeID string
+	dispatchers map[string]actorDispatcher
+	nodeID      string
 }
 
 // ExecuteSplit은 PM의 split 명령을 처리한다.
-func (h *controlHandler[Req, Resp]) ExecuteSplit(
+func (h *controlHandler) ExecuteSplit(
 	ctx context.Context,
 	req *pb.ExecuteSplitRequest,
 ) (*pb.ExecuteSplitResponse, error) {
-	slog.Info("ctrl: ExecuteSplit", "node", h.nodeID, "partition", req.PartitionId, "split_key", req.SplitKey, "new_partition", req.NewPartitionId)
-	if err := h.host.Split(ctx, req.PartitionId, req.SplitKey, req.NewPartitionId); err != nil {
+	d, ok := h.dispatchers[req.ActorType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
+	}
+	slog.Info("ctrl: ExecuteSplit", "node", h.nodeID, "actor_type", req.ActorType,
+		"partition", req.PartitionId, "split_key", req.SplitKey, "new_partition", req.NewPartitionId)
+	if err := d.Split(ctx, req.PartitionId, req.SplitKey, req.NewPartitionId); err != nil {
 		slog.Error("ctrl: ExecuteSplit failed", "node", h.nodeID, "partition", req.PartitionId, "err", err)
 		return nil, transport.ToGRPCStatus(err)
 	}
@@ -33,13 +41,17 @@ func (h *controlHandler[Req, Resp]) ExecuteSplit(
 }
 
 // ExecuteMigrateOut은 PM의 migration out 명령을 처리한다.
-// Actor의 최종 checkpoint를 저장하고 evict한다.
-func (h *controlHandler[Req, Resp]) ExecuteMigrateOut(
+func (h *controlHandler) ExecuteMigrateOut(
 	ctx context.Context,
 	req *pb.ExecuteMigrateOutRequest,
 ) (*pb.ExecuteMigrateOutResponse, error) {
-	slog.Info("ctrl: ExecuteMigrateOut", "node", h.nodeID, "partition", req.PartitionId, "target", req.TargetNodeId)
-	if err := h.host.Evict(ctx, req.PartitionId); err != nil {
+	d, ok := h.dispatchers[req.ActorType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
+	}
+	slog.Info("ctrl: ExecuteMigrateOut", "node", h.nodeID, "actor_type", req.ActorType,
+		"partition", req.PartitionId, "target", req.TargetNodeId)
+	if err := d.Evict(ctx, req.PartitionId); err != nil {
 		slog.Error("ctrl: ExecuteMigrateOut failed", "node", h.nodeID, "partition", req.PartitionId, "err", err)
 		return nil, transport.ToGRPCStatus(err)
 	}
@@ -48,13 +60,17 @@ func (h *controlHandler[Req, Resp]) ExecuteMigrateOut(
 }
 
 // PreparePartition은 PM의 파티션 로드 명령을 처리한다.
-// CheckpointStore에서 파티션을 로드하여 활성화한다.
-func (h *controlHandler[Req, Resp]) PreparePartition(
+func (h *controlHandler) PreparePartition(
 	ctx context.Context,
 	req *pb.PreparePartitionRequest,
 ) (*pb.PreparePartitionResponse, error) {
-	slog.Info("ctrl: PreparePartition", "node", h.nodeID, "partition", req.PartitionId)
-	if err := h.host.Activate(ctx, req.PartitionId); err != nil {
+	d, ok := h.dispatchers[req.ActorType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
+	}
+	slog.Info("ctrl: PreparePartition", "node", h.nodeID, "actor_type", req.ActorType,
+		"partition", req.PartitionId)
+	if err := d.Activate(ctx, req.PartitionId); err != nil {
 		slog.Error("ctrl: PreparePartition failed", "node", h.nodeID, "partition", req.PartitionId, "err", err)
 		return nil, transport.ToGRPCStatus(err)
 	}

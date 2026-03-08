@@ -18,6 +18,7 @@ service PartitionService {
 message SendRequest {
   string partition_id = 1;
   bytes  payload      = 2; // Codec.Marshal(req)
+  string actor_type   = 3; // actor type 식별자. PS가 올바른 ActorHost로 라우팅하는 데 사용.
 }
 
 message SendResponse {
@@ -34,9 +35,11 @@ service PartitionManagerService {
   rpc WatchRouting(WatchRoutingRequest) returns (stream RoutingTableProto);
 
   // RequestSplit은 파티션 split을 PM에 요청한다.
+  // actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
   rpc RequestSplit(SplitRequest) returns (SplitResponse);
 
   // RequestMigrate는 파티션 migration을 PM에 요청한다.
+  // actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
   rpc RequestMigrate(MigrateRequest) returns (MigrateResponse);
 
   // ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
@@ -50,6 +53,7 @@ message WatchRoutingRequest {
 message SplitRequest {
   string partition_id = 1;
   string split_key    = 2;
+  string actor_type   = 3; // 사용자가 명시. PM이 파티션의 실제 actor_type과 검증한다.
 }
 
 message SplitResponse {
@@ -59,6 +63,7 @@ message SplitResponse {
 message MigrateRequest {
   string partition_id   = 1;
   string target_node_id = 2;
+  string actor_type     = 3; // 사용자가 명시. PM이 파티션의 실제 actor_type과 검증한다.
 }
 
 message MigrateResponse {}
@@ -94,6 +99,7 @@ message ExecuteSplitRequest {
   string partition_id     = 1;
   string split_key        = 2;
   string new_partition_id = 3;
+  string actor_type       = 4; // PS가 올바른 ActorHost로 라우팅하는 데 사용.
 }
 
 message ExecuteSplitResponse {}
@@ -102,6 +108,7 @@ message ExecuteMigrateOutRequest {
   string partition_id    = 1;
   string target_node_id  = 2;
   string target_address  = 3;
+  string actor_type      = 4; // PS가 올바른 ActorHost로 라우팅하는 데 사용.
 }
 
 message ExecuteMigrateOutResponse {}
@@ -110,6 +117,7 @@ message PreparePartitionRequest {
   string partition_id    = 1;
   string key_range_start = 2; // target PS가 올바른 파티션인지 검증용
   string key_range_end   = 3;
+  string actor_type      = 4; // PS가 올바른 ActorHost로 라우팅하는 데 사용.
 }
 
 message PreparePartitionResponse {}
@@ -126,10 +134,11 @@ message RoutingTableProto {
 message RouteEntryProto {
   string     partition_id    = 1;
   string     key_range_start = 2;
-  string     key_range_end   = 3;
+  string     key_range_end   = 3; // "" = 상한 없음
   string     node_id         = 4;
   string     node_address    = 5;
   NodeStatus node_status     = 6;
+  string     actor_type      = 7; // actor type 식별자
 }
 
 enum NodeStatus {

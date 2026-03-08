@@ -26,9 +26,10 @@ func NewSplitter(routingStore cluster.RoutingTableStore, connPool *transport.Con
 }
 
 // Split은 partitionID를 splitKey 기준으로 둘로 나눈다.
+// actorType은 partitionID의 실제 actor type과 일치해야 한다. 불일치 시 에러를 반환한다.
 // 새로 생성된 파티션(상위 절반)의 ID를 반환한다.
 // split 후 두 파티션은 기존과 동일한 노드에 위치한다.
-func (s *Splitter) Split(ctx context.Context, partitionID, splitKey string) (string, error) {
+func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey string) (string, error) {
 	// 1. 현재 라우팅 테이블 조회
 	rt, err := s.routingStore.Load(ctx)
 	if err != nil {
@@ -44,7 +45,13 @@ func (s *Splitter) Split(ctx context.Context, partitionID, splitKey string) (str
 		return "", fmt.Errorf("partition %s not found in routing table", partitionID)
 	}
 
-	// 3. splitKey 유효성 검증
+	// 3. actor type 검증
+	if entry.Partition.ActorType != actorType {
+		return "", fmt.Errorf("actor type mismatch: partition %s has actor type %q, got %q",
+			partitionID, entry.Partition.ActorType, actorType)
+	}
+
+	// 4. splitKey 유효성 검증
 	kr := entry.Partition.KeyRange
 	if splitKey <= kr.Start {
 		return "", fmt.Errorf("splitKey %q must be greater than partition start %q", splitKey, kr.Start)
@@ -53,7 +60,7 @@ func (s *Splitter) Split(ctx context.Context, partitionID, splitKey string) (str
 		return "", fmt.Errorf("splitKey %q must be less than partition end %q", splitKey, kr.End)
 	}
 
-	// 4. newPartitionID 생성
+	// 6. newPartitionID 생성
 	newPartitionID := uuid.New().String()
 
 	// 5. Source PS에 ExecuteSplit 명령
@@ -62,7 +69,7 @@ func (s *Splitter) Split(ctx context.Context, partitionID, splitKey string) (str
 		return "", fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
 	}
 	psCtrl := transport.NewPSControlClient(conn)
-	if err := psCtrl.ExecuteSplit(ctx, partitionID, splitKey, newPartitionID); err != nil {
+	if err := psCtrl.ExecuteSplit(ctx, entry.Partition.ActorType, partitionID, splitKey, newPartitionID); err != nil {
 		return "", fmt.Errorf("execute split on PS: %w", err)
 	}
 
@@ -98,8 +105,9 @@ func buildSplitEntries(
 	// 하위 절반: [original.Start, splitKey)
 	result = append(result, domain.RouteEntry{
 		Partition: domain.Partition{
-			ID:       partitionID,
-			KeyRange: domain.KeyRange{Start: original.Partition.KeyRange.Start, End: splitKey},
+			ID:        partitionID,
+			ActorType: original.Partition.ActorType,
+			KeyRange:  domain.KeyRange{Start: original.Partition.KeyRange.Start, End: splitKey},
 		},
 		Node:            original.Node,
 		PartitionStatus: domain.PartitionStatusActive,
@@ -108,8 +116,9 @@ func buildSplitEntries(
 	// 상위 절반: [splitKey, original.End)
 	result = append(result, domain.RouteEntry{
 		Partition: domain.Partition{
-			ID:       newPartitionID,
-			KeyRange: domain.KeyRange{Start: splitKey, End: original.Partition.KeyRange.End},
+			ID:        newPartitionID,
+			ActorType: original.Partition.ActorType,
+			KeyRange:  domain.KeyRange{Start: splitKey, End: original.Partition.KeyRange.End},
 		},
 		Node:            original.Node,
 		PartitionStatus: domain.PartitionStatusActive,

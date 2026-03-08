@@ -136,15 +136,22 @@ func main() {
 		return &kvActor{data: make(map[string][]byte)}
 	}
 
-	srv, err := ps.NewServer(ps.Config[KVRequest, KVResponse]{
-		NodeID:          *nodeID,
-		Addr:            *addr,
-		EtcdEndpoints:   strings.Split(*etcdAddrs, ","),
+	builder := ps.NewServerBuilder(ps.BaseConfig{
+		NodeID:        *nodeID,
+		Addr:          *addr,
+		EtcdEndpoints: strings.Split(*etcdAddrs, ","),
+	})
+	if err := ps.Register(builder, ps.TypeConfig[KVRequest, KVResponse]{
+		TypeID:          "kv",
 		Factory:         factory,
 		Codec:           adapterjson.New(),
 		WALStore:        walStore,
 		CheckpointStore: cpStore,
-	})
+	}); err != nil {
+		slog.Error("failed to register kv actor type", "err", err)
+		os.Exit(1)
+	}
+	srv, err := builder.Build()
 	if err != nil {
 		slog.Error("failed to create PS", "err", err)
 		os.Exit(1)

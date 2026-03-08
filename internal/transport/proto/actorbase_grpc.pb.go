@@ -141,8 +141,10 @@ type PartitionManagerServiceClient interface {
 	// 이후 변경이 생길 때마다 스트리밍으로 push한다.
 	WatchRouting(ctx context.Context, in *WatchRoutingRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RoutingTableProto], error)
 	// RequestSplit은 파티션 split을 PM에 요청한다.
+	// actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
 	RequestSplit(ctx context.Context, in *SplitRequest, opts ...grpc.CallOption) (*SplitResponse, error)
 	// RequestMigrate는 파티션 migration을 PM에 요청한다.
+	// actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
 	RequestMigrate(ctx context.Context, in *MigrateRequest, opts ...grpc.CallOption) (*MigrateResponse, error)
 	// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
 	ListMembers(ctx context.Context, in *ListMembersRequest, opts ...grpc.CallOption) (*ListMembersResponse, error)
@@ -213,8 +215,10 @@ type PartitionManagerServiceServer interface {
 	// 이후 변경이 생길 때마다 스트리밍으로 push한다.
 	WatchRouting(*WatchRoutingRequest, grpc.ServerStreamingServer[RoutingTableProto]) error
 	// RequestSplit은 파티션 split을 PM에 요청한다.
+	// actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
 	RequestSplit(context.Context, *SplitRequest) (*SplitResponse, error)
 	// RequestMigrate는 파티션 migration을 PM에 요청한다.
+	// actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
 	RequestMigrate(context.Context, *MigrateRequest) (*MigrateResponse, error)
 	// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
 	ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error)

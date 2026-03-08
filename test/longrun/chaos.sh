@@ -86,7 +86,7 @@ do_split() {
     return
   fi
   log "split partition=$chosen_id at key=$chosen_key"
-  "$ABCTL" -pm "$PM_ADDR" split "$chosen_id" "$chosen_key" \
+  "$ABCTL" -pm "$PM_ADDR" split kv "$chosen_id" "$chosen_key" \
     && log "split done" || log "WARN: split failed (continuing)"
 }
 
@@ -113,7 +113,7 @@ do_migrate() {
     return
   fi
   log "migrate partition=$chosen_id to node=$target_node"
-  "$ABCTL" -pm "$PM_ADDR" migrate "$chosen_id" "$target_node" \
+  "$ABCTL" -pm "$PM_ADDR" migrate kv "$chosen_id" "$target_node" \
     && log "migrate done" || log "WARN: migrate failed (continuing)"
 }
 

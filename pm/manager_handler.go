@@ -56,7 +56,7 @@ func (h *managerHandler) RequestSplit(
 	h.server.opMu.Lock()
 	defer h.server.opMu.Unlock()
 
-	newPartitionID, err := h.server.splitter.Split(ctx, req.PartitionId, req.SplitKey)
+	newPartitionID, err := h.server.splitter.Split(ctx, req.ActorType, req.PartitionId, req.SplitKey)
 	if err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
@@ -71,7 +71,7 @@ func (h *managerHandler) RequestMigrate(
 	h.server.opMu.Lock()
 	defer h.server.opMu.Unlock()
 
-	if err := h.server.migrator.Migrate(ctx, req.PartitionId, req.TargetNodeId); err != nil {
+	if err := h.server.migrator.Migrate(ctx, req.ActorType, req.PartitionId, req.TargetNodeId); err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
 	return &pb.MigrateResponse{}, nil

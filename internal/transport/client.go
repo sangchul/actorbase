@@ -87,7 +87,7 @@ func NewPSClient(conn *grpc.ClientConn, codec provider.Codec) *PSClient {
 // Send는 partitionID의 Actor에게 req를 전달하고 respPtr에 응답을 역직렬화한다.
 // payload 직렬화/역직렬화는 Codec이 담당한다.
 // gRPC status error는 provider error로 변환하여 반환한다.
-func (c *PSClient) Send(ctx context.Context, partitionID string, req any, respPtr any) error {
+func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req any, respPtr any) error {
 	payload, err := c.codec.Marshal(req)
 	if err != nil {
 		return err
@@ -95,6 +95,7 @@ func (c *PSClient) Send(ctx context.Context, partitionID string, req any, respPt
 	resp, err := c.client.Send(ctx, &pb.SendRequest{
 		PartitionId: partitionID,
 		Payload:     payload,
+		ActorType:   actorType,
 	})
 	if err != nil {
 		return fromGRPCStatus(err)
@@ -173,10 +174,11 @@ func (c *PMClient) streamRouting(ctx context.Context, clientID string, ch chan *
 }
 
 // RequestSplit은 파티션 split을 PM에 요청한다.
-func (c *PMClient) RequestSplit(ctx context.Context, partitionID, splitKey string) (string, error) {
+func (c *PMClient) RequestSplit(ctx context.Context, actorType, partitionID, splitKey string) (string, error) {
 	resp, err := c.client.RequestSplit(ctx, &pb.SplitRequest{
 		PartitionId: partitionID,
 		SplitKey:    splitKey,
+		ActorType:   actorType,
 	})
 	if err != nil {
 		return "", fromGRPCStatus(err)
@@ -185,10 +187,11 @@ func (c *PMClient) RequestSplit(ctx context.Context, partitionID, splitKey strin
 }
 
 // RequestMigrate는 파티션 migration을 PM에 요청한다.
-func (c *PMClient) RequestMigrate(ctx context.Context, partitionID, targetNodeID string) error {
+func (c *PMClient) RequestMigrate(ctx context.Context, actorType, partitionID, targetNodeID string) error {
 	_, err := c.client.RequestMigrate(ctx, &pb.MigrateRequest{
 		PartitionId:  partitionID,
 		TargetNodeId: targetNodeID,
+		ActorType:    actorType,
 	})
 	return fromGRPCStatus(err)
 }
@@ -238,31 +241,34 @@ func NewPSControlClient(conn *grpc.ClientConn) *PSControlClient {
 }
 
 // ExecuteSplit은 PS에게 파티션 split을 명령한다.
-func (c *PSControlClient) ExecuteSplit(ctx context.Context, partitionID, splitKey, newPartitionID string) error {
+func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, newPartitionID string) error {
 	_, err := c.client.ExecuteSplit(ctx, &pb.ExecuteSplitRequest{
 		PartitionId:    partitionID,
 		SplitKey:       splitKey,
 		NewPartitionId: newPartitionID,
+		ActorType:      actorType,
 	})
 	return fromGRPCStatus(err)
 }
 
 // ExecuteMigrateOut은 PS에게 파티션을 대상 노드로 이동시키도록 명령한다.
-func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, partitionID, targetNodeID, targetAddr string) error {
+func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string) error {
 	_, err := c.client.ExecuteMigrateOut(ctx, &pb.ExecuteMigrateOutRequest{
 		PartitionId:   partitionID,
 		TargetNodeId:  targetNodeID,
 		TargetAddress: targetAddr,
+		ActorType:     actorType,
 	})
 	return fromGRPCStatus(err)
 }
 
 // PreparePartition은 target PS에게 파티션을 CheckpointStore에서 로드하도록 명령한다.
-func (c *PSControlClient) PreparePartition(ctx context.Context, partitionID, keyRangeStart, keyRangeEnd string) error {
+func (c *PSControlClient) PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string) error {
 	_, err := c.client.PreparePartition(ctx, &pb.PreparePartitionRequest{
 		PartitionId:   partitionID,
 		KeyRangeStart: keyRangeStart,
 		KeyRangeEnd:   keyRangeEnd,
+		ActorType:     actorType,
 	})
 	return fromGRPCStatus(err)
 }
@@ -278,8 +284,9 @@ func protoToRoutingTable(proto *pb.RoutingTableProto) (*domain.RoutingTable, err
 		}
 		entries[i] = domain.RouteEntry{
 			Partition: domain.Partition{
-				ID:       e.PartitionId,
-				KeyRange: domain.KeyRange{Start: e.KeyRangeStart, End: e.KeyRangeEnd},
+				ID:        e.PartitionId,
+				ActorType: e.ActorType,
+				KeyRange:  domain.KeyRange{Start: e.KeyRangeStart, End: e.KeyRangeEnd},
 			},
 			Node: domain.NodeInfo{
 				ID:      e.NodeId,
@@ -303,6 +310,7 @@ func RoutingTableToProto(rt *domain.RoutingTable) *pb.RoutingTableProto {
 		}
 		protoEntries[i] = &pb.RouteEntryProto{
 			PartitionId:   e.Partition.ID,
+			ActorType:     e.Partition.ActorType,
 			KeyRangeStart: e.Partition.KeyRange.Start,
 			KeyRangeEnd:   e.Partition.KeyRange.End,
 			NodeId:        e.Node.ID,

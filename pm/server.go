@@ -239,7 +239,7 @@ func pickTarget(nodes []domain.NodeInfo, excludeNodeID string) string {
 }
 
 // bootstrap은 첫 번째 PS가 등록될 때까지 기다린 후 초기 라우팅 테이블을 생성한다.
-// 초기 파티션: 전체 키 범위 ["", "") → 첫 번째 PS
+// 각 actor type마다 전체 키 범위 ["", "")를 담당하는 초기 파티션을 생성한다.
 // etcd Load 후 Save로 중복 생성을 방어한다.
 func (s *Server) bootstrap(ctx context.Context) {
 	ch := s.membership.Watch(ctx)
@@ -258,18 +258,21 @@ func (s *Server) bootstrap(ctx context.Context) {
 			return
 		}
 
-		// 전체 키 범위 ["", "") → 첫 번째 PS
-		partitionID := uuid.New().String()
-		initial, err := domain.NewRoutingTable(1, []domain.RouteEntry{
-			{
+		// actor type마다 전체 키 범위 ["", "") → 첫 번째 PS
+		entries := make([]domain.RouteEntry, 0, len(s.cfg.ActorTypes))
+		for _, actorType := range s.cfg.ActorTypes {
+			entries = append(entries, domain.RouteEntry{
 				Partition: domain.Partition{
-					ID:       partitionID,
-					KeyRange: domain.KeyRange{Start: "", End: ""},
+					ID:        uuid.New().String(),
+					ActorType: actorType,
+					KeyRange:  domain.KeyRange{Start: "", End: ""},
 				},
 				Node:            event.Node,
 				PartitionStatus: domain.PartitionStatusActive,
-			},
-		})
+			})
+		}
+
+		initial, err := domain.NewRoutingTable(1, entries)
 		if err != nil {
 			slog.Error("pm bootstrap: create routing table", "err", err)
 			return
@@ -279,7 +282,8 @@ func (s *Server) bootstrap(ctx context.Context) {
 			slog.Error("pm bootstrap: save routing table", "err", err)
 			return
 		}
-		slog.Info("pm bootstrap: initial routing table created", "partitionID", partitionID, "node", event.Node.ID)
+		slog.Info("pm bootstrap: initial routing table created",
+			"actor_types", s.cfg.ActorTypes, "node", event.Node.ID)
 		return
 	}
 }

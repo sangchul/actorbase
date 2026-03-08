@@ -94,7 +94,7 @@ done
 # ── PM 기동 ──────────────────────────────────────────────────────────────────
 
 log "Starting PM ($PM_ADDR)..."
-"$BIN_DIR/pm" -addr "$PM_ADDR" >> "$PM_LOG" 2>&1 &
+"$BIN_DIR/pm" -addr "$PM_ADDR" -actor-types kv >> "$PM_LOG" 2>&1 &
 PM_PID=$!
 sleep 1
 if ! kill -0 "$PM_PID" 2>/dev/null; then

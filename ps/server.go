@@ -16,86 +16,181 @@ import (
 	"github.com/oomymy/actorbase/internal/engine"
 	"github.com/oomymy/actorbase/internal/transport"
 	pb "github.com/oomymy/actorbase/internal/transport/proto"
+	"github.com/oomymy/actorbase/provider"
 )
 
-// Server는 Partition Server의 진입점.
-// Config를 받아 내부 컴포넌트를 조립하고 gRPC 서버를 기동·관리한다.
-type Server[Req, Resp any] struct {
-	cfg       Config[Req, Resp]
-	actorHost *engine.ActorHost[Req, Resp]
-	registry  cluster.NodeRegistry
-	rtStore   cluster.RoutingTableStore
-	grpcSrv   *grpc.Server
-	etcdCli   *clientv3.Client
-	routing   atomic.Pointer[domain.RoutingTable] // 현재 라우팅 테이블. lock-free 읽기.
+// ── actorDispatcher ───────────────────────────────────────────────────────────
+
+// actorDispatcher는 engine.ActorHost를 type-erased로 감싸는 인터페이스.
+// Send/Evict/EvictAll/Activate/Split은 byte slice 레벨에서 동작하여
+// 단일 PS에서 여러 actor type을 처리할 수 있다.
+type actorDispatcher interface {
+	Send(ctx context.Context, partitionID string, payload []byte) ([]byte, error)
+	Evict(ctx context.Context, partitionID string) error
+	EvictAll(ctx context.Context) error
+	Activate(ctx context.Context, partitionID string) error
+	Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error
+	StartSchedulers(ctx context.Context, idleTimeout, evictInterval, checkpointInterval time.Duration)
 }
 
-// NewServer는 Config를 검증하고 컴포넌트를 조립한다.
-// etcd 연결, gRPC 서버 생성까지 수행하지만 Start 호출 전까지 수신은 시작하지 않는다.
-func NewServer[Req, Resp any](cfg Config[Req, Resp]) (*Server[Req, Resp], error) {
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
+// typedDispatcher는 engine.ActorHost[Req, Resp]를 actorDispatcher로 감싼다.
+type typedDispatcher[Req, Resp any] struct {
+	host  *engine.ActorHost[Req, Resp]
+	codec provider.Codec
+}
+
+func newTypedDispatcher[Req, Resp any](cfg TypeConfig[Req, Resp]) *typedDispatcher[Req, Resp] {
+	host := engine.NewActorHost[Req, Resp](engine.Config[Req, Resp]{
+		Factory:                cfg.Factory,
+		WALStore:               cfg.WALStore,
+		CheckpointStore:        cfg.CheckpointStore,
+		MailboxSize:            cfg.MailboxSize,
+		FlushSize:              cfg.FlushSize,
+		FlushInterval:          cfg.FlushInterval,
+		CheckpointWALThreshold: cfg.CheckpointWALThreshold,
+	})
+	return &typedDispatcher[Req, Resp]{host: host, codec: cfg.Codec}
+}
+
+func (d *typedDispatcher[Req, Resp]) Send(ctx context.Context, partitionID string, payload []byte) ([]byte, error) {
+	var req Req
+	if err := d.codec.Unmarshal(payload, &req); err != nil {
 		return nil, err
 	}
+	resp, err := d.host.Send(ctx, partitionID, req)
+	if err != nil {
+		return nil, err
+	}
+	return d.codec.Marshal(resp)
+}
 
-	// etcd 클라이언트 생성
+func (d *typedDispatcher[Req, Resp]) Evict(ctx context.Context, partitionID string) error {
+	return d.host.Evict(ctx, partitionID)
+}
+
+func (d *typedDispatcher[Req, Resp]) EvictAll(ctx context.Context) error {
+	return d.host.EvictAll(ctx)
+}
+
+func (d *typedDispatcher[Req, Resp]) Activate(ctx context.Context, partitionID string) error {
+	return d.host.Activate(ctx, partitionID)
+}
+
+func (d *typedDispatcher[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error {
+	return d.host.Split(ctx, partitionID, splitKey, newPartitionID)
+}
+
+func (d *typedDispatcher[Req, Resp]) StartSchedulers(
+	ctx context.Context,
+	idleTimeout, evictInterval, checkpointInterval time.Duration,
+) {
+	evictSched := engine.NewEvictionScheduler[Req, Resp](d.host, idleTimeout, evictInterval)
+	go evictSched.Start(ctx)
+	cpSched := engine.NewCheckpointScheduler[Req, Resp](d.host, checkpointInterval)
+	go cpSched.Start(ctx)
+}
+
+// ── ServerBuilder ─────────────────────────────────────────────────────────────
+
+// ServerBuilder는 PS 서버를 조립한다.
+// NewServerBuilder로 생성 후 Register로 actor type을 등록하고 Build로 Server를 생성한다.
+//
+// 예시:
+//
+//	builder := ps.NewServerBuilder(baseConfig)
+//	ps.Register(builder, ps.TypeConfig[KVReq, KVResp]{TypeID: "kv", ...})
+//	srv, err := builder.Build()
+type ServerBuilder struct {
+	base        BaseConfig
+	dispatchers map[string]actorDispatcher
+}
+
+// NewServerBuilder는 BaseConfig를 받아 ServerBuilder를 생성한다.
+func NewServerBuilder(cfg BaseConfig) *ServerBuilder {
+	return &ServerBuilder{
+		base:        cfg,
+		dispatchers: make(map[string]actorDispatcher),
+	}
+}
+
+// Register는 actor type을 PS에 등록한다.
+// Go 제네릭의 제약으로 메서드가 아닌 패키지 레벨 함수로 제공된다.
+func Register[Req, Resp any](b *ServerBuilder, cfg TypeConfig[Req, Resp]) error {
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	if _, dup := b.dispatchers[cfg.TypeID]; dup {
+		return errorf("actor type %q already registered", cfg.TypeID)
+	}
+	b.dispatchers[cfg.TypeID] = newTypedDispatcher(cfg)
+	return nil
+}
+
+// Build는 Server를 생성한다.
+func (b *ServerBuilder) Build() (*Server, error) {
+	b.base.setDefaults()
+	if err := b.base.validate(); err != nil {
+		return nil, err
+	}
+	if len(b.dispatchers) == 0 {
+		return nil, errorf("at least one actor type must be registered via Register()")
+	}
+
 	etcdCli, err := clientv3.New(clientv3.Config{
-		Endpoints:   cfg.EtcdEndpoints,
+		Endpoints:   b.base.EtcdEndpoints,
 		DialTimeout: 5 * time.Second,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create etcd client: %w", err)
 	}
 
-	// ActorHost 생성
-	actorHost := engine.NewActorHost[Req, Resp](engine.Config[Req, Resp]{
-		Factory:                cfg.Factory,
-		WALStore:               cfg.WALStore,
-		CheckpointStore:        cfg.CheckpointStore,
-		Metrics:                cfg.Metrics,
-		MailboxSize:            cfg.MailboxSize,
-		FlushSize:              cfg.FlushSize,
-		FlushInterval:          cfg.FlushInterval,
-		CheckpointWALThreshold: cfg.CheckpointWALThreshold,
-	})
-
-	// cluster 컴포넌트 생성
-	registry := cluster.NewNodeRegistry(etcdCli, cfg.EtcdLeaseTTL)
+	registry := cluster.NewNodeRegistry(etcdCli, b.base.EtcdLeaseTTL)
 	rtStore := cluster.NewRoutingTableStore(etcdCli)
 
-	// gRPC 서버 생성
 	grpcSrv := transport.NewGRPCServer(transport.ServerConfig{
-		ListenAddr: cfg.Addr,
-		Metrics:    cfg.Metrics,
+		ListenAddr: b.base.Addr,
+		Metrics:    b.base.Metrics,
 	})
 
-	s := &Server[Req, Resp]{
-		cfg:       cfg,
-		actorHost: actorHost,
-		registry:  registry,
-		rtStore:   rtStore,
-		grpcSrv:   grpcSrv,
-		etcdCli:   etcdCli,
+	s := &Server{
+		cfg:         b.base,
+		dispatchers: b.dispatchers,
+		registry:    registry,
+		rtStore:     rtStore,
+		grpcSrv:     grpcSrv,
+		etcdCli:     etcdCli,
 	}
 
-	// gRPC 핸들러 등록
-	pb.RegisterPartitionServiceServer(grpcSrv, &partitionHandler[Req, Resp]{
-		host:    actorHost,
-		routing: &s.routing,
-		codec:   cfg.Codec,
-		nodeID:  cfg.NodeID,
+	pb.RegisterPartitionServiceServer(grpcSrv, &partitionHandler{
+		dispatchers: b.dispatchers,
+		routing:     &s.routing,
+		nodeID:      b.base.NodeID,
 	})
-	pb.RegisterPartitionControlServiceServer(grpcSrv, &controlHandler[Req, Resp]{
-		host:   actorHost,
-		nodeID: cfg.NodeID,
+	pb.RegisterPartitionControlServiceServer(grpcSrv, &controlHandler{
+		dispatchers: b.dispatchers,
+		nodeID:      b.base.NodeID,
 	})
 
 	return s, nil
 }
 
+// ── Server ────────────────────────────────────────────────────────────────────
+
+// Server는 Partition Server의 진입점.
+// ServerBuilder.Build()로 생성한다.
+type Server struct {
+	cfg         BaseConfig
+	dispatchers map[string]actorDispatcher
+	registry    cluster.NodeRegistry
+	rtStore     cluster.RoutingTableStore
+	grpcSrv     *grpc.Server
+	etcdCli     *clientv3.Client
+	routing     atomic.Pointer[domain.RoutingTable]
+}
+
 // Start는 PS를 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
-func (s *Server[Req, Resp]) Start(ctx context.Context) error {
-	// 1. PM이 기동 중인지 확인 (etcd에 PM presence 키가 있어야 함)
+func (s *Server) Start(ctx context.Context) error {
+	// 1. PM이 기동 중인지 확인
 	if err := cluster.WaitForPM(ctx, s.etcdCli); err != nil {
 		return err
 	}
@@ -114,7 +209,7 @@ func (s *Server[Req, Resp]) Start(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("routing table watch closed before receiving initial value")
 	}
-	s.routing.Store(firstRT) // nil이어도 저장 (빈 클러스터 허용)
+	s.routing.Store(firstRT)
 
 	// 4. 이후 라우팅 갱신을 백그라운드에서 처리
 	go s.watchRouting(ctx, rtCh)
@@ -129,34 +224,29 @@ func (s *Server[Req, Resp]) Start(ctx context.Context) error {
 		grpcErrCh <- s.grpcSrv.Serve(lis)
 	}()
 
-	// 6. EvictionScheduler 시작
-	evictSched := engine.NewEvictionScheduler[Req, Resp](s.actorHost, s.cfg.IdleTimeout, s.cfg.EvictInterval)
-	go evictSched.Start(ctx)
+	// 6. actor type별 스케줄러 시작
+	for _, d := range s.dispatchers {
+		d.StartSchedulers(ctx, s.cfg.IdleTimeout, s.cfg.EvictInterval, s.cfg.CheckpointInterval)
+	}
 
-	// 7. CheckpointScheduler 시작
-	cpSched := engine.NewCheckpointScheduler[Req, Resp](s.actorHost, s.cfg.CheckpointInterval)
-	go cpSched.Start(ctx)
-
-	// 8. ctx 취소 대기
+	// 7. ctx 취소 대기
 	select {
 	case <-ctx.Done():
 	case err := <-grpcErrCh:
 		return fmt.Errorf("grpc server error: %w", err)
 	}
 
-	// 9. Graceful shutdown
 	return s.shutdown()
 }
 
-func (s *Server[Req, Resp]) watchRouting(ctx context.Context, ch <-chan *domain.RoutingTable) {
+func (s *Server) watchRouting(ctx context.Context, ch <-chan *domain.RoutingTable) {
 	for rt := range ch {
 		s.routing.Store(rt)
 	}
 }
 
-func (s *Server[Req, Resp]) shutdown() error {
-	// 1. 파티션 선이전: 가용한 다른 PS로 migrate 요청.
-	// gRPC 서버가 살아있는 동안 실행해야 PM이 ExecuteMigrateOut을 호출할 수 있다.
+func (s *Server) shutdown() error {
+	// 1. 파티션 선이전
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), s.cfg.DrainTimeout)
 	defer drainCancel()
 	s.drainPartitions(drainCtx)
@@ -164,11 +254,13 @@ func (s *Server[Req, Resp]) shutdown() error {
 	// 2. gRPC: 진행 중인 RPC 완료 대기 후 중단
 	s.grpcSrv.GracefulStop()
 
-	// 3. 모든 Actor checkpoint 저장 (drain 실패 파티션 대비 safety)
+	// 3. 모든 actor type의 Actor checkpoint 저장
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
-	if err := s.actorHost.EvictAll(shutdownCtx); err != nil {
-		_ = err
+	for _, d := range s.dispatchers {
+		if err := d.EvictAll(shutdownCtx); err != nil {
+			_ = err
+		}
 	}
 
 	// 4. etcd lease 즉시 revoke
@@ -181,16 +273,13 @@ func (s *Server[Req, Resp]) shutdown() error {
 }
 
 // drainPartitions는 이 PS가 담당하는 모든 파티션을 다른 PS로 migrate 요청한다.
-// 일부 실패해도 계속 진행한다. 실패한 파티션은 etcd lease 만료 후 PM의 failoverNode가 처리한다.
-func (s *Server[Req, Resp]) drainPartitions(ctx context.Context) {
-	// 1. etcd에서 PM 주소 조회
+func (s *Server) drainPartitions(ctx context.Context) {
 	pmAddr, err := cluster.GetPMAddr(ctx, s.etcdCli)
 	if err != nil {
 		slog.Warn("ps: drain: cannot get PM address, skipping drain", "err", err)
 		return
 	}
 
-	// 2. PM 연결
 	pool := transport.NewConnPool()
 	defer pool.Close() //nolint:errcheck
 	pmConn, err := pool.Get(pmAddr)
@@ -200,7 +289,6 @@ func (s *Server[Req, Resp]) drainPartitions(ctx context.Context) {
 	}
 	pmClient := transport.NewPMClient(pmConn)
 
-	// 3. 가용 노드 목록 조회
 	members, err := pmClient.ListMembers(ctx)
 	if err != nil {
 		slog.Warn("ps: drain: cannot list members", "err", err)
@@ -217,7 +305,6 @@ func (s *Server[Req, Resp]) drainPartitions(ctx context.Context) {
 		return
 	}
 
-	// 4. 현재 라우팅에서 내 파티션 추출
 	rt := s.routing.Load()
 	if rt == nil {
 		return
@@ -229,7 +316,7 @@ func (s *Server[Req, Resp]) drainPartitions(ctx context.Context) {
 		}
 		target := targets[i%len(targets)]
 		i++
-		if err := pmClient.RequestMigrate(ctx, entry.Partition.ID, target.NodeID); err != nil {
+		if err := pmClient.RequestMigrate(ctx, entry.Partition.ActorType, entry.Partition.ID, target.NodeID); err != nil {
 			slog.Error("ps: drain: migrate failed",
 				"partition", entry.Partition.ID, "target", target.NodeID, "err", err)
 		} else {

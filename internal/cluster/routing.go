@@ -143,6 +143,7 @@ type routingTableDTO struct {
 
 type routeEntryDTO struct {
 	PartitionID     string `json:"partitionId"`
+	ActorType       string `json:"actorType"`
 	KeyRangeStart   string `json:"keyRangeStart"`
 	KeyRangeEnd     string `json:"keyRangeEnd"`
 	NodeID          string `json:"nodeId"`
@@ -157,6 +158,7 @@ func marshalRoutingTable(rt *domain.RoutingTable) ([]byte, error) {
 	for i, e := range entries {
 		dtoEntries[i] = routeEntryDTO{
 			PartitionID:     e.Partition.ID,
+			ActorType:       e.Partition.ActorType,
 			KeyRangeStart:   e.Partition.KeyRange.Start,
 			KeyRangeEnd:     e.Partition.KeyRange.End,
 			NodeID:          e.Node.ID,
@@ -178,8 +180,9 @@ func unmarshalRoutingTable(data []byte) (*domain.RoutingTable, error) {
 	for i, e := range dto.Entries {
 		entries[i] = domain.RouteEntry{
 			Partition: domain.Partition{
-				ID:       e.PartitionID,
-				KeyRange: domain.KeyRange{Start: e.KeyRangeStart, End: e.KeyRangeEnd},
+				ID:        e.PartitionID,
+				ActorType: e.ActorType,
+				KeyRange:  domain.KeyRange{Start: e.KeyRangeStart, End: e.KeyRangeEnd},
 			},
 			Node: domain.NodeInfo{
 				ID:      e.NodeID,

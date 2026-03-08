@@ -6,10 +6,10 @@
 //
 // 명령:
 //
-//	members                             현재 PS 노드 목록 출력
-//	routing                             현재 라우팅 테이블 출력
-//	split <partition-id> <split-key>    파티션 split 요청
-//	migrate <partition-id> <node-id>    파티션 migrate 요청
+//	members                                            현재 PS 노드 목록 출력
+//	routing                                            현재 라우팅 테이블 출력
+//	split <actor-type> <partition-id> <split-key>      파티션 split 요청
+//	migrate <actor-type> <partition-id> <node-id>      파티션 migrate 요청
 package main
 
 import (
@@ -44,17 +44,17 @@ func main() {
 	case "routing":
 		cmdRouting(cfg)
 	case "split":
-		if flag.NArg() < 3 {
-			fmt.Fprintln(os.Stderr, "usage: abctl split <partition-id> <split-key>")
+		if flag.NArg() < 4 {
+			fmt.Fprintln(os.Stderr, "usage: abctl split <actor-type> <partition-id> <split-key>")
 			os.Exit(1)
 		}
-		cmdSplit(cfg, flag.Arg(1), flag.Arg(2))
+		cmdSplit(cfg, flag.Arg(1), flag.Arg(2), flag.Arg(3))
 	case "migrate":
-		if flag.NArg() < 3 {
-			fmt.Fprintln(os.Stderr, "usage: abctl migrate <partition-id> <target-node-id>")
+		if flag.NArg() < 4 {
+			fmt.Fprintln(os.Stderr, "usage: abctl migrate <actor-type> <partition-id> <target-node-id>")
 			os.Exit(1)
 		}
-		cmdMigrate(cfg, flag.Arg(1), flag.Arg(2))
+		cmdMigrate(cfg, flag.Arg(1), flag.Arg(2), flag.Arg(3))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", flag.Arg(0))
 		printUsage()
@@ -69,10 +69,10 @@ Global flags:
   -pm string   PM gRPC address (default from ~/.actorbase/config.json or ACTORBASE_PM_ADDR env)
 
 Commands:
-  members                               List active PS nodes
-  routing                               Print current routing table
-  split <partition-id> <split-key>      Split a partition at the given key
-  migrate <partition-id> <node-id>      Migrate a partition to the target node
+  members                                          List active PS nodes
+  routing                                          Print current routing table
+  split <actor-type> <partition-id> <split-key>    Split a partition at the given key
+  migrate <actor-type> <partition-id> <node-id>    Migrate a partition to the target node
 
 `)
 }
@@ -147,12 +147,12 @@ func cmdRouting(cfg *Config) {
 	}
 }
 
-func cmdSplit(cfg *Config, partitionID, splitKey string) {
+func cmdSplit(cfg *Config, actorType, partitionID, splitKey string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	client := newPMClient(cfg.PMAddr)
-	newID, err := client.RequestSplit(ctx, partitionID, splitKey)
+	newID, err := client.RequestSplit(ctx, actorType, partitionID, splitKey)
 	if err != nil {
 		slog.Error("split failed", "err", err)
 		os.Exit(1)
@@ -160,12 +160,12 @@ func cmdSplit(cfg *Config, partitionID, splitKey string) {
 	fmt.Printf("split successful\nnew partition ID: %s\n", newID)
 }
 
-func cmdMigrate(cfg *Config, partitionID, targetNodeID string) {
+func cmdMigrate(cfg *Config, actorType, partitionID, targetNodeID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	client := newPMClient(cfg.PMAddr)
-	if err := client.RequestMigrate(ctx, partitionID, targetNodeID); err != nil {
+	if err := client.RequestMigrate(ctx, actorType, partitionID, targetNodeID); err != nil {
 		slog.Error("migrate failed", "err", err)
 		os.Exit(1)
 	}

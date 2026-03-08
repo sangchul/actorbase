@@ -34,8 +34,10 @@ func (r KeyRange) Overlaps(other KeyRange) bool {
 }
 
 // Partition은 클러스터 내 하나의 파티션 단위.
-// 유일한 ID와 담당 키 범위를 가진다.
+// 유일한 ID, actor 타입, 담당 키 범위를 가진다.
+// 키 범위 중복 검증은 동일 ActorType 내에서만 수행한다.
 type Partition struct {
-	ID       string
-	KeyRange KeyRange
+	ID        string
+	ActorType string // actor type 식별자. 동일 ActorType 내에서 키 범위가 유일해야 한다.
+	KeyRange  KeyRange
 }

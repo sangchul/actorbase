@@ -70,7 +70,8 @@ func (NodeStatus) EnumDescriptor() ([]byte, []int) {
 type SendRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PartitionId   string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"` // Codec.Marshal(req)
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`                      // Codec.Marshal(req)
+	ActorType     string                 `protobuf:"bytes,3,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"` // actor type 식별자. PS가 올바른 ActorHost로 라우팅하는 데 사용.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -117,6 +118,13 @@ func (x *SendRequest) GetPayload() []byte {
 		return x.Payload
 	}
 	return nil
+}
+
+func (x *SendRequest) GetActorType() string {
+	if x != nil {
+		return x.ActorType
+	}
+	return ""
 }
 
 type SendResponse struct {
@@ -211,6 +219,7 @@ type SplitRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PartitionId   string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
 	SplitKey      string                 `protobuf:"bytes,2,opt,name=split_key,json=splitKey,proto3" json:"split_key,omitempty"`
+	ActorType     string                 `protobuf:"bytes,3,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"` // 사용자가 명시. PM이 파티션의 실제 actor_type과 검증한다.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -255,6 +264,13 @@ func (x *SplitRequest) GetPartitionId() string {
 func (x *SplitRequest) GetSplitKey() string {
 	if x != nil {
 		return x.SplitKey
+	}
+	return ""
+}
+
+func (x *SplitRequest) GetActorType() string {
+	if x != nil {
+		return x.ActorType
 	}
 	return ""
 }
@@ -307,6 +323,7 @@ type MigrateRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PartitionId   string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
 	TargetNodeId  string                 `protobuf:"bytes,2,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	ActorType     string                 `protobuf:"bytes,3,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"` // 사용자가 명시. PM이 파티션의 실제 actor_type과 검증한다.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -351,6 +368,13 @@ func (x *MigrateRequest) GetPartitionId() string {
 func (x *MigrateRequest) GetTargetNodeId() string {
 	if x != nil {
 		return x.TargetNodeId
+	}
+	return ""
+}
+
+func (x *MigrateRequest) GetActorType() string {
+	if x != nil {
+		return x.ActorType
 	}
 	return ""
 }
@@ -536,6 +560,7 @@ type ExecuteSplitRequest struct {
 	PartitionId    string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
 	SplitKey       string                 `protobuf:"bytes,2,opt,name=split_key,json=splitKey,proto3" json:"split_key,omitempty"`
 	NewPartitionId string                 `protobuf:"bytes,3,opt,name=new_partition_id,json=newPartitionId,proto3" json:"new_partition_id,omitempty"`
+	ActorType      string                 `protobuf:"bytes,4,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"` // PS가 올바른 ActorHost로 라우팅하는 데 사용.
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -591,6 +616,13 @@ func (x *ExecuteSplitRequest) GetNewPartitionId() string {
 	return ""
 }
 
+func (x *ExecuteSplitRequest) GetActorType() string {
+	if x != nil {
+		return x.ActorType
+	}
+	return ""
+}
+
 type ExecuteSplitResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -632,6 +664,7 @@ type ExecuteMigrateOutRequest struct {
 	PartitionId   string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
 	TargetNodeId  string                 `protobuf:"bytes,2,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
 	TargetAddress string                 `protobuf:"bytes,3,opt,name=target_address,json=targetAddress,proto3" json:"target_address,omitempty"`
+	ActorType     string                 `protobuf:"bytes,4,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"` // PS가 올바른 ActorHost로 라우팅하는 데 사용.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -687,6 +720,13 @@ func (x *ExecuteMigrateOutRequest) GetTargetAddress() string {
 	return ""
 }
 
+func (x *ExecuteMigrateOutRequest) GetActorType() string {
+	if x != nil {
+		return x.ActorType
+	}
+	return ""
+}
+
 type ExecuteMigrateOutResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -728,6 +768,7 @@ type PreparePartitionRequest struct {
 	PartitionId   string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
 	KeyRangeStart string                 `protobuf:"bytes,2,opt,name=key_range_start,json=keyRangeStart,proto3" json:"key_range_start,omitempty"` // target PS가 올바른 파티션인지 검증용
 	KeyRangeEnd   string                 `protobuf:"bytes,3,opt,name=key_range_end,json=keyRangeEnd,proto3" json:"key_range_end,omitempty"`
+	ActorType     string                 `protobuf:"bytes,4,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"` // PS가 올바른 ActorHost로 라우팅하는 데 사용.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -779,6 +820,13 @@ func (x *PreparePartitionRequest) GetKeyRangeStart() string {
 func (x *PreparePartitionRequest) GetKeyRangeEnd() string {
 	if x != nil {
 		return x.KeyRangeEnd
+	}
+	return ""
+}
+
+func (x *PreparePartitionRequest) GetActorType() string {
+	if x != nil {
+		return x.ActorType
 	}
 	return ""
 }
@@ -875,10 +923,11 @@ type RouteEntryProto struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PartitionId   string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
 	KeyRangeStart string                 `protobuf:"bytes,2,opt,name=key_range_start,json=keyRangeStart,proto3" json:"key_range_start,omitempty"`
-	KeyRangeEnd   string                 `protobuf:"bytes,3,opt,name=key_range_end,json=keyRangeEnd,proto3" json:"key_range_end,omitempty"`
+	KeyRangeEnd   string                 `protobuf:"bytes,3,opt,name=key_range_end,json=keyRangeEnd,proto3" json:"key_range_end,omitempty"` // "" = 상한 없음
 	NodeId        string                 `protobuf:"bytes,4,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	NodeAddress   string                 `protobuf:"bytes,5,opt,name=node_address,json=nodeAddress,proto3" json:"node_address,omitempty"`
 	NodeStatus    NodeStatus             `protobuf:"varint,6,opt,name=node_status,json=nodeStatus,proto3,enum=actorbase.v1.NodeStatus" json:"node_status,omitempty"`
+	ActorType     string                 `protobuf:"bytes,7,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"` // actor type 식별자
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -955,26 +1004,39 @@ func (x *RouteEntryProto) GetNodeStatus() NodeStatus {
 	return NodeStatus_NODE_STATUS_ACTIVE
 }
 
+func (x *RouteEntryProto) GetActorType() string {
+	if x != nil {
+		return x.ActorType
+	}
+	return ""
+}
+
 var File_internal_transport_proto_actorbase_proto protoreflect.FileDescriptor
 
 const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\n" +
-	"(internal/transport/proto/actorbase.proto\x12\factorbase.v1\"J\n" +
+	"(internal/transport/proto/actorbase.proto\x12\factorbase.v1\"i\n" +
 	"\vSendRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"(\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x03 \x01(\tR\tactorType\"(\n" +
 	"\fSendResponse\x12\x18\n" +
 	"\apayload\x18\x01 \x01(\fR\apayload\"2\n" +
 	"\x13WatchRoutingRequest\x12\x1b\n" +
-	"\tclient_id\x18\x01 \x01(\tR\bclientId\"N\n" +
+	"\tclient_id\x18\x01 \x01(\tR\bclientId\"m\n" +
 	"\fSplitRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12\x1b\n" +
-	"\tsplit_key\x18\x02 \x01(\tR\bsplitKey\"9\n" +
+	"\tsplit_key\x18\x02 \x01(\tR\bsplitKey\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x03 \x01(\tR\tactorType\"9\n" +
 	"\rSplitResponse\x12(\n" +
-	"\x10new_partition_id\x18\x01 \x01(\tR\x0enewPartitionId\"Y\n" +
+	"\x10new_partition_id\x18\x01 \x01(\tR\x0enewPartitionId\"x\n" +
 	"\x0eMigrateRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12$\n" +
-	"\x0etarget_node_id\x18\x02 \x01(\tR\ftargetNodeId\"\x11\n" +
+	"\x0etarget_node_id\x18\x02 \x01(\tR\ftargetNodeId\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x03 \x01(\tR\tactorType\"\x11\n" +
 	"\x0fMigrateResponse\"\x14\n" +
 	"\x12ListMembersRequest\"q\n" +
 	"\n" +
@@ -983,25 +1045,31 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x120\n" +
 	"\x06status\x18\x03 \x01(\x0e2\x18.actorbase.v1.NodeStatusR\x06status\"I\n" +
 	"\x13ListMembersResponse\x122\n" +
-	"\amembers\x18\x01 \x03(\v2\x18.actorbase.v1.MemberInfoR\amembers\"\x7f\n" +
+	"\amembers\x18\x01 \x03(\v2\x18.actorbase.v1.MemberInfoR\amembers\"\x9e\x01\n" +
 	"\x13ExecuteSplitRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12\x1b\n" +
 	"\tsplit_key\x18\x02 \x01(\tR\bsplitKey\x12(\n" +
-	"\x10new_partition_id\x18\x03 \x01(\tR\x0enewPartitionId\"\x16\n" +
-	"\x14ExecuteSplitResponse\"\x8a\x01\n" +
+	"\x10new_partition_id\x18\x03 \x01(\tR\x0enewPartitionId\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x04 \x01(\tR\tactorType\"\x16\n" +
+	"\x14ExecuteSplitResponse\"\xa9\x01\n" +
 	"\x18ExecuteMigrateOutRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12$\n" +
 	"\x0etarget_node_id\x18\x02 \x01(\tR\ftargetNodeId\x12%\n" +
-	"\x0etarget_address\x18\x03 \x01(\tR\rtargetAddress\"\x1b\n" +
-	"\x19ExecuteMigrateOutResponse\"\x88\x01\n" +
+	"\x0etarget_address\x18\x03 \x01(\tR\rtargetAddress\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x04 \x01(\tR\tactorType\"\x1b\n" +
+	"\x19ExecuteMigrateOutResponse\"\xa7\x01\n" +
 	"\x17PreparePartitionRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12&\n" +
 	"\x0fkey_range_start\x18\x02 \x01(\tR\rkeyRangeStart\x12\"\n" +
-	"\rkey_range_end\x18\x03 \x01(\tR\vkeyRangeEnd\"\x1a\n" +
+	"\rkey_range_end\x18\x03 \x01(\tR\vkeyRangeEnd\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x04 \x01(\tR\tactorType\"\x1a\n" +
 	"\x18PreparePartitionResponse\"f\n" +
 	"\x11RoutingTableProto\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x03R\aversion\x127\n" +
-	"\aentries\x18\x02 \x03(\v2\x1d.actorbase.v1.RouteEntryProtoR\aentries\"\xf7\x01\n" +
+	"\aentries\x18\x02 \x03(\v2\x1d.actorbase.v1.RouteEntryProtoR\aentries\"\x96\x02\n" +
 	"\x0fRouteEntryProto\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12&\n" +
 	"\x0fkey_range_start\x18\x02 \x01(\tR\rkeyRangeStart\x12\"\n" +
@@ -1009,7 +1077,9 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\anode_id\x18\x04 \x01(\tR\x06nodeId\x12!\n" +
 	"\fnode_address\x18\x05 \x01(\tR\vnodeAddress\x129\n" +
 	"\vnode_status\x18\x06 \x01(\x0e2\x18.actorbase.v1.NodeStatusR\n" +
-	"nodeStatus*>\n" +
+	"nodeStatus\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\a \x01(\tR\tactorType*>\n" +
 	"\n" +
 	"NodeStatus\x12\x16\n" +
 	"\x12NODE_STATUS_ACTIVE\x10\x00\x12\x18\n" +

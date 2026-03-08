@@ -58,6 +58,7 @@ func main() {
 
 	client, err := sdk.NewClient(sdk.Config[KVRequest, KVResponse]{
 		PMAddr:        *pmAddr,
+		TypeID:        "kv",
 		Codec:         adapterjson.New(),
 		MaxRetries:    5,
 		RetryInterval: 200 * time.Millisecond,

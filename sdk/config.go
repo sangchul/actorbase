@@ -17,8 +17,9 @@ const (
 type Config[Req, Resp any] struct {
 	// ─── 필수 (사용자 제공) ───────────────────────────────────────
 
-	PMAddr string         // PM gRPC 주소 ("host:port")
-	Codec  provider.Codec // PS와 동일한 구현체를 주입해야 한다
+	PMAddr  string         // PM gRPC 주소 ("host:port")
+	TypeID  string         // 이 Client가 대상으로 하는 actor type 식별자
+	Codec   provider.Codec // PS와 동일한 구현체를 주입해야 한다
 
 	// ─── 선택 (기본값 있음) ───────────────────────────────────────
 
@@ -46,6 +47,9 @@ func (c *Config[Req, Resp]) setDefaults() {
 func (c *Config[Req, Resp]) validate() error {
 	if c.PMAddr == "" {
 		return fmt.Errorf("sdk: PMAddr is required")
+	}
+	if c.TypeID == "" {
+		return fmt.Errorf("sdk: TypeID is required")
 	}
 	if c.Codec == nil {
 		return fmt.Errorf("sdk: Codec is required")

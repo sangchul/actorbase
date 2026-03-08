@@ -84,6 +84,7 @@ Commands:
 
 	client, err := sdk.NewClient(sdk.Config[KVRequest, KVResponse]{
 		PMAddr: *pmAddr,
+		TypeID: "kv",
 		Codec:  adapterjson.New(),
 	})
 	if err != nil {

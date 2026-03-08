@@ -31,7 +31,8 @@ func NewMigrator(
 }
 
 // Migrate는 partitionID를 targetNodeID로 이동시킨다.
-func (m *Migrator) Migrate(ctx context.Context, partitionID, targetNodeID string) error {
+// actorType은 partitionID의 실제 actor type과 일치해야 한다. 불일치 시 에러를 반환한다.
+func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNodeID string) error {
 	// 1. 라우팅 테이블 조회 및 검증
 	rt, err := m.routingStore.Load(ctx)
 	if err != nil {
@@ -44,6 +45,10 @@ func (m *Migrator) Migrate(ctx context.Context, partitionID, targetNodeID string
 	entry, ok := rt.LookupByPartition(partitionID)
 	if !ok {
 		return fmt.Errorf("partition %s not found", partitionID)
+	}
+	if entry.Partition.ActorType != actorType {
+		return fmt.Errorf("actor type mismatch: partition %s has actor type %q, got %q",
+			partitionID, entry.Partition.ActorType, actorType)
 	}
 	if entry.PartitionStatus == domain.PartitionStatusDraining {
 		return fmt.Errorf("partition %s is already draining", partitionID)
@@ -82,7 +87,7 @@ func (m *Migrator) Migrate(ctx context.Context, partitionID, targetNodeID string
 		return fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
 	}
 	sourceCtrl := transport.NewPSControlClient(sourceConn)
-	if err := sourceCtrl.ExecuteMigrateOut(ctx, partitionID, targetNodeID, targetNode.Address); err != nil {
+	if err := sourceCtrl.ExecuteMigrateOut(ctx, entry.Partition.ActorType, partitionID, targetNodeID, targetNode.Address); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("execute migrate out: %w", err)
 	}
@@ -97,7 +102,7 @@ func (m *Migrator) Migrate(ctx context.Context, partitionID, targetNodeID string
 	}
 	targetCtrl := transport.NewPSControlClient(targetConn)
 	kr := entry.Partition.KeyRange
-	if err := targetCtrl.PreparePartition(ctx, partitionID, kr.Start, kr.End); err != nil {
+	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End); err != nil {
 		slog.Error("prepare partition failed, reverting routing", "partition", partitionID, "err", err)
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("prepare partition on target PS: %w", err)
@@ -199,7 +204,7 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 	}
 	targetCtrl := transport.NewPSControlClient(targetConn)
 	kr := entry.Partition.KeyRange
-	if err := targetCtrl.PreparePartition(ctx, partitionID, kr.Start, kr.End); err != nil {
+	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("prepare partition on target PS: %w", err)
 	}
