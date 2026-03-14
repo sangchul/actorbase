@@ -109,6 +109,17 @@ func (a *BucketActor) Replay(entry []byte) error {
 }
 ```
 
+### 선택적 인터페이스
+
+```go
+// Countable은 Actor가 선택적으로 구현하는 인터페이스.
+// 구현하면 PM의 Auto Balancer가 key count를 split 판단에 활용한다.
+// 구현하지 않으면 `abctl stats`의 KEY-COUNT 컬럼이 "n/a"로 표시된다.
+type Countable interface {
+    KeyCount() int64
+}
+```
+
 ### 알려진 한계
 
 - `Req`는 단일 타입이므로, Get/Put/Delete처럼 여러 종류의 연산을 표현하려면 사용자가 직접 discriminator 필드(예: `Op string`)나 내부 variant 패턴을 사용해야 한다. 컴파일 타임에 연산 종류를 강제하지는 않는다.

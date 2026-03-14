@@ -70,10 +70,14 @@ message SendResponse {
 
 // ─── Management Plane: SDK/abctl → PM ────────────────────
 service PartitionManagerService {
-  rpc WatchRouting(WatchRoutingRequest) returns (stream RoutingTableProto);
-  rpc RequestSplit(SplitRequest)        returns (SplitResponse);
-  rpc RequestMigrate(MigrateRequest)    returns (MigrateResponse);
-  rpc ListMembers(ListMembersRequest)   returns (ListMembersResponse);
+  rpc WatchRouting(WatchRoutingRequest)       returns (stream RoutingTableProto);
+  rpc RequestSplit(SplitRequest)              returns (SplitResponse);
+  rpc RequestMigrate(MigrateRequest)          returns (MigrateResponse);
+  rpc ListMembers(ListMembersRequest)         returns (ListMembersResponse);
+  rpc GetClusterStats(GetClusterStatsRequest) returns (GetClusterStatsResponse);
+  rpc ApplyPolicy(ApplyPolicyRequest)         returns (ApplyPolicyResponse);
+  rpc GetPolicy(GetPolicyRequest)             returns (GetPolicyResponse);
+  rpc ClearPolicy(ClearPolicyRequest)         returns (ClearPolicyResponse);
 }
 message WatchRoutingRequest { string client_id = 1; }
 message SplitRequest   { string partition_id = 1; string split_key = 2; string actor_type = 3; }
@@ -83,12 +87,27 @@ message MigrateResponse {}
 message ListMembersRequest {}
 message MemberInfo     { string node_id = 1; string address = 2; NodeStatus status = 3; }
 message ListMembersResponse { repeated MemberInfo members = 1; }
+// GetClusterStats: PM이 모든 PS에 GetStats를 병렬 호출하여 집계 후 반환
+message GetClusterStatsRequest  { string node_id = 1; } // 빈 문자열이면 전체
+message GetClusterStatsResponse { repeated NodeStatsProto nodes = 1; }
+message NodeStatsProto {
+  string node_id   = 1; string node_addr = 2; float node_rps = 3;
+  int32  partition_count = 4; repeated PartitionStatsProto partitions = 5;
+}
+// ApplyPolicy: YAML raw string을 PM에 전송 → AutoPolicy 활성화
+message ApplyPolicyRequest  { string policy_yaml = 1; }
+message ApplyPolicyResponse {}
+message GetPolicyRequest  {}
+message GetPolicyResponse { string policy_yaml = 1; bool active = 2; }
+message ClearPolicyRequest  {}
+message ClearPolicyResponse {}
 
 // ─── Control Plane: PM → PS ──────────────────────────────
 service PartitionControlService {
   rpc ExecuteSplit(ExecuteSplitRequest)           returns (ExecuteSplitResponse);
   rpc ExecuteMigrateOut(ExecuteMigrateOutRequest) returns (ExecuteMigrateOutResponse);
   rpc PreparePartition(PreparePartitionRequest)   returns (PreparePartitionResponse);
+  rpc GetStats(GetStatsRequest)                   returns (GetStatsResponse);
 }
 message ExecuteSplitRequest {
   string partition_id     = 1;
@@ -111,6 +130,18 @@ message PreparePartitionRequest {
   string actor_type      = 4;
 }
 message PreparePartitionResponse {}
+// GetStats: PS 노드 전체 통계 조회 (파티션별 RPS, key count)
+message GetStatsRequest {}
+message GetStatsResponse {
+  float  node_rps        = 1;
+  int32  partition_count = 2;
+  repeated PartitionStatsProto partitions = 3;
+}
+message PartitionStatsProto {
+  string partition_id = 1; string actor_type = 2;
+  int64  key_count    = 3; // -1이면 Countable 미구현
+  float  rps          = 4;
+}
 
 // ─── Shared ───────────────────────────────────────────────
 message RoutingTableProto {
@@ -162,7 +193,15 @@ PS 핸들러에서 `provider` 에러를 gRPC status로 변환하고, SDK 클라�
 
 **PMClient** (SDK/abctl → PM): `WatchRouting`, `RequestSplit`, `RequestMigrate`, `ListMembers`. WatchRouting 스트림이 끊기면 내부에서 자동 재연결 후 재구독한다.
 
-**PSControlClient** (PM → PS): `ExecuteSplit`, `ExecuteMigrateOut`, `PreparePartition`.
+**PSControlClient** (PM → PS): `ExecuteSplit`, `ExecuteMigrateOut`, `PreparePartition`, `GetStats`.
+
+**PMClient 추가 메서드** (abctl → PM): `ApplyPolicy(yamlStr)`, `GetPolicy() (yamlStr, active, err)`, `ClearPolicy()`, `GetClusterStats(nodeID) ([]NodeStats, err)`. `nodeID`가 빈 문자열이면 전체 노드 반환.
+
+### gRPC 에러 추가 매핑
+
+| 상황 | gRPC status code | 설명 |
+|---|---|---|
+| AutoPolicy 활성 중 수동 split/migrate 시도 | PERMISSION_DENIED | `fromGRPCStatus`에서 raw 메시지로 반환 (에러 내용 보존) |
 
 ---
 

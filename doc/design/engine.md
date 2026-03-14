@@ -8,6 +8,7 @@ Actor 실행 엔진. Partition Server(PS)가 사용한다.
 - `mailbox.go`   — mailbox: Actor당 단일 스레드 실행 보장
 - `flusher.go`   — WALFlusher: WAL group commit
 - `scheduler.go` — EvictionScheduler, CheckpointScheduler
+- `stats.go`     — PartitionStats, rpsCounter
 
 ---
 
@@ -81,6 +82,7 @@ Evict      = Checkpoint + Actor 메모리에서 제거
 | `Split(ctx, partitionID, splitKey, newPartitionID)` | 파티션 split. 비활성이면 먼저 활성화. |
 | `IdleActors(idleSince)` | 마지막 메시지가 idleSince 이전인 파티션 목록. |
 | `ActivePartitions()` | 현재 활성화된 모든 파티션 목록. |
+| `GetStats()` | 활성 Actor 전체의 통계(`[]PartitionStats`) 반환. PM Auto Balancer가 사용. |
 
 ### 활성화 흐름
 
@@ -117,13 +119,35 @@ Split(partitionID, splitKey, newPartitionID):
 
 ## mailbox / WALFlusher / Scheduler 개요
 
-**mailbox**: Actor당 하나. 단일 goroutine이 inCh에서 순차적으로 메시지를 처리하여 단일 스레드 실행을 보장한다. checkpoint 요청 수신 시 inCh를 일시 중단하고 pendingWAL == 0 후 Snapshot을 찍는다.
+**mailbox**: Actor당 하나. 단일 goroutine이 inCh에서 순차적으로 메시지를 처리하여 단일 스레드 실행을 보장한다. checkpoint 요청 수신 시 inCh를 일시 중단하고 pendingWAL == 0 후 Snapshot을 찍는다. 각 mailbox는 `rpsCounter`(60초 슬라이딩 윈도우)와 `keyCount atomic.Int64`를 보유하여 stats를 실시간 추적한다.
 
 **WALFlusher**: 공유 goroutine 하나. submitCh로 각 mailbox의 WAL entry를 수신·배치 누적 후, partitionID별로 그룹화하여 WALStore.AppendBatch를 파티션당 1회 호출한다. 결과를 `reply func(lsn uint64, err error)` 클로저로 각 mailbox에 피드백한다. 클로저 사용으로 WALFlusher 자체는 제네릭이 불필요하다.
 
 **EvictionScheduler**: 주기적으로 IdleActors를 조회하여 Evict 호출.
 
 **CheckpointScheduler**: 주기적으로 ActivePartitions를 조회하여 Checkpoint 호출.
+
+## stats.go
+
+```go
+// PartitionStats는 파티션 하나의 런타임 통계.
+type PartitionStats struct {
+    PartitionID string
+    KeyCount    int64   // -1이면 actor가 Countable 미구현
+    RPS         float64 // 60초 슬라이딩 윈도우 평균
+}
+
+// rpsCounter는 60초 슬라이딩 윈도우 RPS 카운터.
+// 초 단위 버킷 60개를 사용하며 goroutine-safe하다.
+// 별도 goroutine 없이 inc() 호출 시점에 버킷을 갱신한다.
+type rpsCounter struct { ... }
+func (r *rpsCounter) inc()                     // Receive 성공 시 호출
+func (r *rpsCounter) rps(window int) float64  // 최근 window초 평균 RPS
+```
+
+mailbox에서의 stats 갱신 흐름:
+- `safeReceive` 성공 → `rps.inc()`
+- WAL flush 확인 후 → actor가 `Countable`이면 `keyCount.Store(actor.KeyCount())`
 
 ---
 

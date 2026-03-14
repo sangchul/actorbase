@@ -9,7 +9,8 @@ PS·PM이 사용한다. SDK는 etcd에 직접 접근하지 않는다.
 - `registry.go`   — NodeRegistry: etcd lease 기반 노드 등록/조회
 - `membership.go` — MembershipWatcher: 노드 join/leave 이벤트 감지
 - `routing.go`    — RoutingTableStore: 라우팅 테이블 저장/조회/watch
-- `pm.go`         — PM presence 등록/감지 (RegisterPM, WaitForPM)
+- `pm.go`         — PM presence 등록/감지 (RegisterPM, WaitForPM, GetPMAddr)
+- `policy.go`     — AutoBalancer 정책 저장/로드 (SavePolicy, LoadPolicy, ClearPolicy)
 
 ---
 
@@ -19,13 +20,15 @@ PS·PM이 사용한다. SDK는 etcd에 직접 접근하지 않는다.
 /actorbase/nodes/{nodeID}   → NodeInfo JSON  (TTL lease)
 /actorbase/routing          → RoutingTable JSON (no TTL)
 /actorbase/pm/{addr}        → PM 주소 (TTL lease, PM presence 표시용)
+/actorbase/policy           → AutoBalancer 정책 YAML (no TTL)
 ```
 
 | 키 | 쓰는 주체 | 읽는 주체 |
 |---|---|---|
 | `/actorbase/nodes/{nodeID}` | PS | PM (ListNodes, MembershipWatcher) |
 | `/actorbase/routing` | PM | PS (Watch) |
-| `/actorbase/pm/{addr}` | PM (RegisterPM) | PS (WaitForPM) |
+| `/actorbase/pm/{addr}` | PM (RegisterPM) | PS (WaitForPM, drainPartitions) |
+| `/actorbase/policy` | PM (SavePolicy/ClearPolicy) | PM (LoadPolicy, Start 시 복원) |
 
 ---
 
@@ -98,6 +101,20 @@ PS가 PM 없이 기동되는 것을 방지하기 위한 유틸리티.
 | `WaitForPM(ctx, etcdCli)` | PM이 등록될 때까지 최대 10초 대기. 없으면 에러 반환. |
 
 PS 기동 시 WaitForPM 실패 → PS 기동 중단.
+
+---
+
+## policy.go (AutoBalancer 정책 영속화)
+
+PM의 AutoBalancer 정책을 etcd에 저장·복원하는 유틸리티.
+
+| 함수 | 설명 |
+|---|---|
+| `SavePolicy(ctx, etcdCli, yamlStr)` | etcd `/actorbase/policy`에 YAML 저장 (TTL 없음) |
+| `LoadPolicy(ctx, etcdCli)` | 저장된 YAML 반환. 없으면 빈 문자열. |
+| `ClearPolicy(ctx, etcdCli)` | 키 삭제 (ManualPolicy로 복귀) |
+
+PM 재시작 시 `Start()`에서 `LoadPolicy`를 호출하여 AutoPolicy를 자동 복원한다.
 
 ---
 
