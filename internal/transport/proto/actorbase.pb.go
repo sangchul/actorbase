@@ -7,11 +7,12 @@
 package actorbasepb
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -1703,7 +1704,7 @@ const file_actorbase_proto_rawDesc = "" +
 	"\bGetStats\x12\x1d.actorbase.v1.GetStatsRequest\x1a\x1e.actorbase.v1.GetStatsResponse\x12U\n" +
 	"\fExecuteSplit\x12!.actorbase.v1.ExecuteSplitRequest\x1a\".actorbase.v1.ExecuteSplitResponse\x12d\n" +
 	"\x11ExecuteMigrateOut\x12&.actorbase.v1.ExecuteMigrateOutRequest\x1a'.actorbase.v1.ExecuteMigrateOutResponse\x12a\n" +
-	"\x10PreparePartition\x12%.actorbase.v1.PreparePartitionRequest\x1a&.actorbase.v1.PreparePartitionResponseBBZ@github.com/oomymy/actorbase/internal/transport/proto;actorbasepbb\x06proto3"
+	"\x10PreparePartition\x12%.actorbase.v1.PreparePartitionRequest\x1a&.actorbase.v1.PreparePartitionResponseBBZ@github.com/sangchul/actorbase/internal/transport/proto;actorbasepbb\x06proto3"
 
 var (
 	file_actorbase_proto_rawDescOnce sync.Once

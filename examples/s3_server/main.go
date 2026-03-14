@@ -22,10 +22,10 @@ import (
 
 	"context"
 
-	"github.com/oomymy/actorbase/adapter/fs"
-	adapterjson "github.com/oomymy/actorbase/adapter/json"
-	"github.com/oomymy/actorbase/provider"
-	"github.com/oomymy/actorbase/ps"
+	"github.com/sangchul/actorbase/adapter/fs"
+	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	"github.com/sangchul/actorbase/provider"
+	"github.com/sangchul/actorbase/ps"
 )
 
 // ── Bucket Actor ──────────────────────────────────────────────────────────────

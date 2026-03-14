@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/oomymy/actorbase/sdk"
+	"github.com/sangchul/actorbase/sdk"
 )
 
 // Stats는 전체 worker들의 집계 통계다.

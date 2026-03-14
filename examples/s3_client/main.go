@@ -25,8 +25,8 @@ import (
 	"strconv"
 	"time"
 
-	adapterjson "github.com/oomymy/actorbase/adapter/json"
-	"github.com/oomymy/actorbase/sdk"
+	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	"github.com/sangchul/actorbase/sdk"
 )
 
 // BucketRequest / BucketResponse — s3_server와 동일해야 한다.

@@ -1,4 +1,4 @@
-module github.com/oomymy/actorbase
+module github.com/sangchul/actorbase
 
 go 1.25.0
 

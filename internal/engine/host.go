@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/provider"
 )
 
 const (
-	defaultMailboxSize    = 64
-	defaultFlushSize      = 32
-	defaultFlushInterval  = 10 * time.Millisecond
+	defaultMailboxSize   = 64
+	defaultFlushSize     = 32
+	defaultFlushInterval = 10 * time.Millisecond
 )
 
 // Config는 ActorHost 생성에 필요한 의존성과 설정을 담는다.

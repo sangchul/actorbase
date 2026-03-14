@@ -7,7 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // toGRPCStatus는 provider error를 gRPC status error로 변환한다.

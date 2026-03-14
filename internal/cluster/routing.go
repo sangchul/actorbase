@@ -8,7 +8,7 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/oomymy/actorbase/internal/domain"
+	"github.com/sangchul/actorbase/internal/domain"
 )
 
 const routingKey = "/actorbase/routing"

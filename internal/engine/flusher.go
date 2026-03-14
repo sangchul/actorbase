@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // walPending은 WAL flush 대기 중인 항목 하나.

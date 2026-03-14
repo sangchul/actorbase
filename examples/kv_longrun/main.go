@@ -25,8 +25,8 @@ import (
 	"syscall"
 	"time"
 
-	adapterjson "github.com/oomymy/actorbase/adapter/json"
-	"github.com/oomymy/actorbase/sdk"
+	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	"github.com/sangchul/actorbase/sdk"
 )
 
 // KVRequest / KVResponse는 kv_server와 동일하다.
@@ -42,15 +42,15 @@ type KVResponse struct {
 }
 
 func main() {
-	pmAddr        := flag.String("pm", "localhost:8000", "PM gRPC address")
-	duration      := flag.Duration("duration", 8*time.Minute, "run duration (0 = run until interrupted)")
-	numWorkers    := flag.Int("workers", 20, "number of concurrent worker goroutines")
-	numKeys       := flag.Int("keys", 10000, "key space size (key:00000000 ~ key:9999999)")
-	ledgerPath    := flag.String("ledger", "/tmp/ab_ledger.json", "ledger file path")
+	pmAddr := flag.String("pm", "localhost:8000", "PM gRPC address")
+	duration := flag.Duration("duration", 8*time.Minute, "run duration (0 = run until interrupted)")
+	numWorkers := flag.Int("workers", 20, "number of concurrent worker goroutines")
+	numKeys := flag.Int("keys", 10000, "key space size (key:00000000 ~ key:9999999)")
+	ledgerPath := flag.String("ledger", "/tmp/ab_ledger.json", "ledger file path")
 	flushInterval := flag.Duration("flush-interval", 10*time.Second, "ledger flush interval")
-	setRatio      := flag.Float64("set-ratio", 0.6, "fraction of operations that are set (0.0~1.0)")
-	delRatio      := flag.Float64("del-ratio", 0.2, "fraction of operations that are del (rest = get)")
-	doVerify      := flag.Bool("verify", false, "verify mode: load ledger and check server state")
+	setRatio := flag.Float64("set-ratio", 0.6, "fraction of operations that are set (0.0~1.0)")
+	delRatio := flag.Float64("del-ratio", 0.2, "fraction of operations that are del (rest = get)")
+	doVerify := flag.Bool("verify", false, "verify mode: load ledger and check server state")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

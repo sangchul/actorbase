@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/oomymy/actorbase/pm"
+	"github.com/sangchul/actorbase/pm"
 )
 
 func main() {

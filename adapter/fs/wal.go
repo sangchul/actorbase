@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // WALStore는 파일시스템 기반 WALStore 구현체.

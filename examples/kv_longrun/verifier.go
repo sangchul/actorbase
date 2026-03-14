@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/oomymy/actorbase/sdk"
+	"github.com/sangchul/actorbase/sdk"
 )
 
 // Mismatch는 정답지와 서버 상태가 일치하지 않는 항목이다.

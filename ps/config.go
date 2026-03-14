@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/provider"
 )
 
 const (
@@ -82,11 +82,11 @@ func (c *BaseConfig) validate() error {
 type TypeConfig[Req, Resp any] struct {
 	// ─── 필수 (사용자 제공) ───────────────────────────────────────
 
-	TypeID          string                               // actor type 식별자. 라우팅 테이블과 일치해야 한다.
-	Factory         provider.ActorFactory[Req, Resp]     // Actor 인스턴스 생성 함수
-	Codec           provider.Codec                       // SDK와 동일한 Codec 구현체를 주입
-	WALStore        provider.WALStore                    // WAL 저장소
-	CheckpointStore provider.CheckpointStore             // Checkpoint 저장소
+	TypeID          string                           // actor type 식별자. 라우팅 테이블과 일치해야 한다.
+	Factory         provider.ActorFactory[Req, Resp] // Actor 인스턴스 생성 함수
+	Codec           provider.Codec                   // SDK와 동일한 Codec 구현체를 주입
+	WALStore        provider.WALStore                // WAL 저장소
+	CheckpointStore provider.CheckpointStore         // Checkpoint 저장소
 
 	// ─── 선택 (기본값 있음) ───────────────────────────────────────
 

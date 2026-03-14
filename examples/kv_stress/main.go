@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	adapterjson "github.com/oomymy/actorbase/adapter/json"
-	"github.com/oomymy/actorbase/sdk"
+	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	"github.com/sangchul/actorbase/sdk"
 )
 
 type KVRequest struct {

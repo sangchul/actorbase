@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/oomymy/actorbase/internal/cluster"
-	"github.com/oomymy/actorbase/internal/domain"
-	"github.com/oomymy/actorbase/internal/transport"
+	"github.com/sangchul/actorbase/internal/cluster"
+	"github.com/sangchul/actorbase/internal/domain"
+	"github.com/sangchul/actorbase/internal/transport"
 )
 
 // Migrator는 파티션 migration을 조율한다.

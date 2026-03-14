@@ -22,8 +22,8 @@ import (
 	"os"
 	"time"
 
-	adapterjson "github.com/oomymy/actorbase/adapter/json"
-	"github.com/oomymy/actorbase/sdk"
+	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	"github.com/sangchul/actorbase/sdk"
 )
 
 // KVRequest / KVResponse는 kv_server의 Actor가 처리하는 타입과 동일해야 한다.

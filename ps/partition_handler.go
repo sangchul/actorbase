@@ -7,10 +7,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/oomymy/actorbase/internal/domain"
-	"github.com/oomymy/actorbase/internal/transport"
-	pb "github.com/oomymy/actorbase/internal/transport/proto"
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/internal/domain"
+	"github.com/sangchul/actorbase/internal/transport"
+	pb "github.com/sangchul/actorbase/internal/transport/proto"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // partitionHandler는 PartitionService gRPC 핸들러.

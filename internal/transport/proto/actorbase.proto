@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package actorbase.v1;
 
-option go_package = "github.com/oomymy/actorbase/internal/transport/proto;actorbasepb";
+option go_package = "github.com/sangchul/actorbase/internal/transport/proto;actorbasepb";
 
 // ─────────────────────────────────────────────────────────
 // Data Plane: SDK → PS

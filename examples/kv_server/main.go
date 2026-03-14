@@ -17,17 +17,17 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/oomymy/actorbase/adapter/fs"
-	adapterjson "github.com/oomymy/actorbase/adapter/json"
-	"github.com/oomymy/actorbase/provider"
-	"github.com/oomymy/actorbase/ps"
+	"github.com/sangchul/actorbase/adapter/fs"
+	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	"github.com/sangchul/actorbase/provider"
+	"github.com/sangchul/actorbase/ps"
 )
 
 // ── KV Actor 타입 정의 ────────────────────────────────────────────────────────
 
 // KVRequest는 KV Actor의 요청 타입이다.
 type KVRequest struct {
-	Op    string `json:"op"`    // "get", "set", "del"
+	Op    string `json:"op"` // "get", "set", "del"
 	Key   string `json:"key"`
 	Value []byte `json:"value"` // "set" 시에만 사용
 }

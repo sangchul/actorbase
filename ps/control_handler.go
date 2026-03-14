@@ -7,8 +7,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/oomymy/actorbase/internal/transport"
-	pb "github.com/oomymy/actorbase/internal/transport/proto"
+	"github.com/sangchul/actorbase/internal/transport"
+	pb "github.com/sangchul/actorbase/internal/transport/proto"
 )
 
 // controlHandler는 PartitionControlService gRPC 핸들러.

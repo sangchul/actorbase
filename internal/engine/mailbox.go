@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // envelope은 Actor에 전달할 메시지 하나.
@@ -56,7 +56,7 @@ type mailbox[Req, Resp any] struct {
 	inCh           chan envelope[Req, Resp]
 	splitCh        chan splitReq
 	submitCh       chan<- walPending // WALFlusher 수신 채널
-	walConfirmedCh chan uint64 // WALFlusher → mailbox goroutine LSN 피드백
+	walConfirmedCh chan uint64       // WALFlusher → mailbox goroutine LSN 피드백
 	// checkpointCh는 외부(ActorHost)가 checkpoint를 요청하는 채널.
 	// ActorHost.Checkpoint → mailbox.checkpoint() → checkpointCh로 전달.
 	// mailbox goroutine이 수신하면 drain 대기 후 Snapshot+WAL trim 수행.
@@ -67,11 +67,11 @@ type mailbox[Req, Resp any] struct {
 	walThreshold int // 0이면 WAL 누적 기반 자동 checkpoint 비활성화
 	onWALError   func()
 
-	lastMsg      atomic_time  // EvictionScheduler 참조용
+	lastMsg      atomic_time // EvictionScheduler 참조용
 	confirmedLSN atomic_uint64
 
-	rps      rpsCounter    // RPS 슬라이딩 윈도우
-	keyCount atomic.Int64  // actor가 Countable이면 갱신됨. 아니면 -1 유지.
+	rps      rpsCounter   // RPS 슬라이딩 윈도우
+	keyCount atomic.Int64 // actor가 Countable이면 갱신됨. 아니면 -1 유지.
 
 	doneCh chan struct{} // run() 종료 시 close
 }
@@ -189,7 +189,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 	walsSinceCheckpoint := 0 // 마지막 checkpoint 이후 확인된 WAL entry 수
 	dirty := false           // WAL 없이 상태가 변경된 경우 (e.g. split). checkpoint skip 방지용.
 
-	draining := false         // true이면 inCh/splitCh 일시 중단 (checkpoint drain 대기)
+	draining := false          // true이면 inCh/splitCh 일시 중단 (checkpoint drain 대기)
 	var drainDone chan<- error // 현재 drain의 완료 채널. nil이면 자동 트리거.
 
 	doCheckpoint := func(lsn uint64) error {

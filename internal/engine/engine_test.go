@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // ── 테스트용 Actor 구현 ─────────────────────────────────────────────────────
@@ -451,7 +451,7 @@ type panicActor struct{}
 func (a *panicActor) Receive(_ provider.Context, _ kvReq) (kvResp, []byte, error) {
 	panic("intentional panic")
 }
-func (a *panicActor) Replay(_ []byte) error                         { return nil }
-func (a *panicActor) Snapshot() ([]byte, error)                     { return nil, nil }
-func (a *panicActor) Restore(_ []byte) error                        { return nil }
-func (a *panicActor) Split(_ string) ([]byte, error)                { return nil, nil }
+func (a *panicActor) Replay(_ []byte) error          { return nil }
+func (a *panicActor) Snapshot() ([]byte, error)      { return nil, nil }
+func (a *panicActor) Restore(_ []byte) error         { return nil }
+func (a *panicActor) Split(_ string) ([]byte, error) { return nil, nil }

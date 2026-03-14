@@ -9,9 +9,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/oomymy/actorbase/internal/domain"
-	"github.com/oomymy/actorbase/internal/transport"
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/internal/domain"
+	"github.com/sangchul/actorbase/internal/transport"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // Client는 actorbase 클러스터에 요청을 전송하는 SDK 진입점.

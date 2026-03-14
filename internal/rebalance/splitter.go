@@ -6,9 +6,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/oomymy/actorbase/internal/cluster"
-	"github.com/oomymy/actorbase/internal/domain"
-	"github.com/oomymy/actorbase/internal/transport"
+	"github.com/sangchul/actorbase/internal/cluster"
+	"github.com/sangchul/actorbase/internal/domain"
+	"github.com/sangchul/actorbase/internal/transport"
 )
 
 // Splitter는 파티션 split을 조율한다.

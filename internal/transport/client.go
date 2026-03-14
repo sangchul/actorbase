@@ -9,9 +9,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/oomymy/actorbase/internal/domain"
-	pb "github.com/oomymy/actorbase/internal/transport/proto"
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/internal/domain"
+	pb "github.com/sangchul/actorbase/internal/transport/proto"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // ── ConnPool ─────────────────────────────────────────────────────────────────
