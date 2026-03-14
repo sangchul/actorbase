@@ -2,17 +2,16 @@
 
 Partition Manager(PM) 조립 패키지. 클러스터 멤버십 감시, 라우팅 테이블 관리, SDK 라우팅 push, split/migrate 조율을 담당한다.
 
-의존성: `internal/cluster`, `internal/rebalance`, `internal/transport`, `internal/domain`, `provider`
+의존성: `internal/cluster`, `internal/rebalance`, `internal/transport`, `internal/domain`, `provider`, `policy`
 
 파일 목록:
 - `config.go`              — Config: PM 설정 및 의존성 주입 구조체
 - `server.go`              — Server: 컴포넌트 조립 및 생명주기 관리
 - `manager_handler.go`     — PartitionManagerService gRPC 핸들러 (SDK/abctl → PM)
-- `balancer.go`            — autoBalancer: 주기적 stats 수집 및 split/migrate 자동 실행
-- `policy/policy.go`       — RebalancePolicy 인터페이스 (NodeJoined/NodeLeft 이벤트 기반)
-- `policy/manual.go`       — ManualPolicy: 자동 rebalance 없음
-- `policy/auto.go`         — AutoRebalancePolicy: NodeJoined 시 migrate 수행
-- `policy/threshold.go`    — ThresholdConfig: YAML 기반 Auto Balancer 정책 파싱
+- `balancer.go`            — balancerRunner: 주기적 stats 수집 및 split/migrate 자동 실행
+- `client.go`              — Client: PM 관리 플레인 공개 클라이언트 (abctl 등이 사용)
+
+> BalancePolicy 구현체(`ThresholdPolicy`, `NoopBalancePolicy`)는 최상위 `policy/` 패키지에 위치한다.
 
 ---
 
@@ -24,7 +23,7 @@ Partition Manager(PM) 조립 패키지. 클러스터 멤버십 감시, 라우팅
 | EtcdEndpoints | etcd 엔드포인트 목록 (필수) |
 | ActorTypes | bootstrap 시 생성할 actor type 목록 (필수, 최소 1개) |
 | Metrics | nil이면 no-op 구현체 사용 |
-| Policy | nil이면 ManualPolicy 사용 |
+| BalancePolicy | nil이면 NoopBalancePolicy 사용. YAML policy 적용 중에는 YAML policy가 우선. |
 
 > PM은 NodeRegistry에 등록하지 않는다. PS가 PM 없이 기동되는 것을 방지하기 위해 별도 presence 키(`/actorbase/pm/{addr}`)를 lease로 등록한다.
 
@@ -72,21 +71,52 @@ broadcast 전략: 각 구독자는 최신값(`atomic.Pointer`)과 신호 채널(
 
 ### watchMembership (내부)
 
-NodeLeft 시 Policy와 무관하게 항상 `failoverNode`를 실행한다. `Policy.OnNodeLeft`는 장애 복구 이후의 추가 rebalance(부하 분산 등)에만 활용한다.
+노드 이벤트를 `handleNodeJoined` / `handleNodeLeft`로 위임한다. 각각 goroutine으로 실행.
 
-### failoverNode (내부)
+### handleNodeJoined (내부)
 
 ```
-failoverNode(deadNode):
-  1. opMu.Lock()
-  2. routingStore.Load() → 현재 라우팅 테이블
-  3. nodeRegistry.ListNodes() → 살아있는 노드 목록
-  4. rt.Entries()에서 deadNode 소유 파티션 순회:
-       target = 첫 번째 active 노드 (deadNode 제외)
-       migrator.Failover(ctx, actorType, partitionID, target)
+handleNodeJoined(node):
+  1. nodeRegistry.ListNodes() + routingStore.Load()
+  2. activeBalancePolicy().OnNodeJoined(ctx, node, quickClusterStats) → []BalanceAction
+  3. executeBalanceActions(actions)
 ```
 
-> graceful drain 완료 후 NodeLeft가 발생하면 라우팅 테이블에 해당 노드 파티션이 없으므로 no-op.
+### handleNodeLeft (내부)
+
+```
+handleNodeLeft(node, reason):
+  1. nodeRegistry.ListNodes() + routingStore.Load()
+  2. quickClusterStats에 dead node를 Reachable=false로 포함 (라우팅 테이블 기반 파티션 목록)
+  3. activeBalancePolicy().OnNodeLeft(ctx, node, reason, stats) → []BalanceAction
+  4. executeBalanceActions(actions)  // ActionFailover가 포함될 수 있음
+```
+
+> graceful drain 완료 후 NodeLeft가 발생하면 라우팅 테이블에 해당 노드 파티션이 없으므로
+> OnNodeLeft가 ActionFailover를 반환하지 않아 no-op가 된다.
+
+### activeBalancePolicy (내부)
+
+```
+activeBalancePolicy():
+  YAML policy 적용 중 (activeRunnerCfg != nil) → YAML policy 반환
+  아니면 → cfg.BalancePolicy 반환
+```
+
+### quickClusterStats (내부)
+
+이벤트 핸들러용 경량 ClusterStats. GetStats RPC 없이 라우팅 테이블에서만 구성.
+live 노드: Reachable=true, 파티션 목록 (RPS 없음).
+dead 노드: Reachable=false, 파티션 목록 (라우팅 테이블 기반).
+
+### executeBalanceActions (내부)
+
+```
+for action in actions:
+  Split:    opMu.Lock → splitter.Split
+  Migrate:  opMu.Lock → migrator.Migrate
+  Failover: opMu.Lock → migrator.Failover
+```
 
 ### bootstrap (내부)
 
@@ -115,15 +145,16 @@ failoverNode(deadNode):
 
 ## policy
 
-**ManualPolicy**: split/migrate는 오직 명시적 RPC로만 발생한다. `OnNodeJoined` / `OnNodeLeft` 모두 no-op.
+**NoopBalancePolicy** (최상위 `policy/noop.go`): 모든 메서드가 nil 반환. `pm.Config.BalancePolicy`의 기본값.
 
-**AutoRebalancePolicy**: `OnNodeLeft`는 no-op (failover는 PM 서버 레벨에서 처리). `OnNodeJoined`에서 부하 균등 migrate를 수행한다.
+**ThresholdPolicy** (최상위 `policy/threshold.go`): YAML `abctl policy apply`로 활성화되는 임계값 기반 `provider.BalancePolicy` 구현체.
+- `Evaluate`: RPS/key count 임계값 초과 시 split, 노드 간 파티션 수/RPS 불균형 시 migrate 반환.
+- `OnNodeJoined`: 부하가 가장 많은 노드에서 파티션 하나를 새 노드로 migrate 반환.
+- `OnNodeLeft`: Reachable=false인 노드의 파티션에 ActionFailover 반환.
 
-**autoBalancer** (`balancer.go`): Policy 인터페이스와 별개로 동작하는 주기적 stats 기반 자동 split/migrate. `check_interval`마다 모든 PS에 GetStats를 병렬 호출하여 임계값을 초과한 파티션을 자동 split하거나 노드 간 불균형을 migrate로 해소한다. 자세한 내용은 `doc/design/auto-balancer.md` 참조.
+사용자는 `provider.BalancePolicy` 인터페이스를 직접 구현하여 `pm.Config{BalancePolicy: myPolicy}`로 주입할 수 있다. 자세한 내용은 `doc/design/auto-balancer.md` 참조.
 
-> Policy 인터페이스(OnNodeJoined/OnNodeLeft)와 autoBalancer는 별개 메커니즘이다. autoBalancer는 YAML 정책 적용 시에만 활성화된다.
-
-**수동/자동 배타적 운영**: AutoPolicy(YAML) 활성 중에는 `abctl split`, `abctl migrate` 수동 명령이 `PERMISSION_DENIED`로 거부된다. `abctl policy clear`로 AutoPolicy를 해제해야 수동 명령이 가능하다.
+**autoBalancer 차단 없음**: AutoPolicy(YAML) 활성 중에도 `abctl split`, `abctl migrate` 수동 명령은 `PERMISSION_DENIED`로 거부된다.
 
 ---
 
@@ -133,10 +164,10 @@ failoverNode(deadNode):
 |---|---|---|
 | 라우팅 broadcast 방식 | atomic.Pointer + 버퍼 1 채널 | 느린 구독자는 중간 값을 skip. SDK는 최신 라우팅만 필요. |
 | split/migrate 직렬화 | opMu sync.Mutex | 단순하고 안전. PM 단일 인스턴스 환경에서 충분. |
-| RebalancePolicy 인터페이스 | OnNodeJoined / OnNodeLeft | Policy 교체 가능. 초기엔 ManualPolicy로 시작. |
+| BalancePolicy 인터페이스 | provider.BalancePolicy (OnNodeJoined / OnNodeLeft / Evaluate) | Policy 교체 가능. 기본값은 NoopBalancePolicy. |
 | bootstrap 초기 파티션 | ActorTypes별로 전체 키 범위 파티션 생성 | 다중 actor type 클러스터 지원. |
 | bootstrap CAS | etcd Compare-And-Swap | PM HA 환경에서 중복 생성 방어. |
-| NodeLeft 장애 복구 위치 | PM 서버 레벨 failoverNode (Policy 무관) | ManualPolicy 사용자도 자동 failover 혜택. |
+| NodeLeft 장애 복구 위치 | BalancePolicy.OnNodeLeft 반환 ActionFailover | 정책 구현체가 failover 여부를 결정. graceful이면 파티션 없어 자연히 no-op. |
 | Failover vs Migrate | Migrator.Failover: ExecuteMigrateOut 건너뜀 | source PS 죽었으면 gRPC 호출 불가. checkpoint에서 직접 복원. |
 | PM presence 등록 | etcd `/actorbase/pm/{addr}`에 lease로 등록 | PS가 PM 없이 기동되는 것을 방지. |
 

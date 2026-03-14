@@ -53,7 +53,7 @@ Actor의 Req/Resp 타입을 bytes로 직렬화/역직렬화한다. SDK와 PS 양
 ```protobuf
 syntax = "proto3";
 package actorbase.v1;
-option go_package = "github.com/oomymy/actorbase/internal/transport/proto;actorbasepb";
+option go_package = "github.com/sangchul/actorbase/internal/transport/proto;actorbasepb";
 
 // ─── Data Plane: SDK → PS ────────────────────────────────
 service PartitionService {

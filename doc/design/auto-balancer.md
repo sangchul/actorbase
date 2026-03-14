@@ -111,11 +111,18 @@ type Countable interface {
 
 ### Policy YAML 및 etcd 저장
 
-**`pm/policy/threshold.go` — ThresholdConfig**
+**`policy/threshold.go` — RunnerConfig, ThresholdConfig, ThresholdPolicy**
 
 ```go
+// RunnerConfig: balancerRunner 실행 파라미터. 알고리즘과 무관한 공통 설정.
+type RunnerConfig struct {
+    CheckInterval time.Duration
+    Cooldown      CooldownConfig
+}
+
+// ThresholdConfig: threshold 알고리즘 전용 설정 (YAML 파싱용).
 type ThresholdConfig struct {
-    Algorithm     string        // "threshold"
+    Algorithm     string
     CheckInterval time.Duration
     Cooldown      CooldownConfig
     Split         SplitConfig
@@ -123,7 +130,18 @@ type ThresholdConfig struct {
 }
 ```
 
-`ParsePolicy([]byte) (*ThresholdConfig, error)` — `gopkg.in/yaml.v3` 사용.
+`ParsePolicy([]byte) (provider.BalancePolicy, *RunnerConfig, error)` — algorithm 필드로 구현체 선택.
+현재 지원 알고리즘: `"threshold"` → `ThresholdPolicy` 반환. 새 알고리즘 추가 시 이 함수에만 case 추가.
+
+`ThresholdPolicy`는 `provider.BalancePolicy`를 구현한다.
+
+**`policy/noop.go` — NoopBalancePolicy**
+
+```go
+type NoopBalancePolicy struct{}
+// Evaluate / OnNodeJoined / OnNodeLeft 모두 nil 반환
+```
+`pm.Config.BalancePolicy`가 nil일 때 기본값으로 사용된다.
 
 **`internal/cluster/policy.go`**
 
@@ -134,15 +152,19 @@ etcd 키 `/actorbase/policy`에 YAML raw string 저장/로드/삭제.
 **`pm/server.go`**
 
 - `serverCtx context.Context` — `Start()`의 ctx를 저장. balancer goroutine의 lifetime parent context로 사용 (request context 사용 시 RPC 반환 직후 종료되는 문제 방지).
-- `applyPolicy(ctx, yamlStr, cfg)` — 기존 balancer 중단 → 새 balancer 시작
-- `clearPolicy(ctx)` — balancer 중단 → ManualPolicy
+- `applyPolicy(ctx, yamlStr, pol provider.BalancePolicy, runnerCfg *policy.RunnerConfig)` — 기존 balancer 중단 → 새 balancer 시작. 알고리즘 종류를 모른다.
+- `activeBalancePolicy()` — `activeRunnerCfg != nil`이면 YAML policy, 아니면 `cfg.BalancePolicy` 반환.
+- `activePolicy provider.BalancePolicy` + `activeRunnerCfg *policy.RunnerConfig` — 현재 YAML policy 상태 저장.
+- `clearPolicy(ctx)` — balancer 중단 → NoopBalancePolicy
 - `Start()` — etcd에서 policy 복원 시 balancer도 함께 시작
 
-### AutoBalancer 루프
+### balancerRunner 루프
 
 **`pm/balancer.go`**
 
-`check_interval`마다 아래 루프를 실행한다.
+`balancerRunner`는 `check_interval`마다 아래 루프를 실행한다.
+`pol provider.BalancePolicy`를 주입받아 판단 로직을 위임한다.
+`cfg *policy.RunnerConfig`로 check_interval과 cooldown을 설정한다.
 
 ```
 1. 라우팅 테이블 + 노드 목록 조회
@@ -199,19 +221,25 @@ abctl policy clear                 # ManualPolicy로 복귀
 | 파일 | 변경 내용 |
 |---|---|
 | `provider/actor.go` | Countable 인터페이스 추가 |
+| `provider/balance.go` | 신규: BalancePolicy 인터페이스 + 관련 타입 (NodeInfo, ClusterStats, BalanceAction 등) |
 | `internal/engine/stats.go` | 신규: PartitionStats, rpsCounter (60s 슬라이딩 윈도우) |
 | `internal/engine/mailbox.go` | RPS 추적, KeyCount atomic 갱신, stats() 메서드 |
 | `internal/engine/host.go` | GetStats() []PartitionStats 추가 |
 | `internal/transport/proto/actorbase.proto` | GetStats, GetClusterStats, ApplyPolicy, GetPolicy, ClearPolicy RPC 추가 |
 | `internal/cluster/policy.go` | 신규: etcd policy 저장/로드/삭제 |
-| `pm/policy/threshold.go` | 신규: ThresholdConfig + ParsePolicy (YAML) |
-| `pm/balancer.go` | 신규: autoBalancer 루프, checkSplit, checkBalance, keyRangeMidpoint |
-| `pm/server.go` | serverCtx, applyPolicy/clearPolicy (balancer 시작/중단), Start() 복원 |
+| `provider/balance.go` | 신규: BalancePolicy 인터페이스 + 관련 타입 |
+| `policy/threshold.go` | 신규 (pm/policy에서 이동): RunnerConfig, ThresholdConfig, ThresholdPolicy, ParsePolicy |
+| `policy/noop.go` | 신규 (pm/policy에서 이동): NoopBalancePolicy |
+| `pm/policy/` | 삭제 (policy/, manual.go, auto.go 모두 제거) |
+| `pm/balancer.go` | balancerRunner: cfg를 *policy.RunnerConfig로, pol을 provider.BalancePolicy로 변경 |
+| `pm/config.go` | Policy → BalancePolicy provider.BalancePolicy |
+| `pm/server.go` | failoverNode 삭제, handleNodeJoined/handleNodeLeft/activeBalancePolicy/quickClusterStats/executeBalanceActions 추가, applyPolicy 시그니처 변경 |
+| `pm/client.go` | 신규: pm.Client — PM 관리 플레인 공개 클라이언트 |
 | `pm/manager_handler.go` | AutoPolicy 중 수동 명령 거부, ApplyPolicy/GetPolicy/ClearPolicy/GetClusterStats 핸들러 |
 | `ps/server.go` | actorDispatcher에 GetStats(), TypeID() 추가 |
 | `ps/control_handler.go` | GetStats 핸들러 |
 | `internal/transport/client.go` | PSControlClient.GetStats, PMClient policy/stats 메서드 |
 | `internal/transport/errors.go` | PermissionDenied → raw message |
-| `cmd/abctl/main.go` | stats, policy apply/get/clear 명령 |
+| `cmd/abctl/main.go` | pm.Client 사용으로 전환 (internal/transport 직접 의존 제거), stats/policy 명령 |
 | `examples/kv_server/main.go` | kvActor.KeyCount() 추가 |
 | `examples/s3_server/main.go` | bucketActor.KeyCount(), objectActor.KeyCount() 추가 |

@@ -442,3 +442,54 @@ key=key:00005077  expected=<deleted>                  got=v5077-1772931543519706
 **WAL partial write 복원 확인**: SIGKILL 시점에 부분 기록된 WAL 마지막 엔트리를 경고 로그와 함께 스킵하고 정상 활성화. failover 후 데이터 손실 없음 확인.
 
 **split 이벤트 전체 실행 확인**: chaos.sh awk 수정 후 4회 split 모두 정상 실행. 파티션 범위 중간점 동적 계산으로 좁아진 범위에서도 유효한 split key 산출.
+
+---
+
+### auto balancer 통합 테스트 추가 (2026-03-14)
+
+**변경 내용**: auto balancer와 수동 split/migrate가 공존하는 새 테스트 추가.
+
+- `test/longrun/run_autobalance.sh`: 클러스터 기동 후 `abctl policy apply`로 ThresholdPolicy 활성화
+- `test/longrun/chaos_autobalance.sh`: 수동 split/migrate + SIGKILL/SIGTERM + 재기동 혼합
+
+**ThresholdPolicy 설정**:
+```yaml
+algorithm: threshold
+check_interval: 20s
+cooldown:
+  global: 30s
+  partition: 60s
+split:
+  key_threshold: 2000   # 파티션당 키 2000 초과 시 자동 split
+balance:
+  max_partition_diff: 1  # 노드 간 파티션 수 1개 차이도 migrate
+```
+
+**검증 목표**:
+- auto balancer의 자동 split/migrate가 데이터 정합성을 깨지 않는지 확인
+- 수동 split/migrate(PERMISSION_DENIED로 거부됨)와 auto balancer 동시 동작 확인
+- SIGKILL/SIGTERM 장애 시 OnNodeLeft → ActionFailover 경로 검증
+- 노드 재기동 시 OnNodeJoined → auto rebalance 경로 검증
+
+---
+
+### 4차 통과 (2026-03-14, auto balancer 통합)
+
+| 항목 | 값 |
+|---|---|
+| 환경 | macOS Darwin 25.3.0, Go 1.26, etcd v3.6.8 |
+| 테스트 스크립트 | `test/longrun/run_autobalance.sh` |
+| 부하 duration | 8분 |
+| 검증 키 수 | 10,000개 |
+| 불일치 | **0건 (PASS)** |
+| auto balancer 이벤트 | key_threshold=2000 기준 자동 split 다수 |
+| chaos 이벤트 | 수동 split×2, 수동 migrate×2, SIGKILL PS-3×1, SIGKILL PS-2×1, SIGTERM PS-1×1, 재기동×3 |
+| 최종 파티션 수 | 10개 |
+
+**auto balancer 동작 확인**: 초기 파티션 1개 → 최종 10개로 자동 split. key_threshold=2000 기준으로 20초마다 체크하여 파티션 자동 분할.
+
+**수동 명령 공존 확인**: chaos.sh의 수동 split/migrate가 AutoPolicy 활성 중이므로 PERMISSION_DENIED로 거부되었으나, auto balancer가 split/migrate를 처리하여 검증 통과.
+
+**failover 경로 확인**: SIGKILL 시 OnNodeLeft → ThresholdPolicy.OnNodeLeft → ActionFailover → migrator.Failover 경로로 자동 복구. 데이터 손실 없음.
+
+**OnNodeJoined 경로 확인**: 노드 재기동 후 OnNodeJoined → ThresholdPolicy.OnNodeJoined → ActionMigrate → 새 노드로 파티션 이전. 자동 rebalance 동작 확인.

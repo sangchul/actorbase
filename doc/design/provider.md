@@ -231,6 +231,106 @@ type Histogram interface {
 
 ---
 
+## balance.go
+
+사용자가 구현하는 분배 정책 인터페이스와 관련 타입을 정의한다.
+PM이 이 인터페이스를 통해 split/migrate/failover 판단을 위임한다.
+
+```go
+// =============================================
+// 사용자가 구현해야 하는 인터페이스
+// =============================================
+
+// BalancePolicy는 클러스터 분배 정책의 추상화.
+// PM이 주기적으로 Evaluate를 호출하고, 노드 이벤트 시 OnNodeJoined / OnNodeLeft를 호출한다.
+// 반환된 BalanceAction 목록을 PM이 순서대로 실행한다.
+type BalancePolicy interface {
+    // Evaluate는 check_interval마다 호출된다. 현재 클러스터 상태를 보고 액션을 반환한다.
+    Evaluate(ctx context.Context, stats ClusterStats) []BalanceAction
+
+    // OnNodeJoined는 새 노드가 클러스터에 합류할 때 호출된다.
+    OnNodeJoined(ctx context.Context, node NodeInfo, stats ClusterStats) []BalanceAction
+
+    // OnNodeLeft는 노드가 클러스터에서 이탈할 때 호출된다. 정상 이탈과 장애 모두 포함.
+    // 정상 이탈(graceful): drainPartitions가 이미 파티션을 이전했으므로, 보통 no-op.
+    // 장애(failure): 해당 노드의 파티션에 ActionFailover를 반환해야 한다.
+    OnNodeLeft(ctx context.Context, node NodeInfo, reason NodeLeaveReason, stats ClusterStats) []BalanceAction
+}
+
+// =============================================
+// 관련 타입
+// =============================================
+
+type NodeStatus string
+const (
+    NodeStatusActive   NodeStatus = "active"
+    NodeStatusDraining NodeStatus = "draining"
+)
+
+type NodeInfo struct {
+    ID     string
+    Addr   string
+    Status NodeStatus
+}
+
+// NodeLeaveReason은 노드 이탈 원인.
+// etcd watch로는 정상/장애를 구분할 수 없으므로 항상 NodeLeaveFailure로 전달된다.
+// 정상 이탈 감지는 OnNodeLeft 시점에 라우팅 테이블에서 파티션이 없음을 확인하는 방식으로 한다.
+type NodeLeaveReason string
+const (
+    NodeLeaveGraceful NodeLeaveReason = "graceful"
+    NodeLeaveFailure  NodeLeaveReason = "failure"
+)
+
+type PartitionInfo struct {
+    PartitionID   string
+    ActorType     string
+    KeyRangeStart string
+    KeyRangeEnd   string
+    KeyCount      int64   // -1이면 n/a (Countable 미구현)
+    RPS           float64
+}
+
+type NodeStats struct {
+    Node       NodeInfo
+    Reachable  bool     // false이면 GetStats 실패 (장애 노드)
+    NodeRPS    float64
+    Partitions []PartitionInfo
+}
+
+type ClusterStats struct {
+    Nodes []NodeStats
+}
+
+type BalanceActionType string
+const (
+    ActionSplit    BalanceActionType = "split"
+    ActionMigrate  BalanceActionType = "migrate"
+    ActionFailover BalanceActionType = "failover"  // source PS가 죽었을 때 사용
+)
+
+type BalanceAction struct {
+    Type        BalanceActionType
+    ActorType   string
+    PartitionID string
+    SplitKey    string  // ActionSplit 시 사용
+    TargetNode  string  // ActionMigrate / ActionFailover 시 사용
+}
+```
+
+### 기본 제공 구현체
+
+`pm/policy` 패키지에서 두 가지 구현체를 제공한다.
+
+| 구현체 | 설명 |
+|---|---|
+| `NoopBalancePolicy` | 모든 메서드가 nil 반환. `pm.Config.BalancePolicy`의 기본값. |
+| `ThresholdPolicy` | YAML `abctl policy apply`로 활성화되는 임계값 기반 정책. |
+
+사용자는 `provider.BalancePolicy`를 직접 구현하여 `pm.Config{BalancePolicy: myPolicy}`로 주입할 수 있다.
+
+---
+
 ## error.go
 
 ```go
