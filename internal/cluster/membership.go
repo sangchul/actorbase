@@ -7,7 +7,7 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/oomymy/actorbase/internal/domain"
+	"github.com/sangchul/actorbase/internal/domain"
 )
 
 // NodeEventType은 멤버십 변경 이벤트의 종류.
@@ -18,10 +18,22 @@ const (
 	NodeLeft                        // 노드의 lease가 만료되거나 revoke됨
 )
 
+// NodeLeaveReason은 노드 이탈 원인.
+// 현재 etcd watch 레벨에서 graceful과 failure를 구분하기 어려우므로
+// 항상 NodeLeaveFailure로 전달된다. BalancePolicy 구현체는 라우팅 테이블에
+// 파티션이 남아 있는지 확인하여 실제 처리 여부를 결정한다.
+type NodeLeaveReason int
+
+const (
+	NodeLeaveGraceful NodeLeaveReason = iota
+	NodeLeaveFailure
+)
+
 // NodeEvent는 클러스터 멤버십 변경 이벤트.
 type NodeEvent struct {
-	Type NodeEventType
-	Node domain.NodeInfo
+	Type   NodeEventType
+	Node   domain.NodeInfo
+	Reason NodeLeaveReason // NodeLeft일 때만 유효
 }
 
 // MembershipWatcher는 노드 join/leave 이벤트를 감지하는 인터페이스.
@@ -112,7 +124,7 @@ func (w *etcdMembershipWatcher) watchLoop(ctx context.Context, ch chan NodeEvent
 					}
 					delete(known, nodeID)
 					select {
-					case ch <- NodeEvent{Type: NodeLeft, Node: node}:
+					case ch <- NodeEvent{Type: NodeLeft, Node: node, Reason: NodeLeaveFailure}:
 					case <-ctx.Done():
 						return
 					}

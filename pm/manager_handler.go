@@ -8,10 +8,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/oomymy/actorbase/internal/domain"
-	"github.com/oomymy/actorbase/internal/transport"
-	pb "github.com/oomymy/actorbase/internal/transport/proto"
-	"github.com/oomymy/actorbase/pm/policy"
+	"github.com/sangchul/actorbase/internal/domain"
+	"github.com/sangchul/actorbase/internal/transport"
+	pb "github.com/sangchul/actorbase/internal/transport/proto"
+	"github.com/sangchul/actorbase/policy"
 )
 
 // managerHandler는 PartitionManagerService gRPC 핸들러.
@@ -98,11 +98,11 @@ func (h *managerHandler) ApplyPolicy(
 	ctx context.Context,
 	req *pb.ApplyPolicyRequest,
 ) (*pb.ApplyPolicyResponse, error) {
-	cfg, err := policy.ParsePolicy([]byte(req.PolicyYaml))
+	pol, runnerCfg, err := policy.ParsePolicy([]byte(req.PolicyYaml))
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid policy: %v", err)
 	}
-	if err := h.server.applyPolicy(ctx, req.PolicyYaml, cfg); err != nil {
+	if err := h.server.applyPolicy(ctx, req.PolicyYaml, pol, runnerCfg); err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
 	return &pb.ApplyPolicyResponse{}, nil

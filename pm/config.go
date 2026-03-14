@@ -3,8 +3,8 @@ package pm
 import (
 	"fmt"
 
-	"github.com/oomymy/actorbase/pm/policy"
-	"github.com/oomymy/actorbase/provider"
+	"github.com/sangchul/actorbase/policy"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // Config는 PM 생성에 필요한 모든 설정과 의존성을 담는다.
@@ -21,13 +21,18 @@ type Config struct {
 
 	// ─── 선택 (기본값 있음) ───────────────────────────────────────
 
-	Metrics provider.Metrics       // nil이면 no-op 구현체 사용
-	Policy  policy.RebalancePolicy // nil이면 ManualPolicy 사용
+	Metrics provider.Metrics // nil이면 no-op 구현체 사용
+
+	// BalancePolicy는 분배 전략 구현체.
+	// nil이면 NoopBalancePolicy(아무 작업도 수행하지 않음)를 사용한다.
+	// 사용자가 provider.BalancePolicy를 직접 구현하여 주입하거나,
+	// abctl policy apply로 ThresholdPolicy를 런타임에 적용할 수 있다.
+	BalancePolicy provider.BalancePolicy
 }
 
 func (c *Config) setDefaults() {
-	if c.Policy == nil {
-		c.Policy = &policy.ManualPolicy{}
+	if c.BalancePolicy == nil {
+		c.BalancePolicy = &policy.NoopBalancePolicy{}
 	}
 }
 

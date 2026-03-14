@@ -21,10 +21,7 @@ import (
 	"os"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
-	"github.com/oomymy/actorbase/internal/transport"
+	"github.com/sangchul/actorbase/pm"
 )
 
 func main() {
@@ -108,13 +105,13 @@ Commands:
 `)
 }
 
-func newPMClient(pmAddr string) *transport.PMClient {
-	conn, err := grpc.NewClient(pmAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func newPMClient(pmAddr string) *pm.Client {
+	client, err := pm.NewClient(pmAddr)
 	if err != nil {
 		slog.Error("failed to connect to PM", "addr", pmAddr, "err", err)
 		os.Exit(1)
 	}
-	return transport.NewPMClient(conn)
+	return client
 }
 
 func cmdMembers(cfg *Config) {
@@ -137,11 +134,7 @@ func cmdMembers(cfg *Config) {
 	fmt.Printf("%-36s  %-20s  %s\n",
 		"------------------------------------", "--------------------", "------")
 	for _, m := range members {
-		status := "active"
-		if m.Status != 0 {
-			status = "draining"
-		}
-		fmt.Printf("%-36s  %-20s  %s\n", m.NodeID, m.Address, status)
+		fmt.Printf("%-36s  %-20s  %s\n", m.NodeID, m.Address, m.Status)
 	}
 }
 
@@ -152,21 +145,21 @@ func cmdRouting(cfg *Config) {
 	client := newPMClient(cfg.PMAddr)
 	ch := client.WatchRouting(ctx, "abctl")
 
-	rt, ok := <-ch
-	if !ok || rt == nil {
+	snap, ok := <-ch
+	if !ok {
 		fmt.Fprintln(os.Stderr, "no routing table available (is PM running?)")
 		os.Exit(1)
 	}
 
-	fmt.Printf("Version: %d\n\n", rt.Version())
+	fmt.Printf("Version: %d\n\n", snap.Version)
 	fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
 		"PARTITION-ID", "ACTOR-TYPE", "KEY-START", "KEY-END", "NODE-ID", "NODE-ADDR")
 	fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
 		"------------------------------------", "------------", "----------------", "----------------",
 		"------------------------------------", "-----------")
-	for _, e := range rt.Entries() {
-		start := e.Partition.KeyRange.Start
-		end := e.Partition.KeyRange.End
+	for _, e := range snap.Entries {
+		start := e.KeyRangeStart
+		end := e.KeyRangeEnd
 		if start == "" {
 			start = "(start)"
 		}
@@ -174,7 +167,7 @@ func cmdRouting(cfg *Config) {
 			end = "(end)"
 		}
 		fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
-			e.Partition.ID, e.Partition.ActorType, start, end, e.Node.ID, e.Node.Address)
+			e.PartitionID, e.ActorType, start, end, e.NodeID, e.NodeAddr)
 	}
 }
 
