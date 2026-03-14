@@ -32,6 +32,12 @@ type Actor[Req, Resp any] interface {
 // 사용자가 직접 구현한다.
 type ActorFactory[Req, Resp any] func(partitionID string) Actor[Req, Resp]
 
+// Countable은 Actor가 선택적으로 구현하는 통계 인터페이스.
+// 구현하면 engine이 key count를 stats에 포함한다. 구현하지 않으면 -1로 보고된다.
+type Countable interface {
+	KeyCount() int64
+}
+
 // Context는 Actor.Receive 호출 시 프레임워크가 주입하는 런타임 정보.
 // 사용자는 구현하지 않고 사용만 한다.
 type Context interface {

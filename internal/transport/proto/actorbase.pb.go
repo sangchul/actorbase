@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v4.23.4
-// source: internal/transport/proto/actorbase.proto
+// source: actorbase.proto
 
 package actorbasepb
 
@@ -51,11 +51,11 @@ func (x NodeStatus) String() string {
 }
 
 func (NodeStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_transport_proto_actorbase_proto_enumTypes[0].Descriptor()
+	return file_actorbase_proto_enumTypes[0].Descriptor()
 }
 
 func (NodeStatus) Type() protoreflect.EnumType {
-	return &file_internal_transport_proto_actorbase_proto_enumTypes[0]
+	return &file_actorbase_proto_enumTypes[0]
 }
 
 func (x NodeStatus) Number() protoreflect.EnumNumber {
@@ -64,7 +64,7 @@ func (x NodeStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use NodeStatus.Descriptor instead.
 func (NodeStatus) EnumDescriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{0}
+	return file_actorbase_proto_rawDescGZIP(), []int{0}
 }
 
 type SendRequest struct {
@@ -78,7 +78,7 @@ type SendRequest struct {
 
 func (x *SendRequest) Reset() {
 	*x = SendRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[0]
+	mi := &file_actorbase_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -90,7 +90,7 @@ func (x *SendRequest) String() string {
 func (*SendRequest) ProtoMessage() {}
 
 func (x *SendRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[0]
+	mi := &file_actorbase_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -103,7 +103,7 @@ func (x *SendRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendRequest.ProtoReflect.Descriptor instead.
 func (*SendRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{0}
+	return file_actorbase_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *SendRequest) GetPartitionId() string {
@@ -136,7 +136,7 @@ type SendResponse struct {
 
 func (x *SendResponse) Reset() {
 	*x = SendResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[1]
+	mi := &file_actorbase_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -148,7 +148,7 @@ func (x *SendResponse) String() string {
 func (*SendResponse) ProtoMessage() {}
 
 func (x *SendResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[1]
+	mi := &file_actorbase_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -161,7 +161,7 @@ func (x *SendResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendResponse.ProtoReflect.Descriptor instead.
 func (*SendResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{1}
+	return file_actorbase_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *SendResponse) GetPayload() []byte {
@@ -180,7 +180,7 @@ type WatchRoutingRequest struct {
 
 func (x *WatchRoutingRequest) Reset() {
 	*x = WatchRoutingRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[2]
+	mi := &file_actorbase_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -192,7 +192,7 @@ func (x *WatchRoutingRequest) String() string {
 func (*WatchRoutingRequest) ProtoMessage() {}
 
 func (x *WatchRoutingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[2]
+	mi := &file_actorbase_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -205,7 +205,7 @@ func (x *WatchRoutingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRoutingRequest.ProtoReflect.Descriptor instead.
 func (*WatchRoutingRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{2}
+	return file_actorbase_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *WatchRoutingRequest) GetClientId() string {
@@ -226,7 +226,7 @@ type SplitRequest struct {
 
 func (x *SplitRequest) Reset() {
 	*x = SplitRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[3]
+	mi := &file_actorbase_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -238,7 +238,7 @@ func (x *SplitRequest) String() string {
 func (*SplitRequest) ProtoMessage() {}
 
 func (x *SplitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[3]
+	mi := &file_actorbase_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -251,7 +251,7 @@ func (x *SplitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SplitRequest.ProtoReflect.Descriptor instead.
 func (*SplitRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{3}
+	return file_actorbase_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SplitRequest) GetPartitionId() string {
@@ -284,7 +284,7 @@ type SplitResponse struct {
 
 func (x *SplitResponse) Reset() {
 	*x = SplitResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[4]
+	mi := &file_actorbase_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -296,7 +296,7 @@ func (x *SplitResponse) String() string {
 func (*SplitResponse) ProtoMessage() {}
 
 func (x *SplitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[4]
+	mi := &file_actorbase_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -309,7 +309,7 @@ func (x *SplitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SplitResponse.ProtoReflect.Descriptor instead.
 func (*SplitResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{4}
+	return file_actorbase_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SplitResponse) GetNewPartitionId() string {
@@ -330,7 +330,7 @@ type MigrateRequest struct {
 
 func (x *MigrateRequest) Reset() {
 	*x = MigrateRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[5]
+	mi := &file_actorbase_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -342,7 +342,7 @@ func (x *MigrateRequest) String() string {
 func (*MigrateRequest) ProtoMessage() {}
 
 func (x *MigrateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[5]
+	mi := &file_actorbase_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -355,7 +355,7 @@ func (x *MigrateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MigrateRequest.ProtoReflect.Descriptor instead.
 func (*MigrateRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{5}
+	return file_actorbase_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *MigrateRequest) GetPartitionId() string {
@@ -387,7 +387,7 @@ type MigrateResponse struct {
 
 func (x *MigrateResponse) Reset() {
 	*x = MigrateResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[6]
+	mi := &file_actorbase_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -399,7 +399,7 @@ func (x *MigrateResponse) String() string {
 func (*MigrateResponse) ProtoMessage() {}
 
 func (x *MigrateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[6]
+	mi := &file_actorbase_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -412,7 +412,7 @@ func (x *MigrateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MigrateResponse.ProtoReflect.Descriptor instead.
 func (*MigrateResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{6}
+	return file_actorbase_proto_rawDescGZIP(), []int{6}
 }
 
 type ListMembersRequest struct {
@@ -423,7 +423,7 @@ type ListMembersRequest struct {
 
 func (x *ListMembersRequest) Reset() {
 	*x = ListMembersRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[7]
+	mi := &file_actorbase_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -435,7 +435,7 @@ func (x *ListMembersRequest) String() string {
 func (*ListMembersRequest) ProtoMessage() {}
 
 func (x *ListMembersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[7]
+	mi := &file_actorbase_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -448,7 +448,7 @@ func (x *ListMembersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMembersRequest.ProtoReflect.Descriptor instead.
 func (*ListMembersRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{7}
+	return file_actorbase_proto_rawDescGZIP(), []int{7}
 }
 
 type MemberInfo struct {
@@ -462,7 +462,7 @@ type MemberInfo struct {
 
 func (x *MemberInfo) Reset() {
 	*x = MemberInfo{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[8]
+	mi := &file_actorbase_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -474,7 +474,7 @@ func (x *MemberInfo) String() string {
 func (*MemberInfo) ProtoMessage() {}
 
 func (x *MemberInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[8]
+	mi := &file_actorbase_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -487,7 +487,7 @@ func (x *MemberInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemberInfo.ProtoReflect.Descriptor instead.
 func (*MemberInfo) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{8}
+	return file_actorbase_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *MemberInfo) GetNodeId() string {
@@ -520,7 +520,7 @@ type ListMembersResponse struct {
 
 func (x *ListMembersResponse) Reset() {
 	*x = ListMembersResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[9]
+	mi := &file_actorbase_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -532,7 +532,7 @@ func (x *ListMembersResponse) String() string {
 func (*ListMembersResponse) ProtoMessage() {}
 
 func (x *ListMembersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[9]
+	mi := &file_actorbase_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -545,7 +545,7 @@ func (x *ListMembersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMembersResponse.ProtoReflect.Descriptor instead.
 func (*ListMembersResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{9}
+	return file_actorbase_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListMembersResponse) GetMembers() []*MemberInfo {
@@ -567,7 +567,7 @@ type ExecuteSplitRequest struct {
 
 func (x *ExecuteSplitRequest) Reset() {
 	*x = ExecuteSplitRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[10]
+	mi := &file_actorbase_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -579,7 +579,7 @@ func (x *ExecuteSplitRequest) String() string {
 func (*ExecuteSplitRequest) ProtoMessage() {}
 
 func (x *ExecuteSplitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[10]
+	mi := &file_actorbase_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -592,7 +592,7 @@ func (x *ExecuteSplitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteSplitRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteSplitRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{10}
+	return file_actorbase_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ExecuteSplitRequest) GetPartitionId() string {
@@ -631,7 +631,7 @@ type ExecuteSplitResponse struct {
 
 func (x *ExecuteSplitResponse) Reset() {
 	*x = ExecuteSplitResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[11]
+	mi := &file_actorbase_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -643,7 +643,7 @@ func (x *ExecuteSplitResponse) String() string {
 func (*ExecuteSplitResponse) ProtoMessage() {}
 
 func (x *ExecuteSplitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[11]
+	mi := &file_actorbase_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -656,7 +656,7 @@ func (x *ExecuteSplitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteSplitResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteSplitResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{11}
+	return file_actorbase_proto_rawDescGZIP(), []int{11}
 }
 
 type ExecuteMigrateOutRequest struct {
@@ -671,7 +671,7 @@ type ExecuteMigrateOutRequest struct {
 
 func (x *ExecuteMigrateOutRequest) Reset() {
 	*x = ExecuteMigrateOutRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[12]
+	mi := &file_actorbase_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -683,7 +683,7 @@ func (x *ExecuteMigrateOutRequest) String() string {
 func (*ExecuteMigrateOutRequest) ProtoMessage() {}
 
 func (x *ExecuteMigrateOutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[12]
+	mi := &file_actorbase_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -696,7 +696,7 @@ func (x *ExecuteMigrateOutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteMigrateOutRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteMigrateOutRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{12}
+	return file_actorbase_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ExecuteMigrateOutRequest) GetPartitionId() string {
@@ -735,7 +735,7 @@ type ExecuteMigrateOutResponse struct {
 
 func (x *ExecuteMigrateOutResponse) Reset() {
 	*x = ExecuteMigrateOutResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[13]
+	mi := &file_actorbase_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -747,7 +747,7 @@ func (x *ExecuteMigrateOutResponse) String() string {
 func (*ExecuteMigrateOutResponse) ProtoMessage() {}
 
 func (x *ExecuteMigrateOutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[13]
+	mi := &file_actorbase_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -760,7 +760,7 @@ func (x *ExecuteMigrateOutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteMigrateOutResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteMigrateOutResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{13}
+	return file_actorbase_proto_rawDescGZIP(), []int{13}
 }
 
 type PreparePartitionRequest struct {
@@ -775,7 +775,7 @@ type PreparePartitionRequest struct {
 
 func (x *PreparePartitionRequest) Reset() {
 	*x = PreparePartitionRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[14]
+	mi := &file_actorbase_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -787,7 +787,7 @@ func (x *PreparePartitionRequest) String() string {
 func (*PreparePartitionRequest) ProtoMessage() {}
 
 func (x *PreparePartitionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[14]
+	mi := &file_actorbase_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -800,7 +800,7 @@ func (x *PreparePartitionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreparePartitionRequest.ProtoReflect.Descriptor instead.
 func (*PreparePartitionRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{14}
+	return file_actorbase_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PreparePartitionRequest) GetPartitionId() string {
@@ -839,7 +839,7 @@ type PreparePartitionResponse struct {
 
 func (x *PreparePartitionResponse) Reset() {
 	*x = PreparePartitionResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[15]
+	mi := &file_actorbase_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +851,7 @@ func (x *PreparePartitionResponse) String() string {
 func (*PreparePartitionResponse) ProtoMessage() {}
 
 func (x *PreparePartitionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[15]
+	mi := &file_actorbase_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +864,7 @@ func (x *PreparePartitionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreparePartitionResponse.ProtoReflect.Descriptor instead.
 func (*PreparePartitionResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{15}
+	return file_actorbase_proto_rawDescGZIP(), []int{15}
 }
 
 type RoutingTableProto struct {
@@ -877,7 +877,7 @@ type RoutingTableProto struct {
 
 func (x *RoutingTableProto) Reset() {
 	*x = RoutingTableProto{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[16]
+	mi := &file_actorbase_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -889,7 +889,7 @@ func (x *RoutingTableProto) String() string {
 func (*RoutingTableProto) ProtoMessage() {}
 
 func (x *RoutingTableProto) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[16]
+	mi := &file_actorbase_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -902,7 +902,7 @@ func (x *RoutingTableProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoutingTableProto.ProtoReflect.Descriptor instead.
 func (*RoutingTableProto) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{16}
+	return file_actorbase_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RoutingTableProto) GetVersion() int64 {
@@ -934,7 +934,7 @@ type RouteEntryProto struct {
 
 func (x *RouteEntryProto) Reset() {
 	*x = RouteEntryProto{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[17]
+	mi := &file_actorbase_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -946,7 +946,7 @@ func (x *RouteEntryProto) String() string {
 func (*RouteEntryProto) ProtoMessage() {}
 
 func (x *RouteEntryProto) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[17]
+	mi := &file_actorbase_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -959,7 +959,7 @@ func (x *RouteEntryProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RouteEntryProto.ProtoReflect.Descriptor instead.
 func (*RouteEntryProto) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{17}
+	return file_actorbase_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RouteEntryProto) GetPartitionId() string {
@@ -1011,11 +1011,579 @@ func (x *RouteEntryProto) GetActorType() string {
 	return ""
 }
 
-var File_internal_transport_proto_actorbase_proto protoreflect.FileDescriptor
+type ApplyPolicyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PolicyYaml    string                 `protobuf:"bytes,1,opt,name=policy_yaml,json=policyYaml,proto3" json:"policy_yaml,omitempty"` // YAML 형식의 정책 문자열
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
 
-const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
+func (x *ApplyPolicyRequest) Reset() {
+	*x = ApplyPolicyRequest{}
+	mi := &file_actorbase_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPolicyRequest) ProtoMessage() {}
+
+func (x *ApplyPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPolicyRequest.ProtoReflect.Descriptor instead.
+func (*ApplyPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ApplyPolicyRequest) GetPolicyYaml() string {
+	if x != nil {
+		return x.PolicyYaml
+	}
+	return ""
+}
+
+type ApplyPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyPolicyResponse) Reset() {
+	*x = ApplyPolicyResponse{}
+	mi := &file_actorbase_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPolicyResponse) ProtoMessage() {}
+
+func (x *ApplyPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPolicyResponse.ProtoReflect.Descriptor instead.
+func (*ApplyPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{19}
+}
+
+type GetPolicyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPolicyRequest) Reset() {
+	*x = GetPolicyRequest{}
+	mi := &file_actorbase_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPolicyRequest) ProtoMessage() {}
+
+func (x *GetPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPolicyRequest.ProtoReflect.Descriptor instead.
+func (*GetPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{20}
+}
+
+type GetPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PolicyYaml    string                 `protobuf:"bytes,1,opt,name=policy_yaml,json=policyYaml,proto3" json:"policy_yaml,omitempty"` // 현재 적용 중인 정책 YAML. 없으면 빈 문자열.
+	Active        bool                   `protobuf:"varint,2,opt,name=active,proto3" json:"active,omitempty"`                          // true이면 AutoPolicy 활성 중
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPolicyResponse) Reset() {
+	*x = GetPolicyResponse{}
+	mi := &file_actorbase_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPolicyResponse) ProtoMessage() {}
+
+func (x *GetPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPolicyResponse.ProtoReflect.Descriptor instead.
+func (*GetPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *GetPolicyResponse) GetPolicyYaml() string {
+	if x != nil {
+		return x.PolicyYaml
+	}
+	return ""
+}
+
+func (x *GetPolicyResponse) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+type ClearPolicyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClearPolicyRequest) Reset() {
+	*x = ClearPolicyRequest{}
+	mi := &file_actorbase_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClearPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClearPolicyRequest) ProtoMessage() {}
+
+func (x *ClearPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClearPolicyRequest.ProtoReflect.Descriptor instead.
+func (*ClearPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{22}
+}
+
+type ClearPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClearPolicyResponse) Reset() {
+	*x = ClearPolicyResponse{}
+	mi := &file_actorbase_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClearPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClearPolicyResponse) ProtoMessage() {}
+
+func (x *ClearPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClearPolicyResponse.ProtoReflect.Descriptor instead.
+func (*ClearPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{23}
+}
+
+type PartitionStatsProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PartitionId   string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
+	ActorType     string                 `protobuf:"bytes,2,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"`
+	KeyCount      int64                  `protobuf:"varint,3,opt,name=key_count,json=keyCount,proto3" json:"key_count,omitempty"` // -1이면 actor가 Countable을 구현하지 않음
+	Rps           float64                `protobuf:"fixed64,4,opt,name=rps,proto3" json:"rps,omitempty"`                          // 최근 60초 슬라이딩 윈도우 평균
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PartitionStatsProto) Reset() {
+	*x = PartitionStatsProto{}
+	mi := &file_actorbase_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PartitionStatsProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PartitionStatsProto) ProtoMessage() {}
+
+func (x *PartitionStatsProto) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PartitionStatsProto.ProtoReflect.Descriptor instead.
+func (*PartitionStatsProto) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *PartitionStatsProto) GetPartitionId() string {
+	if x != nil {
+		return x.PartitionId
+	}
+	return ""
+}
+
+func (x *PartitionStatsProto) GetActorType() string {
+	if x != nil {
+		return x.ActorType
+	}
+	return ""
+}
+
+func (x *PartitionStatsProto) GetKeyCount() int64 {
+	if x != nil {
+		return x.KeyCount
+	}
+	return 0
+}
+
+func (x *PartitionStatsProto) GetRps() float64 {
+	if x != nil {
+		return x.Rps
+	}
+	return 0
+}
+
+type GetStatsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetStatsRequest) Reset() {
+	*x = GetStatsRequest{}
+	mi := &file_actorbase_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStatsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStatsRequest) ProtoMessage() {}
+
+func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStatsRequest.ProtoReflect.Descriptor instead.
+func (*GetStatsRequest) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{25}
+}
+
+type GetStatsResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Partitions     []*PartitionStatsProto `protobuf:"bytes,1,rep,name=partitions,proto3" json:"partitions,omitempty"`
+	NodeRps        float64                `protobuf:"fixed64,2,opt,name=node_rps,json=nodeRps,proto3" json:"node_rps,omitempty"`
+	PartitionCount int32                  `protobuf:"varint,3,opt,name=partition_count,json=partitionCount,proto3" json:"partition_count,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *GetStatsResponse) Reset() {
+	*x = GetStatsResponse{}
+	mi := &file_actorbase_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStatsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStatsResponse) ProtoMessage() {}
+
+func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStatsResponse.ProtoReflect.Descriptor instead.
+func (*GetStatsResponse) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *GetStatsResponse) GetPartitions() []*PartitionStatsProto {
+	if x != nil {
+		return x.Partitions
+	}
+	return nil
+}
+
+func (x *GetStatsResponse) GetNodeRps() float64 {
+	if x != nil {
+		return x.NodeRps
+	}
+	return 0
+}
+
+func (x *GetStatsResponse) GetPartitionCount() int32 {
+	if x != nil {
+		return x.PartitionCount
+	}
+	return 0
+}
+
+type NodeStatsProto struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	NodeId         string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	NodeAddr       string                 `protobuf:"bytes,2,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
+	NodeRps        float64                `protobuf:"fixed64,3,opt,name=node_rps,json=nodeRps,proto3" json:"node_rps,omitempty"`
+	PartitionCount int32                  `protobuf:"varint,4,opt,name=partition_count,json=partitionCount,proto3" json:"partition_count,omitempty"`
+	Partitions     []*PartitionStatsProto `protobuf:"bytes,5,rep,name=partitions,proto3" json:"partitions,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *NodeStatsProto) Reset() {
+	*x = NodeStatsProto{}
+	mi := &file_actorbase_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeStatsProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeStatsProto) ProtoMessage() {}
+
+func (x *NodeStatsProto) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeStatsProto.ProtoReflect.Descriptor instead.
+func (*NodeStatsProto) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *NodeStatsProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *NodeStatsProto) GetNodeAddr() string {
+	if x != nil {
+		return x.NodeAddr
+	}
+	return ""
+}
+
+func (x *NodeStatsProto) GetNodeRps() float64 {
+	if x != nil {
+		return x.NodeRps
+	}
+	return 0
+}
+
+func (x *NodeStatsProto) GetPartitionCount() int32 {
+	if x != nil {
+		return x.PartitionCount
+	}
+	return 0
+}
+
+func (x *NodeStatsProto) GetPartitions() []*PartitionStatsProto {
+	if x != nil {
+		return x.Partitions
+	}
+	return nil
+}
+
+type GetClusterStatsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // "" = 모든 노드
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetClusterStatsRequest) Reset() {
+	*x = GetClusterStatsRequest{}
+	mi := &file_actorbase_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetClusterStatsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetClusterStatsRequest) ProtoMessage() {}
+
+func (x *GetClusterStatsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetClusterStatsRequest.ProtoReflect.Descriptor instead.
+func (*GetClusterStatsRequest) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *GetClusterStatsRequest) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+type GetClusterStatsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Nodes         []*NodeStatsProto      `protobuf:"bytes,1,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetClusterStatsResponse) Reset() {
+	*x = GetClusterStatsResponse{}
+	mi := &file_actorbase_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetClusterStatsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetClusterStatsResponse) ProtoMessage() {}
+
+func (x *GetClusterStatsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_actorbase_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetClusterStatsResponse.ProtoReflect.Descriptor instead.
+func (*GetClusterStatsResponse) Descriptor() ([]byte, []int) {
+	return file_actorbase_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *GetClusterStatsResponse) GetNodes() []*NodeStatsProto {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+var File_actorbase_proto protoreflect.FileDescriptor
+
+const file_actorbase_proto_rawDesc = "" +
 	"\n" +
-	"(internal/transport/proto/actorbase.proto\x12\factorbase.v1\"i\n" +
+	"\x0factorbase.proto\x12\factorbase.v1\"i\n" +
 	"\vSendRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x12\x1d\n" +
@@ -1079,38 +1647,79 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\vnode_status\x18\x06 \x01(\x0e2\x18.actorbase.v1.NodeStatusR\n" +
 	"nodeStatus\x12\x1d\n" +
 	"\n" +
-	"actor_type\x18\a \x01(\tR\tactorType*>\n" +
+	"actor_type\x18\a \x01(\tR\tactorType\"5\n" +
+	"\x12ApplyPolicyRequest\x12\x1f\n" +
+	"\vpolicy_yaml\x18\x01 \x01(\tR\n" +
+	"policyYaml\"\x15\n" +
+	"\x13ApplyPolicyResponse\"\x12\n" +
+	"\x10GetPolicyRequest\"L\n" +
+	"\x11GetPolicyResponse\x12\x1f\n" +
+	"\vpolicy_yaml\x18\x01 \x01(\tR\n" +
+	"policyYaml\x12\x16\n" +
+	"\x06active\x18\x02 \x01(\bR\x06active\"\x14\n" +
+	"\x12ClearPolicyRequest\"\x15\n" +
+	"\x13ClearPolicyResponse\"\x86\x01\n" +
+	"\x13PartitionStatsProto\x12!\n" +
+	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x02 \x01(\tR\tactorType\x12\x1b\n" +
+	"\tkey_count\x18\x03 \x01(\x03R\bkeyCount\x12\x10\n" +
+	"\x03rps\x18\x04 \x01(\x01R\x03rps\"\x11\n" +
+	"\x0fGetStatsRequest\"\x99\x01\n" +
+	"\x10GetStatsResponse\x12A\n" +
+	"\n" +
+	"partitions\x18\x01 \x03(\v2!.actorbase.v1.PartitionStatsProtoR\n" +
+	"partitions\x12\x19\n" +
+	"\bnode_rps\x18\x02 \x01(\x01R\anodeRps\x12'\n" +
+	"\x0fpartition_count\x18\x03 \x01(\x05R\x0epartitionCount\"\xcd\x01\n" +
+	"\x0eNodeStatsProto\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1b\n" +
+	"\tnode_addr\x18\x02 \x01(\tR\bnodeAddr\x12\x19\n" +
+	"\bnode_rps\x18\x03 \x01(\x01R\anodeRps\x12'\n" +
+	"\x0fpartition_count\x18\x04 \x01(\x05R\x0epartitionCount\x12A\n" +
+	"\n" +
+	"partitions\x18\x05 \x03(\v2!.actorbase.v1.PartitionStatsProtoR\n" +
+	"partitions\"1\n" +
+	"\x16GetClusterStatsRequest\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"M\n" +
+	"\x17GetClusterStatsResponse\x122\n" +
+	"\x05nodes\x18\x01 \x03(\v2\x1c.actorbase.v1.NodeStatsProtoR\x05nodes*>\n" +
 	"\n" +
 	"NodeStatus\x12\x16\n" +
 	"\x12NODE_STATUS_ACTIVE\x10\x00\x12\x18\n" +
 	"\x14NODE_STATUS_DRAINING\x10\x012Q\n" +
 	"\x10PartitionService\x12=\n" +
-	"\x04Send\x12\x19.actorbase.v1.SendRequest\x1a\x1a.actorbase.v1.SendResponse2\xdb\x02\n" +
+	"\x04Send\x12\x19.actorbase.v1.SendRequest\x1a\x1a.actorbase.v1.SendResponse2\xb1\x05\n" +
 	"\x17PartitionManagerService\x12T\n" +
 	"\fWatchRouting\x12!.actorbase.v1.WatchRoutingRequest\x1a\x1f.actorbase.v1.RoutingTableProto0\x01\x12G\n" +
 	"\fRequestSplit\x12\x1a.actorbase.v1.SplitRequest\x1a\x1b.actorbase.v1.SplitResponse\x12M\n" +
 	"\x0eRequestMigrate\x12\x1c.actorbase.v1.MigrateRequest\x1a\x1d.actorbase.v1.MigrateResponse\x12R\n" +
-	"\vListMembers\x12 .actorbase.v1.ListMembersRequest\x1a!.actorbase.v1.ListMembersResponse2\xb9\x02\n" +
-	"\x17PartitionControlService\x12U\n" +
+	"\vListMembers\x12 .actorbase.v1.ListMembersRequest\x1a!.actorbase.v1.ListMembersResponse\x12^\n" +
+	"\x0fGetClusterStats\x12$.actorbase.v1.GetClusterStatsRequest\x1a%.actorbase.v1.GetClusterStatsResponse\x12R\n" +
+	"\vApplyPolicy\x12 .actorbase.v1.ApplyPolicyRequest\x1a!.actorbase.v1.ApplyPolicyResponse\x12L\n" +
+	"\tGetPolicy\x12\x1e.actorbase.v1.GetPolicyRequest\x1a\x1f.actorbase.v1.GetPolicyResponse\x12R\n" +
+	"\vClearPolicy\x12 .actorbase.v1.ClearPolicyRequest\x1a!.actorbase.v1.ClearPolicyResponse2\x84\x03\n" +
+	"\x17PartitionControlService\x12I\n" +
+	"\bGetStats\x12\x1d.actorbase.v1.GetStatsRequest\x1a\x1e.actorbase.v1.GetStatsResponse\x12U\n" +
 	"\fExecuteSplit\x12!.actorbase.v1.ExecuteSplitRequest\x1a\".actorbase.v1.ExecuteSplitResponse\x12d\n" +
 	"\x11ExecuteMigrateOut\x12&.actorbase.v1.ExecuteMigrateOutRequest\x1a'.actorbase.v1.ExecuteMigrateOutResponse\x12a\n" +
 	"\x10PreparePartition\x12%.actorbase.v1.PreparePartitionRequest\x1a&.actorbase.v1.PreparePartitionResponseBBZ@github.com/oomymy/actorbase/internal/transport/proto;actorbasepbb\x06proto3"
 
 var (
-	file_internal_transport_proto_actorbase_proto_rawDescOnce sync.Once
-	file_internal_transport_proto_actorbase_proto_rawDescData []byte
+	file_actorbase_proto_rawDescOnce sync.Once
+	file_actorbase_proto_rawDescData []byte
 )
 
-func file_internal_transport_proto_actorbase_proto_rawDescGZIP() []byte {
-	file_internal_transport_proto_actorbase_proto_rawDescOnce.Do(func() {
-		file_internal_transport_proto_actorbase_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_transport_proto_actorbase_proto_rawDesc), len(file_internal_transport_proto_actorbase_proto_rawDesc)))
+func file_actorbase_proto_rawDescGZIP() []byte {
+	file_actorbase_proto_rawDescOnce.Do(func() {
+		file_actorbase_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_actorbase_proto_rawDesc), len(file_actorbase_proto_rawDesc)))
 	})
-	return file_internal_transport_proto_actorbase_proto_rawDescData
+	return file_actorbase_proto_rawDescData
 }
 
-var file_internal_transport_proto_actorbase_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_transport_proto_actorbase_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
-var file_internal_transport_proto_actorbase_proto_goTypes = []any{
+var file_actorbase_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_actorbase_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_actorbase_proto_goTypes = []any{
 	(NodeStatus)(0),                   // 0: actorbase.v1.NodeStatus
 	(*SendRequest)(nil),               // 1: actorbase.v1.SendRequest
 	(*SendResponse)(nil),              // 2: actorbase.v1.SendResponse
@@ -1130,56 +1739,81 @@ var file_internal_transport_proto_actorbase_proto_goTypes = []any{
 	(*PreparePartitionResponse)(nil),  // 16: actorbase.v1.PreparePartitionResponse
 	(*RoutingTableProto)(nil),         // 17: actorbase.v1.RoutingTableProto
 	(*RouteEntryProto)(nil),           // 18: actorbase.v1.RouteEntryProto
+	(*ApplyPolicyRequest)(nil),        // 19: actorbase.v1.ApplyPolicyRequest
+	(*ApplyPolicyResponse)(nil),       // 20: actorbase.v1.ApplyPolicyResponse
+	(*GetPolicyRequest)(nil),          // 21: actorbase.v1.GetPolicyRequest
+	(*GetPolicyResponse)(nil),         // 22: actorbase.v1.GetPolicyResponse
+	(*ClearPolicyRequest)(nil),        // 23: actorbase.v1.ClearPolicyRequest
+	(*ClearPolicyResponse)(nil),       // 24: actorbase.v1.ClearPolicyResponse
+	(*PartitionStatsProto)(nil),       // 25: actorbase.v1.PartitionStatsProto
+	(*GetStatsRequest)(nil),           // 26: actorbase.v1.GetStatsRequest
+	(*GetStatsResponse)(nil),          // 27: actorbase.v1.GetStatsResponse
+	(*NodeStatsProto)(nil),            // 28: actorbase.v1.NodeStatsProto
+	(*GetClusterStatsRequest)(nil),    // 29: actorbase.v1.GetClusterStatsRequest
+	(*GetClusterStatsResponse)(nil),   // 30: actorbase.v1.GetClusterStatsResponse
 }
-var file_internal_transport_proto_actorbase_proto_depIdxs = []int32{
+var file_actorbase_proto_depIdxs = []int32{
 	0,  // 0: actorbase.v1.MemberInfo.status:type_name -> actorbase.v1.NodeStatus
 	9,  // 1: actorbase.v1.ListMembersResponse.members:type_name -> actorbase.v1.MemberInfo
 	18, // 2: actorbase.v1.RoutingTableProto.entries:type_name -> actorbase.v1.RouteEntryProto
 	0,  // 3: actorbase.v1.RouteEntryProto.node_status:type_name -> actorbase.v1.NodeStatus
-	1,  // 4: actorbase.v1.PartitionService.Send:input_type -> actorbase.v1.SendRequest
-	3,  // 5: actorbase.v1.PartitionManagerService.WatchRouting:input_type -> actorbase.v1.WatchRoutingRequest
-	4,  // 6: actorbase.v1.PartitionManagerService.RequestSplit:input_type -> actorbase.v1.SplitRequest
-	6,  // 7: actorbase.v1.PartitionManagerService.RequestMigrate:input_type -> actorbase.v1.MigrateRequest
-	8,  // 8: actorbase.v1.PartitionManagerService.ListMembers:input_type -> actorbase.v1.ListMembersRequest
-	11, // 9: actorbase.v1.PartitionControlService.ExecuteSplit:input_type -> actorbase.v1.ExecuteSplitRequest
-	13, // 10: actorbase.v1.PartitionControlService.ExecuteMigrateOut:input_type -> actorbase.v1.ExecuteMigrateOutRequest
-	15, // 11: actorbase.v1.PartitionControlService.PreparePartition:input_type -> actorbase.v1.PreparePartitionRequest
-	2,  // 12: actorbase.v1.PartitionService.Send:output_type -> actorbase.v1.SendResponse
-	17, // 13: actorbase.v1.PartitionManagerService.WatchRouting:output_type -> actorbase.v1.RoutingTableProto
-	5,  // 14: actorbase.v1.PartitionManagerService.RequestSplit:output_type -> actorbase.v1.SplitResponse
-	7,  // 15: actorbase.v1.PartitionManagerService.RequestMigrate:output_type -> actorbase.v1.MigrateResponse
-	10, // 16: actorbase.v1.PartitionManagerService.ListMembers:output_type -> actorbase.v1.ListMembersResponse
-	12, // 17: actorbase.v1.PartitionControlService.ExecuteSplit:output_type -> actorbase.v1.ExecuteSplitResponse
-	14, // 18: actorbase.v1.PartitionControlService.ExecuteMigrateOut:output_type -> actorbase.v1.ExecuteMigrateOutResponse
-	16, // 19: actorbase.v1.PartitionControlService.PreparePartition:output_type -> actorbase.v1.PreparePartitionResponse
-	12, // [12:20] is the sub-list for method output_type
-	4,  // [4:12] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	25, // 4: actorbase.v1.GetStatsResponse.partitions:type_name -> actorbase.v1.PartitionStatsProto
+	25, // 5: actorbase.v1.NodeStatsProto.partitions:type_name -> actorbase.v1.PartitionStatsProto
+	28, // 6: actorbase.v1.GetClusterStatsResponse.nodes:type_name -> actorbase.v1.NodeStatsProto
+	1,  // 7: actorbase.v1.PartitionService.Send:input_type -> actorbase.v1.SendRequest
+	3,  // 8: actorbase.v1.PartitionManagerService.WatchRouting:input_type -> actorbase.v1.WatchRoutingRequest
+	4,  // 9: actorbase.v1.PartitionManagerService.RequestSplit:input_type -> actorbase.v1.SplitRequest
+	6,  // 10: actorbase.v1.PartitionManagerService.RequestMigrate:input_type -> actorbase.v1.MigrateRequest
+	8,  // 11: actorbase.v1.PartitionManagerService.ListMembers:input_type -> actorbase.v1.ListMembersRequest
+	29, // 12: actorbase.v1.PartitionManagerService.GetClusterStats:input_type -> actorbase.v1.GetClusterStatsRequest
+	19, // 13: actorbase.v1.PartitionManagerService.ApplyPolicy:input_type -> actorbase.v1.ApplyPolicyRequest
+	21, // 14: actorbase.v1.PartitionManagerService.GetPolicy:input_type -> actorbase.v1.GetPolicyRequest
+	23, // 15: actorbase.v1.PartitionManagerService.ClearPolicy:input_type -> actorbase.v1.ClearPolicyRequest
+	26, // 16: actorbase.v1.PartitionControlService.GetStats:input_type -> actorbase.v1.GetStatsRequest
+	11, // 17: actorbase.v1.PartitionControlService.ExecuteSplit:input_type -> actorbase.v1.ExecuteSplitRequest
+	13, // 18: actorbase.v1.PartitionControlService.ExecuteMigrateOut:input_type -> actorbase.v1.ExecuteMigrateOutRequest
+	15, // 19: actorbase.v1.PartitionControlService.PreparePartition:input_type -> actorbase.v1.PreparePartitionRequest
+	2,  // 20: actorbase.v1.PartitionService.Send:output_type -> actorbase.v1.SendResponse
+	17, // 21: actorbase.v1.PartitionManagerService.WatchRouting:output_type -> actorbase.v1.RoutingTableProto
+	5,  // 22: actorbase.v1.PartitionManagerService.RequestSplit:output_type -> actorbase.v1.SplitResponse
+	7,  // 23: actorbase.v1.PartitionManagerService.RequestMigrate:output_type -> actorbase.v1.MigrateResponse
+	10, // 24: actorbase.v1.PartitionManagerService.ListMembers:output_type -> actorbase.v1.ListMembersResponse
+	30, // 25: actorbase.v1.PartitionManagerService.GetClusterStats:output_type -> actorbase.v1.GetClusterStatsResponse
+	20, // 26: actorbase.v1.PartitionManagerService.ApplyPolicy:output_type -> actorbase.v1.ApplyPolicyResponse
+	22, // 27: actorbase.v1.PartitionManagerService.GetPolicy:output_type -> actorbase.v1.GetPolicyResponse
+	24, // 28: actorbase.v1.PartitionManagerService.ClearPolicy:output_type -> actorbase.v1.ClearPolicyResponse
+	27, // 29: actorbase.v1.PartitionControlService.GetStats:output_type -> actorbase.v1.GetStatsResponse
+	12, // 30: actorbase.v1.PartitionControlService.ExecuteSplit:output_type -> actorbase.v1.ExecuteSplitResponse
+	14, // 31: actorbase.v1.PartitionControlService.ExecuteMigrateOut:output_type -> actorbase.v1.ExecuteMigrateOutResponse
+	16, // 32: actorbase.v1.PartitionControlService.PreparePartition:output_type -> actorbase.v1.PreparePartitionResponse
+	20, // [20:33] is the sub-list for method output_type
+	7,  // [7:20] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
-func init() { file_internal_transport_proto_actorbase_proto_init() }
-func file_internal_transport_proto_actorbase_proto_init() {
-	if File_internal_transport_proto_actorbase_proto != nil {
+func init() { file_actorbase_proto_init() }
+func file_actorbase_proto_init() {
+	if File_actorbase_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_transport_proto_actorbase_proto_rawDesc), len(file_internal_transport_proto_actorbase_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_actorbase_proto_rawDesc), len(file_actorbase_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   18,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   3,
 		},
-		GoTypes:           file_internal_transport_proto_actorbase_proto_goTypes,
-		DependencyIndexes: file_internal_transport_proto_actorbase_proto_depIdxs,
-		EnumInfos:         file_internal_transport_proto_actorbase_proto_enumTypes,
-		MessageInfos:      file_internal_transport_proto_actorbase_proto_msgTypes,
+		GoTypes:           file_actorbase_proto_goTypes,
+		DependencyIndexes: file_actorbase_proto_depIdxs,
+		EnumInfos:         file_actorbase_proto_enumTypes,
+		MessageInfos:      file_actorbase_proto_msgTypes,
 	}.Build()
-	File_internal_transport_proto_actorbase_proto = out.File
-	file_internal_transport_proto_actorbase_proto_goTypes = nil
-	file_internal_transport_proto_actorbase_proto_depIdxs = nil
+	File_actorbase_proto = out.File
+	file_actorbase_proto_goTypes = nil
+	file_actorbase_proto_depIdxs = nil
 }

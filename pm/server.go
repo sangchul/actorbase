@@ -18,6 +18,7 @@ import (
 	"github.com/oomymy/actorbase/internal/rebalance"
 	"github.com/oomymy/actorbase/internal/transport"
 	pb "github.com/oomymy/actorbase/internal/transport/proto"
+	"github.com/oomymy/actorbase/pm/policy"
 )
 
 // Server는 Partition Manager의 진입점.
@@ -42,6 +43,12 @@ type Server struct {
 
 	// split/migrate 직렬화. PM 단일 인스턴스이지만 동시 RPC 요청 방어.
 	opMu sync.Mutex
+
+	// policy 상태. nil이면 ManualPolicy (자동화 비활성).
+	policyMu      sync.RWMutex
+	activePolicy  *policy.ThresholdConfig
+	activePolicyYAML string // etcd 저장 원본 (GetPolicy 반환용)
+	balancerCancel context.CancelFunc // AutoBalancer goroutine 취소용 (Phase 3에서 사용)
 }
 
 // subscriber는 WatchRouting 스트림 하나의 상태를 담는다.
@@ -103,7 +110,26 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("pm: register presence: %w", err)
 	}
 
-	// 2. 현재 라우팅 테이블 조회 및 초기값 설정
+	// 2. etcd에서 policy 복원 (이전 세션에서 저장된 policy가 있으면 AutoPolicy 활성화)
+	if yamlStr, err := cluster.LoadPolicy(ctx, s.etcdCli); err != nil {
+		slog.Warn("pm: load policy from etcd failed, starting with ManualPolicy", "err", err)
+	} else if yamlStr != "" {
+		if cfg, parseErr := policy.ParsePolicy([]byte(yamlStr)); parseErr != nil {
+			slog.Warn("pm: stored policy parse failed, starting with ManualPolicy", "err", parseErr)
+		} else {
+			balancerCtx, cancel := context.WithCancel(ctx)
+			b := newAutoBalancer(cfg, s.splitter, s.migrator, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
+			go b.start(balancerCtx)
+			s.policyMu.Lock()
+			s.activePolicy = cfg
+			s.activePolicyYAML = yamlStr
+			s.balancerCancel = cancel
+			s.policyMu.Unlock()
+			slog.Info("pm: AutoPolicy restored from etcd", "algorithm", cfg.Algorithm)
+		}
+	}
+
+	// 3. 현재 라우팅 테이블 조회 및 초기값 설정
 	currentRT, err := s.routingStore.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("pm: load routing table: %w", err)
@@ -286,6 +312,52 @@ func (s *Server) bootstrap(ctx context.Context) {
 			"actor_types", s.cfg.ActorTypes, "node", event.Node.ID)
 		return
 	}
+}
+
+// isAutoActive는 AutoPolicy가 활성화 상태인지 반환한다.
+func (s *Server) isAutoActive() bool {
+	s.policyMu.RLock()
+	defer s.policyMu.RUnlock()
+	return s.activePolicy != nil
+}
+
+// applyPolicy는 새 정책을 적용한다. etcd 저장, 내부 상태 갱신, AutoBalancer 재시작.
+func (s *Server) applyPolicy(ctx context.Context, yamlStr string, cfg *policy.ThresholdConfig) error {
+	if err := cluster.SavePolicy(ctx, s.etcdCli, yamlStr); err != nil {
+		return err
+	}
+	s.policyMu.Lock()
+	// 기존 balancer 중단
+	if s.balancerCancel != nil {
+		s.balancerCancel()
+	}
+	s.activePolicy = cfg
+	s.activePolicyYAML = yamlStr
+	// 새 balancer 시작
+	balancerCtx, cancel := context.WithCancel(ctx)
+	s.balancerCancel = cancel
+	b := newAutoBalancer(cfg, s.splitter, s.migrator, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
+	go b.start(balancerCtx)
+	s.policyMu.Unlock()
+	slog.Info("pm: AutoPolicy applied", "algorithm", cfg.Algorithm, "check_interval", cfg.CheckInterval)
+	return nil
+}
+
+// clearPolicy는 정책을 제거하고 ManualPolicy로 전환한다.
+func (s *Server) clearPolicy(ctx context.Context) error {
+	if err := cluster.ClearPolicy(ctx, s.etcdCli); err != nil {
+		return err
+	}
+	s.policyMu.Lock()
+	if s.balancerCancel != nil {
+		s.balancerCancel()
+		s.balancerCancel = nil
+	}
+	s.activePolicy = nil
+	s.activePolicyYAML = ""
+	s.policyMu.Unlock()
+	slog.Info("pm: policy cleared, reverted to ManualPolicy")
+	return nil
 }
 
 func (s *Server) subscribe(clientID string, sub *subscriber) {

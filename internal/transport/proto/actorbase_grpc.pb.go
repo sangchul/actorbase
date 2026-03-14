@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v4.23.4
-// source: internal/transport/proto/actorbase.proto
+// source: actorbase.proto
 
 package actorbasepb
 
@@ -123,14 +123,18 @@ var PartitionService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/transport/proto/actorbase.proto",
+	Metadata: "actorbase.proto",
 }
 
 const (
-	PartitionManagerService_WatchRouting_FullMethodName   = "/actorbase.v1.PartitionManagerService/WatchRouting"
-	PartitionManagerService_RequestSplit_FullMethodName   = "/actorbase.v1.PartitionManagerService/RequestSplit"
-	PartitionManagerService_RequestMigrate_FullMethodName = "/actorbase.v1.PartitionManagerService/RequestMigrate"
-	PartitionManagerService_ListMembers_FullMethodName    = "/actorbase.v1.PartitionManagerService/ListMembers"
+	PartitionManagerService_WatchRouting_FullMethodName    = "/actorbase.v1.PartitionManagerService/WatchRouting"
+	PartitionManagerService_RequestSplit_FullMethodName    = "/actorbase.v1.PartitionManagerService/RequestSplit"
+	PartitionManagerService_RequestMigrate_FullMethodName  = "/actorbase.v1.PartitionManagerService/RequestMigrate"
+	PartitionManagerService_ListMembers_FullMethodName     = "/actorbase.v1.PartitionManagerService/ListMembers"
+	PartitionManagerService_GetClusterStats_FullMethodName = "/actorbase.v1.PartitionManagerService/GetClusterStats"
+	PartitionManagerService_ApplyPolicy_FullMethodName     = "/actorbase.v1.PartitionManagerService/ApplyPolicy"
+	PartitionManagerService_GetPolicy_FullMethodName       = "/actorbase.v1.PartitionManagerService/GetPolicy"
+	PartitionManagerService_ClearPolicy_FullMethodName     = "/actorbase.v1.PartitionManagerService/ClearPolicy"
 )
 
 // PartitionManagerServiceClient is the client API for PartitionManagerService service.
@@ -148,6 +152,15 @@ type PartitionManagerServiceClient interface {
 	RequestMigrate(ctx context.Context, in *MigrateRequest, opts ...grpc.CallOption) (*MigrateResponse, error)
 	// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
 	ListMembers(ctx context.Context, in *ListMembersRequest, opts ...grpc.CallOption) (*ListMembersResponse, error)
+	// GetClusterStats는 클러스터 전체(또는 특정 노드)의 통계를 반환한다.
+	// node_id가 빈 문자열이면 모든 노드의 통계를 반환한다.
+	GetClusterStats(ctx context.Context, in *GetClusterStatsRequest, opts ...grpc.CallOption) (*GetClusterStatsResponse, error)
+	// ApplyPolicy는 YAML 정책을 PM에 적용하고 etcd에 영속화한다. AutoPolicy 활성화.
+	ApplyPolicy(ctx context.Context, in *ApplyPolicyRequest, opts ...grpc.CallOption) (*ApplyPolicyResponse, error)
+	// GetPolicy는 현재 적용 중인 정책 YAML을 반환한다.
+	GetPolicy(ctx context.Context, in *GetPolicyRequest, opts ...grpc.CallOption) (*GetPolicyResponse, error)
+	// ClearPolicy는 정책을 제거하여 ManualPolicy로 전환한다.
+	ClearPolicy(ctx context.Context, in *ClearPolicyRequest, opts ...grpc.CallOption) (*ClearPolicyResponse, error)
 }
 
 type partitionManagerServiceClient struct {
@@ -207,6 +220,46 @@ func (c *partitionManagerServiceClient) ListMembers(ctx context.Context, in *Lis
 	return out, nil
 }
 
+func (c *partitionManagerServiceClient) GetClusterStats(ctx context.Context, in *GetClusterStatsRequest, opts ...grpc.CallOption) (*GetClusterStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetClusterStatsResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_GetClusterStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) ApplyPolicy(ctx context.Context, in *ApplyPolicyRequest, opts ...grpc.CallOption) (*ApplyPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyPolicyResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_ApplyPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) GetPolicy(ctx context.Context, in *GetPolicyRequest, opts ...grpc.CallOption) (*GetPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPolicyResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_GetPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) ClearPolicy(ctx context.Context, in *ClearPolicyRequest, opts ...grpc.CallOption) (*ClearPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClearPolicyResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_ClearPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PartitionManagerServiceServer is the server API for PartitionManagerService service.
 // All implementations must embed UnimplementedPartitionManagerServiceServer
 // for forward compatibility.
@@ -222,6 +275,15 @@ type PartitionManagerServiceServer interface {
 	RequestMigrate(context.Context, *MigrateRequest) (*MigrateResponse, error)
 	// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
 	ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error)
+	// GetClusterStats는 클러스터 전체(또는 특정 노드)의 통계를 반환한다.
+	// node_id가 빈 문자열이면 모든 노드의 통계를 반환한다.
+	GetClusterStats(context.Context, *GetClusterStatsRequest) (*GetClusterStatsResponse, error)
+	// ApplyPolicy는 YAML 정책을 PM에 적용하고 etcd에 영속화한다. AutoPolicy 활성화.
+	ApplyPolicy(context.Context, *ApplyPolicyRequest) (*ApplyPolicyResponse, error)
+	// GetPolicy는 현재 적용 중인 정책 YAML을 반환한다.
+	GetPolicy(context.Context, *GetPolicyRequest) (*GetPolicyResponse, error)
+	// ClearPolicy는 정책을 제거하여 ManualPolicy로 전환한다.
+	ClearPolicy(context.Context, *ClearPolicyRequest) (*ClearPolicyResponse, error)
 	mustEmbedUnimplementedPartitionManagerServiceServer()
 }
 
@@ -243,6 +305,18 @@ func (UnimplementedPartitionManagerServiceServer) RequestMigrate(context.Context
 }
 func (UnimplementedPartitionManagerServiceServer) ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListMembers not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) GetClusterStats(context.Context, *GetClusterStatsRequest) (*GetClusterStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetClusterStats not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) ApplyPolicy(context.Context, *ApplyPolicyRequest) (*ApplyPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyPolicy not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) GetPolicy(context.Context, *GetPolicyRequest) (*GetPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPolicy not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) ClearPolicy(context.Context, *ClearPolicyRequest) (*ClearPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClearPolicy not implemented")
 }
 func (UnimplementedPartitionManagerServiceServer) mustEmbedUnimplementedPartitionManagerServiceServer() {
 }
@@ -331,6 +405,78 @@ func _PartitionManagerService_ListMembers_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PartitionManagerService_GetClusterStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetClusterStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).GetClusterStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_GetClusterStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).GetClusterStats(ctx, req.(*GetClusterStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_ApplyPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).ApplyPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_ApplyPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).ApplyPolicy(ctx, req.(*ApplyPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_GetPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).GetPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_GetPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).GetPolicy(ctx, req.(*GetPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_ClearPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClearPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).ClearPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_ClearPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).ClearPolicy(ctx, req.(*ClearPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PartitionManagerService_ServiceDesc is the grpc.ServiceDesc for PartitionManagerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -350,6 +496,22 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "ListMembers",
 			Handler:    _PartitionManagerService_ListMembers_Handler,
 		},
+		{
+			MethodName: "GetClusterStats",
+			Handler:    _PartitionManagerService_GetClusterStats_Handler,
+		},
+		{
+			MethodName: "ApplyPolicy",
+			Handler:    _PartitionManagerService_ApplyPolicy_Handler,
+		},
+		{
+			MethodName: "GetPolicy",
+			Handler:    _PartitionManagerService_GetPolicy_Handler,
+		},
+		{
+			MethodName: "ClearPolicy",
+			Handler:    _PartitionManagerService_ClearPolicy_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -358,10 +520,11 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "internal/transport/proto/actorbase.proto",
+	Metadata: "actorbase.proto",
 }
 
 const (
+	PartitionControlService_GetStats_FullMethodName          = "/actorbase.v1.PartitionControlService/GetStats"
 	PartitionControlService_ExecuteSplit_FullMethodName      = "/actorbase.v1.PartitionControlService/ExecuteSplit"
 	PartitionControlService_ExecuteMigrateOut_FullMethodName = "/actorbase.v1.PartitionControlService/ExecuteMigrateOut"
 	PartitionControlService_PreparePartition_FullMethodName  = "/actorbase.v1.PartitionControlService/PreparePartition"
@@ -371,6 +534,8 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type PartitionControlServiceClient interface {
+	// GetStats는 PM이 PS에게 노드 전체 통계를 요청한다.
+	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
 	// ExecuteSplit은 PM이 PS에게 파티션 split을 명령한다.
 	ExecuteSplit(ctx context.Context, in *ExecuteSplitRequest, opts ...grpc.CallOption) (*ExecuteSplitResponse, error)
 	// ExecuteMigrateOut은 PM이 PS에게 파티션을 대상 노드로 이동시키도록 명령한다.
@@ -385,6 +550,16 @@ type partitionControlServiceClient struct {
 
 func NewPartitionControlServiceClient(cc grpc.ClientConnInterface) PartitionControlServiceClient {
 	return &partitionControlServiceClient{cc}
+}
+
+func (c *partitionControlServiceClient) GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetStatsResponse)
+	err := c.cc.Invoke(ctx, PartitionControlService_GetStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *partitionControlServiceClient) ExecuteSplit(ctx context.Context, in *ExecuteSplitRequest, opts ...grpc.CallOption) (*ExecuteSplitResponse, error) {
@@ -421,6 +596,8 @@ func (c *partitionControlServiceClient) PreparePartition(ctx context.Context, in
 // All implementations must embed UnimplementedPartitionControlServiceServer
 // for forward compatibility.
 type PartitionControlServiceServer interface {
+	// GetStats는 PM이 PS에게 노드 전체 통계를 요청한다.
+	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
 	// ExecuteSplit은 PM이 PS에게 파티션 split을 명령한다.
 	ExecuteSplit(context.Context, *ExecuteSplitRequest) (*ExecuteSplitResponse, error)
 	// ExecuteMigrateOut은 PM이 PS에게 파티션을 대상 노드로 이동시키도록 명령한다.
@@ -437,6 +614,9 @@ type PartitionControlServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedPartitionControlServiceServer struct{}
 
+func (UnimplementedPartitionControlServiceServer) GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetStats not implemented")
+}
 func (UnimplementedPartitionControlServiceServer) ExecuteSplit(context.Context, *ExecuteSplitRequest) (*ExecuteSplitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExecuteSplit not implemented")
 }
@@ -466,6 +646,24 @@ func RegisterPartitionControlServiceServer(s grpc.ServiceRegistrar, srv Partitio
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&PartitionControlService_ServiceDesc, srv)
+}
+
+func _PartitionControlService_GetStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionControlServiceServer).GetStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionControlService_GetStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionControlServiceServer).GetStats(ctx, req.(*GetStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _PartitionControlService_ExecuteSplit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -530,6 +728,10 @@ var PartitionControlService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*PartitionControlServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "GetStats",
+			Handler:    _PartitionControlService_GetStats_Handler,
+		},
+		{
 			MethodName: "ExecuteSplit",
 			Handler:    _PartitionControlService_ExecuteSplit_Handler,
 		},
@@ -543,5 +745,5 @@ var PartitionControlService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/transport/proto/actorbase.proto",
+	Metadata: "actorbase.proto",
 }

@@ -10,6 +10,7 @@
 //	routing                                            현재 라우팅 테이블 출력
 //	split <actor-type> <partition-id> <split-key>      파티션 split 요청
 //	migrate <actor-type> <partition-id> <node-id>      파티션 migrate 요청
+//	stats [node-id]                                    클러스터(또는 특정 노드) 통계 출력
 package main
 
 import (
@@ -43,6 +44,32 @@ func main() {
 		cmdMembers(cfg)
 	case "routing":
 		cmdRouting(cfg)
+	case "stats":
+		nodeID := ""
+		if flag.NArg() >= 2 {
+			nodeID = flag.Arg(1)
+		}
+		cmdStats(cfg, nodeID)
+	case "policy":
+		if flag.NArg() < 2 {
+			fmt.Fprintln(os.Stderr, "usage: abctl policy <apply <file>|get|clear>")
+			os.Exit(1)
+		}
+		switch flag.Arg(1) {
+		case "apply":
+			if flag.NArg() < 3 {
+				fmt.Fprintln(os.Stderr, "usage: abctl policy apply <file>")
+				os.Exit(1)
+			}
+			cmdPolicyApply(cfg, flag.Arg(2))
+		case "get":
+			cmdPolicyGet(cfg)
+		case "clear":
+			cmdPolicyClear(cfg)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown policy subcommand: %s\n", flag.Arg(1))
+			os.Exit(1)
+		}
 	case "split":
 		if flag.NArg() < 4 {
 			fmt.Fprintln(os.Stderr, "usage: abctl split <actor-type> <partition-id> <split-key>")
@@ -73,6 +100,10 @@ Commands:
   routing                                          Print current routing table
   split <actor-type> <partition-id> <split-key>    Split a partition at the given key
   migrate <actor-type> <partition-id> <node-id>    Migrate a partition to the target node
+  stats [node-id]                                  Show cluster stats (or specific node)
+  policy apply <file>                              Apply policy YAML (activate AutoPolicy)
+  policy get                                       Show current policy
+  policy clear                                     Remove policy (revert to ManualPolicy)
 
 `)
 }
@@ -154,7 +185,7 @@ func cmdSplit(cfg *Config, actorType, partitionID, splitKey string) {
 	client := newPMClient(cfg.PMAddr)
 	newID, err := client.RequestSplit(ctx, actorType, partitionID, splitKey)
 	if err != nil {
-		slog.Error("split failed", "err", err)
+		fmt.Fprintf(os.Stderr, "split failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("split successful\nnew partition ID: %s\n", newID)
@@ -166,8 +197,93 @@ func cmdMigrate(cfg *Config, actorType, partitionID, targetNodeID string) {
 
 	client := newPMClient(cfg.PMAddr)
 	if err := client.RequestMigrate(ctx, actorType, partitionID, targetNodeID); err != nil {
-		slog.Error("migrate failed", "err", err)
+		fmt.Fprintf(os.Stderr, "migrate failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("migrate successful")
+}
+
+func cmdPolicyApply(cfg *Config, filePath string) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		slog.Error("read policy file failed", "file", filePath, "err", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.ApplyPolicy(ctx, string(data)); err != nil {
+		slog.Error("apply policy failed", "err", err)
+		os.Exit(1)
+	}
+	fmt.Println("AutoPolicy applied successfully")
+}
+
+func cmdPolicyGet(cfg *Config) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	yamlStr, active, err := client.GetPolicy(ctx)
+	if err != nil {
+		slog.Error("get policy failed", "err", err)
+		os.Exit(1)
+	}
+	if !active {
+		fmt.Println("Mode: ManualPolicy (no AutoPolicy active)")
+		return
+	}
+	fmt.Println("Mode: AutoPolicy (active)")
+	fmt.Println("---")
+	fmt.Print(yamlStr)
+}
+
+func cmdPolicyClear(cfg *Config) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.ClearPolicy(ctx); err != nil {
+		slog.Error("clear policy failed", "err", err)
+		os.Exit(1)
+	}
+	fmt.Println("Policy cleared. Reverted to ManualPolicy.")
+}
+
+func cmdStats(cfg *Config, nodeID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	nodes, err := client.GetClusterStats(ctx, nodeID)
+	if err != nil {
+		slog.Error("get stats failed", "err", err)
+		os.Exit(1)
+	}
+
+	if len(nodes) == 0 {
+		fmt.Println("no stats available")
+		return
+	}
+
+	for _, n := range nodes {
+		fmt.Printf("Node: %s (%s)  rps=%.1f  partitions=%d\n",
+			n.NodeID, n.NodeAddr, n.NodeRPS, n.PartitionCount)
+		if len(n.Partitions) > 0 {
+			fmt.Printf("  %-36s  %-12s  %10s  %8s\n", "PARTITION-ID", "ACTOR-TYPE", "KEY-COUNT", "RPS")
+			fmt.Printf("  %-36s  %-12s  %10s  %8s\n",
+				"------------------------------------", "------------", "----------", "--------")
+			for _, p := range n.Partitions {
+				keyCount := fmt.Sprintf("%d", p.KeyCount)
+				if p.KeyCount < 0 {
+					keyCount = "n/a"
+				}
+				fmt.Printf("  %-36s  %-12s  %10s  %8.1f\n",
+					p.PartitionID, p.ActorType, keyCount, p.RPS)
+			}
+		}
+		fmt.Println()
+	}
 }

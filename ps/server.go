@@ -31,12 +31,15 @@ type actorDispatcher interface {
 	Activate(ctx context.Context, partitionID string) error
 	Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error
 	StartSchedulers(ctx context.Context, idleTimeout, evictInterval, checkpointInterval time.Duration)
+	GetStats() []engine.PartitionStats
+	TypeID() string
 }
 
 // typedDispatcher는 engine.ActorHost[Req, Resp]를 actorDispatcher로 감싼다.
 type typedDispatcher[Req, Resp any] struct {
-	host  *engine.ActorHost[Req, Resp]
-	codec provider.Codec
+	typeID string
+	host   *engine.ActorHost[Req, Resp]
+	codec  provider.Codec
 }
 
 func newTypedDispatcher[Req, Resp any](cfg TypeConfig[Req, Resp]) *typedDispatcher[Req, Resp] {
@@ -49,7 +52,7 @@ func newTypedDispatcher[Req, Resp any](cfg TypeConfig[Req, Resp]) *typedDispatch
 		FlushInterval:          cfg.FlushInterval,
 		CheckpointWALThreshold: cfg.CheckpointWALThreshold,
 	})
-	return &typedDispatcher[Req, Resp]{host: host, codec: cfg.Codec}
+	return &typedDispatcher[Req, Resp]{typeID: cfg.TypeID, host: host, codec: cfg.Codec}
 }
 
 func (d *typedDispatcher[Req, Resp]) Send(ctx context.Context, partitionID string, payload []byte) ([]byte, error) {
@@ -88,6 +91,14 @@ func (d *typedDispatcher[Req, Resp]) StartSchedulers(
 	go evictSched.Start(ctx)
 	cpSched := engine.NewCheckpointScheduler[Req, Resp](d.host, checkpointInterval)
 	go cpSched.Start(ctx)
+}
+
+func (d *typedDispatcher[Req, Resp]) GetStats() []engine.PartitionStats {
+	return d.host.GetStats()
+}
+
+func (d *typedDispatcher[Req, Resp]) TypeID() string {
+	return d.typeID
 }
 
 // ── ServerBuilder ─────────────────────────────────────────────────────────────

@@ -59,6 +59,34 @@ func (h *controlHandler) ExecuteMigrateOut(
 	return &pb.ExecuteMigrateOutResponse{}, nil
 }
 
+// GetStats는 PM의 통계 조회 요청을 처리한다.
+func (h *controlHandler) GetStats(
+	_ context.Context,
+	_ *pb.GetStatsRequest,
+) (*pb.GetStatsResponse, error) {
+	var allPartitions []*pb.PartitionStatsProto
+	var nodeRPS float64
+
+	for _, d := range h.dispatchers {
+		typeID := d.TypeID()
+		for _, s := range d.GetStats() {
+			allPartitions = append(allPartitions, &pb.PartitionStatsProto{
+				PartitionId: s.PartitionID,
+				ActorType:   typeID,
+				KeyCount:    s.KeyCount,
+				Rps:         s.RPS,
+			})
+			nodeRPS += s.RPS
+		}
+	}
+
+	return &pb.GetStatsResponse{
+		Partitions:     allPartitions,
+		NodeRps:        nodeRPS,
+		PartitionCount: int32(len(allPartitions)),
+	}, nil
+}
+
 // PreparePartition은 PM의 파티션 로드 명령을 처리한다.
 func (h *controlHandler) PreparePartition(
 	ctx context.Context,

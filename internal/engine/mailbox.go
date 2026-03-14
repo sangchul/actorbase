@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/oomymy/actorbase/provider"
@@ -69,6 +70,9 @@ type mailbox[Req, Resp any] struct {
 	lastMsg      atomic_time  // EvictionScheduler 참조용
 	confirmedLSN atomic_uint64
 
+	rps      rpsCounter    // RPS 슬라이딩 윈도우
+	keyCount atomic.Int64  // actor가 Countable이면 갱신됨. 아니면 -1 유지.
+
 	doneCh chan struct{} // run() 종료 시 close
 }
 
@@ -84,7 +88,7 @@ func newMailbox[Req, Resp any](
 	walThreshold int,
 	onWALError func(),
 ) *mailbox[Req, Resp] {
-	return &mailbox[Req, Resp]{
+	m := &mailbox[Req, Resp]{
 		inCh:           make(chan envelope[Req, Resp], inSize),
 		splitCh:        make(chan splitReq, 1),
 		submitCh:       submitCh,
@@ -95,6 +99,8 @@ func newMailbox[Req, Resp any](
 		onWALError:     onWALError,
 		doneCh:         make(chan struct{}),
 	}
+	m.keyCount.Store(-1) // Countable 미구현 시 기본값
+	return m
 }
 
 // send는 req를 mailbox에 전달하고 결과를 기다린다.
@@ -167,6 +173,11 @@ func (m *mailbox[Req, Resp]) close() {
 	close(m.inCh)
 }
 
+// stats는 mailbox의 현재 통계를 반환한다.
+func (m *mailbox[Req, Resp]) stats() (keyCount int64, rps float64) {
+	return m.keyCount.Load(), m.rps.rps(60)
+}
+
 // run은 mailbox 이벤트 루프. 별도 goroutine으로 실행된다.
 //
 // 종료 조건: inCh가 close되어 ok=false를 수신하거나 WAL 오류 발생.
@@ -203,6 +214,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 				return // close()로 종료
 			}
 			resp, walEntry, err := safeReceive(actor, actCtx, env.req)
+			m.rps.inc()
 
 			if walEntry == nil || err != nil {
 				env.replyCh <- result[Resp]{resp: resp, err: err}
@@ -237,6 +249,9 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 
 		case lsn := <-m.walConfirmedCh:
 			pendingWAL--
+			if c, ok := any(actor).(provider.Countable); ok {
+				m.keyCount.Store(c.KeyCount())
+			}
 
 			if lsn == 0 {
 				// WAL flush 실패: 메모리 상태와 WAL 불일치 → Actor evict

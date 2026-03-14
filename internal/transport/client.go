@@ -224,6 +224,57 @@ func (c *PMClient) ListMembers(ctx context.Context) ([]MemberInfo, error) {
 	return members, nil
 }
 
+// ApplyPolicy는 PM에 YAML 정책을 전송하여 AutoPolicy를 활성화한다.
+func (c *PMClient) ApplyPolicy(ctx context.Context, yamlStr string) error {
+	_, err := c.client.ApplyPolicy(ctx, &pb.ApplyPolicyRequest{PolicyYaml: yamlStr})
+	return fromGRPCStatus(err)
+}
+
+// GetPolicy는 PM에서 현재 적용 중인 정책 YAML을 조회한다.
+// active=false이면 ManualPolicy 상태.
+func (c *PMClient) GetPolicy(ctx context.Context) (yamlStr string, active bool, err error) {
+	resp, rpcErr := c.client.GetPolicy(ctx, &pb.GetPolicyRequest{})
+	if rpcErr != nil {
+		return "", false, fromGRPCStatus(rpcErr)
+	}
+	return resp.PolicyYaml, resp.Active, nil
+}
+
+// ClearPolicy는 PM의 AutoPolicy를 제거하고 ManualPolicy로 전환한다.
+func (c *PMClient) ClearPolicy(ctx context.Context) error {
+	_, err := c.client.ClearPolicy(ctx, &pb.ClearPolicyRequest{})
+	return fromGRPCStatus(err)
+}
+
+// GetClusterStats는 PM에서 클러스터 전체(또는 특정 노드)의 통계를 조회한다.
+// nodeID가 빈 문자열이면 모든 노드를 반환한다.
+func (c *PMClient) GetClusterStats(ctx context.Context, nodeID string) ([]NodeStats, error) {
+	resp, err := c.client.GetClusterStats(ctx, &pb.GetClusterStatsRequest{NodeId: nodeID})
+	if err != nil {
+		return nil, fromGRPCStatus(err)
+	}
+	result := make([]NodeStats, len(resp.Nodes))
+	for i, n := range resp.Nodes {
+		partitions := make([]PartitionStats, len(n.Partitions))
+		for j, p := range n.Partitions {
+			partitions[j] = PartitionStats{
+				PartitionID: p.PartitionId,
+				ActorType:   p.ActorType,
+				KeyCount:    p.KeyCount,
+				RPS:         p.Rps,
+			}
+		}
+		result[i] = NodeStats{
+			NodeID:         n.NodeId,
+			NodeAddr:       n.NodeAddr,
+			NodeRPS:        n.NodeRps,
+			PartitionCount: n.PartitionCount,
+			Partitions:     partitions,
+		}
+	}
+	return result, nil
+}
+
 // ── PSControlClient (PM → PS, control plane) ─────────────────────────────────
 
 // PSControlClient는 PM이 PS에게 split/migrate를 명령하는 데 사용한다.
@@ -271,6 +322,28 @@ func (c *PSControlClient) PreparePartition(ctx context.Context, actorType, parti
 		ActorType:     actorType,
 	})
 	return fromGRPCStatus(err)
+}
+
+// NodeStats는 PS 노드 하나의 통계.
+type NodeStats struct {
+	NodeID         string
+	NodeAddr       string
+	NodeRPS        float64
+	PartitionCount int32
+	Partitions     []PartitionStats
+}
+
+// PartitionStats는 파티션 하나의 통계.
+type PartitionStats struct {
+	PartitionID string
+	ActorType   string
+	KeyCount    int64
+	RPS         float64
+}
+
+// GetStats는 PS에서 노드 전체 통계를 조회한다.
+func (c *PSControlClient) GetStats(ctx context.Context) (*pb.GetStatsResponse, error) {
+	return c.client.GetStats(ctx, &pb.GetStatsRequest{})
 }
 
 // ── 변환 헬퍼 ────────────────────────────────────────────────────────────────

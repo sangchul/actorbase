@@ -44,6 +44,19 @@ service PartitionManagerService {
 
   // ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
   rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+
+  // GetClusterStats는 클러스터 전체(또는 특정 노드)의 통계를 반환한다.
+  // node_id가 빈 문자열이면 모든 노드의 통계를 반환한다.
+  rpc GetClusterStats(GetClusterStatsRequest) returns (GetClusterStatsResponse);
+
+  // ApplyPolicy는 YAML 정책을 PM에 적용하고 etcd에 영속화한다. AutoPolicy 활성화.
+  rpc ApplyPolicy(ApplyPolicyRequest) returns (ApplyPolicyResponse);
+
+  // GetPolicy는 현재 적용 중인 정책 YAML을 반환한다.
+  rpc GetPolicy(GetPolicyRequest) returns (GetPolicyResponse);
+
+  // ClearPolicy는 정책을 제거하여 ManualPolicy로 전환한다.
+  rpc ClearPolicy(ClearPolicyRequest) returns (ClearPolicyResponse);
 }
 
 message WatchRoutingRequest {
@@ -85,6 +98,9 @@ message ListMembersResponse {
 // ─────────────────────────────────────────────────────────
 
 service PartitionControlService {
+  // GetStats는 PM이 PS에게 노드 전체 통계를 요청한다.
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+
   // ExecuteSplit은 PM이 PS에게 파티션 split을 명령한다.
   rpc ExecuteSplit(ExecuteSplitRequest) returns (ExecuteSplitResponse);
 
@@ -144,4 +160,60 @@ message RouteEntryProto {
 enum NodeStatus {
   NODE_STATUS_ACTIVE   = 0;
   NODE_STATUS_DRAINING = 1;
+}
+
+// ─────────────────────────────────────────────────────────
+// Policy Messages
+// ─────────────────────────────────────────────────────────
+
+message ApplyPolicyRequest {
+  string policy_yaml = 1; // YAML 형식의 정책 문자열
+}
+
+message ApplyPolicyResponse {}
+
+message GetPolicyRequest {}
+
+message GetPolicyResponse {
+  string policy_yaml = 1; // 현재 적용 중인 정책 YAML. 없으면 빈 문자열.
+  bool   active      = 2; // true이면 AutoPolicy 활성 중
+}
+
+message ClearPolicyRequest {}
+
+message ClearPolicyResponse {}
+
+// ─────────────────────────────────────────────────────────
+// Stats Messages
+// ─────────────────────────────────────────────────────────
+
+message PartitionStatsProto {
+  string partition_id = 1;
+  string actor_type   = 2;
+  int64  key_count    = 3; // -1이면 actor가 Countable을 구현하지 않음
+  double rps          = 4; // 최근 60초 슬라이딩 윈도우 평균
+}
+
+message GetStatsRequest {}
+
+message GetStatsResponse {
+  repeated PartitionStatsProto partitions    = 1;
+  double                       node_rps      = 2;
+  int32                        partition_count = 3;
+}
+
+message NodeStatsProto {
+  string                       node_id         = 1;
+  string                       node_addr       = 2;
+  double                       node_rps        = 3;
+  int32                        partition_count = 4;
+  repeated PartitionStatsProto partitions      = 5;
+}
+
+message GetClusterStatsRequest {
+  string node_id = 1; // "" = 모든 노드
+}
+
+message GetClusterStatsResponse {
+  repeated NodeStatsProto nodes = 1;
 }

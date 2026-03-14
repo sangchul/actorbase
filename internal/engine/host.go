@@ -184,6 +184,32 @@ func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey,
 	return h.Activate(ctx, newPartitionID)
 }
 
+// GetStats는 현재 활성화된 모든 파티션의 통계를 반환한다.
+func (h *ActorHost[Req, Resp]) GetStats() []PartitionStats {
+	h.mu.Lock()
+	snapshot := make(map[string]*actorEntry[Req, Resp], len(h.actors))
+	for id, e := range h.actors {
+		snapshot[id] = e
+	}
+	h.mu.Unlock()
+
+	result := make([]PartitionStats, 0, len(snapshot))
+	for id, entry := range snapshot {
+		select {
+		case <-entry.ready:
+		default:
+			continue // 아직 활성화 중
+		}
+		keyCount, rps := entry.mailbox.stats()
+		result = append(result, PartitionStats{
+			PartitionID: id,
+			KeyCount:    keyCount,
+			RPS:         rps,
+		})
+	}
+	return result
+}
+
 // IdleActors는 lastMsg가 idleSince 이전인 partitionID 목록을 반환한다.
 // EvictionScheduler가 주기적으로 호출한다.
 func (h *ActorHost[Req, Resp]) IdleActors(idleSince time.Time) []string {

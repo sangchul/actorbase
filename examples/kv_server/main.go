@@ -101,6 +101,11 @@ func (a *kvActor) Split(splitKey string) ([]byte, error) {
 	return json.Marshal(upper)
 }
 
+// KeyCount는 provider.Countable 구현. 현재 보유한 key 수를 반환한다.
+func (a *kvActor) KeyCount() int64 {
+	return int64(len(a.data))
+}
+
 // ── main ───────────────────────────────────────────────────────────────────────
 
 func main() {

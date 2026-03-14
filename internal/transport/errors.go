@@ -55,6 +55,8 @@ func fromGRPCStatus(err error) error {
 		return provider.ErrPartitionBusy
 	case codes.DeadlineExceeded:
 		return provider.ErrTimeout
+	case codes.PermissionDenied:
+		return fmt.Errorf("%s", st.Message())
 	case codes.Internal:
 		// ErrActorPanicked만 codes.Internal로 인코딩된다.
 		// 그 외 Internal은 서버 내부 오류로 메시지를 보존한다.
