@@ -45,10 +45,13 @@ type Server struct {
 	opMu sync.Mutex
 
 	// policy 상태. nil이면 ManualPolicy (자동화 비활성).
-	policyMu      sync.RWMutex
-	activePolicy  *policy.ThresholdConfig
-	activePolicyYAML string // etcd 저장 원본 (GetPolicy 반환용)
-	balancerCancel context.CancelFunc // AutoBalancer goroutine 취소용 (Phase 3에서 사용)
+	policyMu         sync.RWMutex
+	activePolicy     *policy.ThresholdConfig
+	activePolicyYAML string          // etcd 저장 원본 (GetPolicy 반환용)
+	balancerCancel   context.CancelFunc // AutoBalancer goroutine 취소용
+
+	// serverCtx는 Start()의 ctx를 저장해 applyPolicy에서 balancer lifetime에 사용한다.
+	serverCtx context.Context
 }
 
 // subscriber는 WatchRouting 스트림 하나의 상태를 담는다.
@@ -105,6 +108,8 @@ func NewServer(cfg Config) (*Server, error) {
 
 // Start는 PM을 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
 func (s *Server) Start(ctx context.Context) error {
+	s.serverCtx = ctx // applyPolicy에서 balancer lifetime context로 사용
+
 	// 1. etcd에 PM 존재를 등록 (PS가 PM 가동 여부를 확인하는 데 사용)
 	if err := cluster.RegisterPM(ctx, s.etcdCli, s.cfg.ListenAddr); err != nil {
 		return fmt.Errorf("pm: register presence: %w", err)
@@ -333,8 +338,8 @@ func (s *Server) applyPolicy(ctx context.Context, yamlStr string, cfg *policy.Th
 	}
 	s.activePolicy = cfg
 	s.activePolicyYAML = yamlStr
-	// 새 balancer 시작
-	balancerCtx, cancel := context.WithCancel(ctx)
+	// 새 balancer 시작 (serverCtx: PM lifetime 동안 유지)
+	balancerCtx, cancel := context.WithCancel(s.serverCtx)
 	s.balancerCancel = cancel
 	b := newAutoBalancer(cfg, s.splitter, s.migrator, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
 	go b.start(balancerCtx)
