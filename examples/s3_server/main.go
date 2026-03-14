@@ -118,6 +118,8 @@ func (a *bucketActor) Split(splitKey string) ([]byte, error) {
 	return json.Marshal(upper)
 }
 
+func (a *bucketActor) KeyCount() int64 { return int64(len(a.buckets)) }
+
 // ── Object Actor ──────────────────────────────────────────────────────────────
 
 // ObjectRequest는 object 메타데이터 요청.
@@ -236,6 +238,8 @@ func (a *objectActor) Split(splitKey string) ([]byte, error) {
 	}
 	return json.Marshal(upper)
 }
+
+func (a *objectActor) KeyCount() int64 { return int64(len(a.objects)) }
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
