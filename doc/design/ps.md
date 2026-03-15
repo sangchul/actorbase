@@ -152,7 +152,19 @@ Send(req):
   3. dispatchers[req.ActorType] → dispatcher
      └ 없음 → 알 수 없는 actor type 에러
   4. dispatcher.Send(ctx, req.PartitionID, req.Payload)
+
+Scan(req):
+  1. routing.LookupByPartition(req.PartitionID) → entry
+     └ 없음 → ErrPartitionNotOwned
+  2. entry.Node.ID != myNodeID → ErrPartitionNotOwned
+  3. entry.Partition.KeyRange.Start != req.ExpectedKeyRangeStart
+     || entry.Partition.KeyRange.End != req.ExpectedKeyRangeEnd
+     → ErrPartitionMoved  // stale routing 감지: SDK가 라우팅 갱신 후 재시도
+  4. dispatchers[req.ActorType] → dispatcher
+  5. dispatcher.Send(ctx, req.PartitionID, req.Payload)  // 동일 경로 재사용
 ```
+
+> Scan은 Send와 동일한 Actor.Receive() 경로를 통과한다. `"scan"`/`"list"` op를 인식한 Actor가 범위 내 항목을 `Resp` 안에 담아 반환한다. SDK가 파티션별 결과를 수집하여 `[]Resp`로 합쳐 호출자에게 돌려준다.
 
 ---
 

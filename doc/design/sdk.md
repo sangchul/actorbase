@@ -58,6 +58,41 @@ Send(ctx, key, req):
 
 > **라우팅 갱신 대기**: ErrPartitionMoved 수신 시 PM이 이미 새 라우팅을 push 중이다. `consumeRouting`이 백그라운드에서 `routing`을 갱신하므로, 짧은 sleep 후 재시도하면 갱신된 테이블을 얻는다.
 
+### Scan 흐름
+
+다수의 파티션에 걸친 범위 조회. **누락 없음(no missing keys)** 을 보장한다. 중복은 허용된다.
+
+```
+Scan(ctx, startKey, endKey, req):
+  currentStart = startKey
+  results = []Resp{}
+
+  for currentStart < endKey (또는 endKey == ""):
+    1. rt = routing.Load()
+    2. partitions = rt.PartitionsInRange(TypeID, currentStart, endKey)
+       └ 없음 → break (완료)
+    3. 파티션을 KeyRange.Start 기준으로 정렬
+    4. for each partition in sorted order (병렬 fan-out):
+         psClient.Scan(ctx, TypeID, partitionID, req, &resp,
+                       partition.KeyRange.Start, partition.KeyRange.End)
+
+    5. 연속 성공(currentStart부터) 결과 누적:
+         for each result (KeyRange.Start 순서):
+           if result.err == nil && result.KeyRange.Start == currentStart:
+             results = append(results, result.resp)
+             currentStart = result.KeyRange.End  // 다음 파티션으로 전진
+           else:
+             break  // 첫 번째 실패 또는 gap → 여기서부터 재시도
+
+    6. currentStart가 endKey 이상이면 완료
+
+  return results, nil
+```
+
+**누락 없음 보장 원리**: stale routing으로 P1=[a,m)을 예상했는데 실제 P1=[a,g)로 split된 경우, PS는 `ErrPartitionMoved`를 반환한다. SDK는 라우팅을 갱신하고 `currentStart=a`부터 재시도하여 P1a=[a,g)와 P1b=[g,m)을 모두 커버한다. 이미 성공한 `[endKey' , currentStart)` 범위는 재시도하지 않는다.
+
+**`[]Resp` 반환**: 파티션별 응답을 하나씩 담은 슬라이스. 호출자가 `Resp` 안의 `Items []T`를 순서대로 이어 붙이면 전체 결과 목록이 된다. SDK는 데이터 내용을 모르므로 중복 제거나 정렬은 호출자가 담당한다.
+
 ---
 
 ## 주요 결정 사항
@@ -78,3 +113,5 @@ Send(ctx, key, req):
 - **MaxRetries 초과 시 에러**: 클러스터가 장시간 불안정한 경우 호출자가 자체 retry 로직을 추가해야 한다.
 - **RetryInterval 고정값**: 지수 백오프 없이 고정 interval로 재시도. retry storm 발생 가능.
 - **PM 연결 단절 시**: 재연결 중에도 기존 캐시된 라우팅으로 Send는 계속 동작하나, 라우팅 변경은 반영되지 않는다.
+- **Scan 중복 허용**: 파티션 split 타이밍에 따라 동일 key가 두 번 포함될 수 있다. 중복 제거는 호출자가 처리해야 한다.
+- **Scan 부분 실패**: 특정 파티션의 MaxRetries 초과 시 해당 파티션부터 이후 범위가 누락된 채 에러를 반환한다.

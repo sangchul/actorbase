@@ -73,13 +73,23 @@ func (rt *RoutingTable) Version() int64
 func (rt *RoutingTable) Entries() []RouteEntry
 func (rt *RoutingTable) EntriesByType(actorType string) []RouteEntry
 func (rt *RoutingTable) ActorTypes() []string
-func (rt *RoutingTable) Lookup(actorType, key string) (RouteEntry, bool)        // O(log n)
-func (rt *RoutingTable) LookupByPartition(partitionID string) (RouteEntry, bool) // O(1)
+func (rt *RoutingTable) Lookup(actorType, key string) (RouteEntry, bool)               // O(log n)
+func (rt *RoutingTable) LookupByPartition(partitionID string) (RouteEntry, bool)        // O(1)
+func (rt *RoutingTable) PartitionsInRange(actorType, startKey, endKey string) []RouteEntry // O(n)
 ```
 
 ### Lookup 알고리즘
 
 `byType[actorType]`의 정렬된 슬라이스에서 이진 탐색으로 `Start <= key`를 만족하는 마지막 entry를 찾고, `KeyRange.Contains(key)`로 검증한다.
+
+### PartitionsInRange 알고리즘
+
+`[startKey, endKey)` 범위와 겹치는 모든 파티션을 반환한다. SDK Scan의 fan-out 대상 파티션 목록 계산에 사용된다.
+
+1. 이진 탐색으로 `Start > startKey`를 만족하는 첫 entry 위치 `idx` 를 구하고 `idx-1`로 조정 (startKey를 포함하는 파티션 시작점)
+2. `idx`부터 순차 탐색하며 `KeyRange.Start >= endKey` (endKey != "")이면 중단
+3. `KeyRange.End <= startKey` 인 항목은 skip (겹치지 않음)
+4. 해당 범위와 겹치는 항목을 `KeyRange.Start` 순서로 반환
 
 ### NewRoutingTable 처리 순서
 

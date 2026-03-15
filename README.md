@@ -62,6 +62,7 @@ Each partition maps to a **key range** and lives on one PS node. When a partitio
 | **Auto balancer** | Pluggable `BalancePolicy` drives split/migrate decisions. Built-in: `ThresholdPolicy`, `RelativePolicy`. |
 | **Runtime policy** | Apply, inspect, or clear balance policy at runtime via `abctl policy apply`. |
 | **Multi actor type** | A single PS binary can host multiple actor types (e.g. `bucket` + `object`). |
+| **Range scan** | `Client.Scan()` fans out to all partitions covering `[startKey, endKey)` in parallel, with stale-routing detection and retry. Guarantees no missing keys. |
 | **SDK client** | Watches routing table live. Retries on `ErrPartitionBusy` / `ErrPartitionMoved`. |
 
 ---
