@@ -67,6 +67,26 @@ Each partition maps to a **key range** and lives on one PS node. When a partitio
 
 ---
 
+## Performance
+
+Benchmarked on Apple M2 Pro (GOMAXPROCS=10) with a no-op actor to isolate engine overhead. Real actors add business logic cost on top.
+
+**The key question: can a single-threaded actor keep up?**
+
+| Scenario | Throughput | Notes |
+|---|---|---|
+| Read (no WAL) | ~1,086,000 ops/s | mailbox ceiling; no WAL path |
+| Write, 1 goroutine, 500µs WAL/batch | ~1,000 ops/s | WAL latency exposed directly |
+| Write, 40 goroutines, 500µs WAL/batch | ~4,000 ops/s | 4× — linear with senders |
+| Write, 160 goroutines, 500µs WAL/batch | ~16,000 ops/s | 16× — linear with senders |
+| Write, 640 goroutines, 500µs WAL/batch | ~370,000 ops/s | actor goroutine saturated |
+
+**Group commit scales write throughput linearly with concurrent senders.** The actor goroutine never waits on WAL IO — it submits to the flusher and immediately picks up the next message. All concurrent callers share one `AppendBatch` call, so 160 callers with 500µs WAL latency achieve 16× the throughput of a single caller.
+
+`FlushInterval` (default: 10ms) is the primary tuning knob. Smaller values reduce per-op latency at the cost of smaller batches and more WAL IO. See [engine design doc](doc/design/engine.md) for full benchmark data and FlushInterval selection guidance.
+
+---
+
 ## What You Implement
 
 actorbase is a framework. You provide the actor logic; the platform handles everything else.
