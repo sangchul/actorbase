@@ -17,21 +17,24 @@
 ```
 [PM: Splitter]                    [Source PS]
       │
-      │ 1. 검증 (partitionID 존재, splitKey가 KeyRange 내)
+      │ 1. 검증 (partitionID 존재, splitKey 제공 시 KeyRange 내인지 확인)
       │ 2. newPartitionID 생성
       │
       │── ExecuteSplit ──────────────────────▶│
       │   (partitionID, splitKey,             │ 3. 파티션 busy 표시
-      │    newPartitionID, actorType)         │ 4. Actor.Split(splitKey) → upperHalf
-      │                                       │ 5. 하위 파티션 checkpoint 저장
-      │                                       │ 6. 상위 파티션 checkpoint 저장
-      │                                       │ 7. 두 파티션 모두 Active
-      │◀── success ───────────────────────────│
+      │    keyRangeStart, keyRangeEnd,        │ 4. split key 결정:
+      │    newPartitionID, actorType)         │    splitKey != "" → 그대로 사용
+      │                                       │    splitKey == "" → SplitHint() 또는 midpoint
+      │                                       │ 5. Actor.Split(결정된 key) → upperHalf
+      │                                       │ 6. 하위 파티션 checkpoint 저장
+      │                                       │ 7. 상위 파티션 checkpoint 저장
+      │                                       │ 8. 두 파티션 모두 Active
+      │◀── ExecuteSplitResponse(split_key) ───│
       │
-      │ 8. RoutingTable 갱신
-      │    [oldStart, splitKey) → sourceNode (Active)
-      │    [splitKey, oldEnd)  → sourceNode (Active)
-      │ 9. etcd에 저장
+      │ 9. RoutingTable 갱신 (PS가 반환한 split_key 사용)
+      │    [oldStart, split_key) → sourceNode (Active)
+      │    [split_key, oldEnd)  → sourceNode (Active)
+      │ 10. etcd에 저장
 ```
 
 ### Splitter API
@@ -42,8 +45,10 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey s
 
 **검증 조건:**
 - `partitionID`가 현재 라우팅 테이블에 존재
-- `splitKey`가 파티션의 KeyRange 내에 있음 (`Start < splitKey`)
-- `splitKey`가 `Start`와 같으면 안 됨 (빈 하위 파티션 방지)
+- `splitKey`가 명시적으로 제공된 경우에만:
+  - `splitKey > partition.KeyRange.Start` (빈 하위 파티션 방지)
+  - `splitKey < partition.KeyRange.End` (또는 End가 ""이면 제약 없음)
+- `splitKey == ""`이면 PS가 SplitHinter 또는 midpoint로 결정 (검증 skip)
 
 ---
 

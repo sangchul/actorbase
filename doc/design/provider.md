@@ -118,7 +118,54 @@ func (a *BucketActor) Replay(entry []byte) error {
 type Countable interface {
     KeyCount() int64
 }
+
+// SplitHinter는 Actor가 선택적으로 구현하는 인터페이스.
+// 구현하면 Actor가 내부 상태(hotspot 추적 등)를 기반으로 split 위치를 직접 제안한다.
+// 구현하지 않으면 engine이 파티션 key range의 midpoint를 자동으로 계산한다.
+//
+// split key 결정 우선순위:
+//   1. 호출자가 명시한 key (abctl split <id> <key> 등 수동 명령)
+//   2. SplitHint() 반환값 (구현한 경우)
+//   3. KeyRangeMidpoint(keyRangeStart, keyRangeEnd) (midpoint fallback)
+//
+// SplitHint()는 mailbox goroutine 내에서 호출되므로 별도 동기화가 불필요하다.
+// 반환값이 ""이면 다음 우선순위 fallback으로 넘어간다.
+type SplitHinter interface {
+    SplitHint() string
+}
 ```
+
+**SplitHinter 구현 예시 (object_actor — hotspot 기반 split):**
+
+```go
+// objectActor는 routing key별 누적 접근 수를 추적하여
+// 가장 자주 접근되는 key를 split 위치로 제안한다.
+// split하면 hotspot key 이상이 상위 파티션으로 이동하여 부하가 분산된다.
+type objectActor struct {
+    objects  map[string]objectMeta
+    accessCt map[string]int64  // routing key별 누적 접근 수
+}
+
+func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResponse, []byte, error) {
+    k := objKey(req.Bucket, req.Key)
+    a.accessCt[k]++ // mailbox goroutine 내 단일 스레드 → 동기화 불필요
+    // ...
+}
+
+func (a *objectActor) SplitHint() string {
+    var hotKey string
+    var maxCt int64
+    for k, ct := range a.accessCt {
+        if ct > maxCt {
+            maxCt = ct
+            hotKey = k
+        }
+    }
+    return hotKey // ""이면 engine이 midpoint 사용
+}
+```
+
+bucket과 같이 접근 패턴이 고른 Actor는 `SplitHinter`를 구현하지 않아도 된다. engine이 파티션 key range의 midpoint로 split key를 결정한다.
 
 ### 알려진 한계
 
@@ -313,9 +360,10 @@ type BalanceAction struct {
     Type        BalanceActionType
     ActorType   string
     PartitionID string
-    SplitKey    string  // ActionSplit 시 사용
     TargetNode  string  // ActionMigrate / ActionFailover 시 사용
 }
+// ActionSplit 시 split key는 Policy가 결정하지 않는다.
+// PS가 SplitHinter 또는 midpoint fallback으로 결정한다.
 ```
 
 ### 기본 제공 구현체
@@ -325,7 +373,8 @@ type BalanceAction struct {
 | 구현체 | 설명 |
 |---|---|
 | `NoopBalancePolicy` | 모든 메서드가 nil 반환. `pm.Config.BalancePolicy`의 기본값. |
-| `ThresholdPolicy` | YAML `abctl policy apply`로 활성화되는 임계값 기반 정책. |
+| `ThresholdPolicy` | RPS·key count 절대 임계값 기반 정책. `algorithm: threshold`. |
+| `RelativePolicy` | 클러스터 평균 RPS 대비 배수 기반 정책. `algorithm: relative`. |
 
 사용자는 `provider.BalancePolicy`를 직접 구현하여 `pm.Config{BalancePolicy: myPolicy}`로 주입할 수 있다.
 

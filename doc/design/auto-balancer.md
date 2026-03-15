@@ -48,7 +48,13 @@ balance:
 
 ### split key 결정
 
-자동 split 시 split key는 파티션 key 범위의 midpoint로 결정한다. 두 문자열의 바이트 레벨 산술 평균을 사용한다.
+split key는 Policy가 아닌 **PS(Actor)가 결정**한다. 결정 우선순위:
+
+1. 호출자가 명시한 key (수동 `abctl split <id> <key>`)
+2. `SplitHinter.SplitHint()` — Actor가 선택적으로 구현. 내부 상태(hotspot 등) 기반으로 최적 위치 제안.
+3. `KeyRangeMidpoint(start, end)` — 파티션 key 범위의 바이트 레벨 산술 평균 (midpoint fallback)
+
+Policy에서 ActionSplit을 반환할 때는 split key를 제공하지 않는다 (`BalanceAction`에 SplitKey 필드 없음). Splitter는 splitKey="" 로 `ExecuteSplit`을 호출하고, PS가 반환한 실제 key로 라우팅 테이블을 갱신한다.
 
 ### 수동/자동 전환 및 배타적 운영
 
@@ -111,7 +117,9 @@ type Countable interface {
 
 ### Policy YAML 및 etcd 저장
 
-**`policy/threshold.go` — RunnerConfig, ThresholdConfig, ThresholdPolicy**
+**`policy/policy.go` — 공통 타입 + ParsePolicy**
+
+공통 설정과 정책 파싱 로직을 담는다. 알고리즘별 코드는 별도 파일로 분리.
 
 ```go
 // RunnerConfig: balancerRunner 실행 파라미터. 알고리즘과 무관한 공통 설정.
@@ -119,8 +127,26 @@ type RunnerConfig struct {
     CheckInterval time.Duration
     Cooldown      CooldownConfig
 }
+type CooldownConfig struct {
+    Global    time.Duration
+    Partition time.Duration
+}
+type BalanceConfig struct {
+    MaxPartitionDiff int
+    RPSImbalancePct  float64
+}
+```
 
-// ThresholdConfig: threshold 알고리즘 전용 설정 (YAML 파싱용).
+`ParsePolicy([]byte) (provider.BalancePolicy, *RunnerConfig, error)` — `algorithm` 필드로 구현체 선택.
+현재 지원 알고리즘:
+- `"threshold"` → `ThresholdPolicy` (RPS·key count 절대 임계값)
+- `"relative"` → `RelativePolicy` (클러스터 평균 RPS 대비 배수)
+
+새 알고리즘 추가 시 `policy/policy.go`의 `ParsePolicy`에만 case를 추가하면 된다.
+
+**`policy/threshold.go` — ThresholdConfig, ThresholdPolicy**
+
+```go
 type ThresholdConfig struct {
     Algorithm     string
     CheckInterval time.Duration
@@ -128,12 +154,47 @@ type ThresholdConfig struct {
     Split         SplitConfig
     Balance       BalanceConfig
 }
+type SplitConfig struct {
+    RPSThreshold float64
+    KeyThreshold int64
+}
 ```
 
-`ParsePolicy([]byte) (provider.BalancePolicy, *RunnerConfig, error)` — algorithm 필드로 구현체 선택.
-현재 지원 알고리즘: `"threshold"` → `ThresholdPolicy` 반환. 새 알고리즘 추가 시 이 함수에만 case 추가.
-
 `ThresholdPolicy`는 `provider.BalancePolicy`를 구현한다.
+
+**`policy/relative.go` — RelativeConfig, RelativePolicy**
+
+```go
+// RelativePolicy: 클러스터 평균 RPS 대비 배수 기반 split 정책.
+// 평균 RPS가 MinAvgRPS 이하이면 발동하지 않는다.
+type RelativeConfig struct {
+    Algorithm     string
+    CheckInterval time.Duration
+    Cooldown      CooldownConfig
+    Split         RelativeSplit
+    Balance       BalanceConfig
+}
+type RelativeSplit struct {
+    RPSMultiplier float64 // 파티션 RPS > 평균 × multiplier 이면 split
+    MinAvgRPS     float64 // 평균 RPS 하한. 낮은 트래픽에서 오동작 방지
+}
+```
+
+relative 정책 YAML 예시:
+
+```yaml
+algorithm: relative
+check_interval: 30s
+cooldown:
+  global: 60s
+  partition: 120s
+split:
+  rps_multiplier: 3.0    # 평균 RPS의 3배 초과 시 split
+  min_avg_rps: 10.0      # 평균 RPS < 10이면 split 발동 안 함
+balance:
+  max_partition_diff: 2
+  rps_imbalance_pct: 30
+```
 
 **`policy/noop.go` — NoopBalancePolicy**
 
@@ -170,20 +231,14 @@ etcd 키 `/actorbase/policy`에 YAML raw string 저장/로드/삭제.
 1. 라우팅 테이블 + 노드 목록 조회
 2. 모든 PS에 GetStats 병렬 호출 (5초 timeout)
 3. global cooldown 확인 → 쿨다운 중이면 전체 skip
-4. split 대상 탐색:
-   - 파티션 RPS > split.rps_threshold  OR
-   - 파티션 key_count > split.key_threshold
-   - 해당 파티션 쿨다운 미경과 → skip
-   → keyRangeMidpoint 계산 후 splitter.Split 호출
-   → 한 사이클에 split 하나만 실행 후 return
-5. balance 대상 탐색:
-   - 노드 간 파티션 수 차이 > balance.max_partition_diff  OR
-   - 노드 간 RPS 차이 > balance.rps_imbalance_pct %
-   → 파티션 수가 가장 많은 노드 → 가장 적은 노드로 migrator.Migrate
+4. pol.Evaluate(ctx, clusterStats) → []BalanceAction
+5. 액션 순서대로 실행:
+   - ActionSplit  → splitter.Split(ctx, actorType, partitionID, "" /*splitKey auto*/)
+                    split key는 PS가 SplitHinter 또는 midpoint로 결정
+   - ActionMigrate → migrator.Migrate(ctx, actorType, partitionID, targetNode)
+   - ActionFailover → migrator.Failover(ctx, partitionID, targetNode)
 6. 작업 발생 시 cooldown 타이머 갱신 (global + partition)
 ```
-
-**keyRangeMidpoint**: 두 문자열의 바이트 레벨 산술 평균. 빈 범위 처리 포함.
 
 ### proto RPC 추가
 
@@ -220,15 +275,17 @@ abctl policy clear                 # ManualPolicy로 복귀
 
 | 파일 | 변경 내용 |
 |---|---|
-| `provider/actor.go` | Countable 인터페이스 추가 |
-| `provider/balance.go` | 신규: BalancePolicy 인터페이스 + 관련 타입 (NodeInfo, ClusterStats, BalanceAction 등) |
+| `provider/actor.go` | Countable 인터페이스 추가; SplitHinter 인터페이스 추가 |
+| `provider/balance.go` | 신규: BalancePolicy 인터페이스 + 관련 타입 (NodeInfo, ClusterStats, BalanceAction 등); BalanceAction.SplitKey 제거 (split key는 PS가 결정) |
 | `internal/engine/stats.go` | 신규: PartitionStats, rpsCounter (60s 슬라이딩 윈도우) |
-| `internal/engine/mailbox.go` | RPS 추적, KeyCount atomic 갱신, stats() 메서드 |
-| `internal/engine/host.go` | GetStats() []PartitionStats 추가 |
-| `internal/transport/proto/actorbase.proto` | GetStats, GetClusterStats, ApplyPolicy, GetPolicy, ClearPolicy RPC 추가 |
+| `internal/engine/mailbox.go` | RPS 추적, KeyCount atomic 갱신, stats() 메서드; split 신호 수신 시 SplitHinter → midpoint fallback 체인 처리 |
+| `internal/engine/host.go` | GetStats() []PartitionStats 추가; Split 반환값 (string, error)로 변경 (실제 사용된 splitKey 반환); KeyRangeMidpoint 함수 추가 |
+| `internal/transport/proto/actorbase.proto` | GetStats, GetClusterStats, ApplyPolicy, GetPolicy, ClearPolicy RPC 추가; ExecuteSplitRequest에 key_range_start/end 추가; ExecuteSplitResponse에 split_key 추가 |
 | `internal/cluster/policy.go` | 신규: etcd policy 저장/로드/삭제 |
 | `provider/balance.go` | 신규: BalancePolicy 인터페이스 + 관련 타입 |
-| `policy/threshold.go` | 신규 (pm/policy에서 이동): RunnerConfig, ThresholdConfig, ThresholdPolicy, ParsePolicy |
+| `policy/policy.go` | 신규: ParsePolicy, RunnerConfig, CooldownConfig, BalanceConfig (threshold에서 공통 코드 분리) |
+| `policy/threshold.go` | 신규 (pm/policy에서 이동): ThresholdConfig, SplitConfig, ThresholdPolicy |
+| `policy/relative.go` | 신규: RelativeConfig, RelativeSplit, RelativePolicy (클러스터 평균 RPS 대비 배수 기반 정책) |
 | `policy/noop.go` | 신규 (pm/policy에서 이동): NoopBalancePolicy |
 | `pm/policy/` | 삭제 (policy/, manual.go, auto.go 모두 제거) |
 | `pm/balancer.go` | balancerRunner: cfg를 *policy.RunnerConfig로, pol을 provider.BalancePolicy로 변경 |
@@ -242,4 +299,6 @@ abctl policy clear                 # ManualPolicy로 복귀
 | `internal/transport/errors.go` | PermissionDenied → raw message |
 | `cmd/abctl/main.go` | pm.Client 사용으로 전환 (internal/transport 직접 의존 제거), stats/policy 명령 |
 | `examples/kv_server/main.go` | kvActor.KeyCount() 추가 |
-| `examples/s3_server/main.go` | bucketActor.KeyCount(), objectActor.KeyCount() 추가 |
+| `examples/s3_server/bucket_actor.go` | 신규 (main.go에서 분리): BucketRequest, BucketResponse, bucketActor (KeyCount 구현, SplitHinter 미구현 → midpoint split) |
+| `examples/s3_server/object_actor.go` | 신규 (main.go에서 분리): ObjectRequest, ObjectResponse, objectActor (KeyCount 구현, SplitHinter 구현 → hotspot 기반 split) |
+| `test/integration/run.sh` | 신규: 통합 시나리오 1~7 자동화 스크립트 (44개 assertion) |

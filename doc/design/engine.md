@@ -79,7 +79,8 @@ Evict      = Checkpoint + Actor 메모리에서 제거
 | `Checkpoint(ctx, partitionID)` | checkpoint 수행. Actor는 메모리에 유지. |
 | `Evict(ctx, partitionID)` | checkpoint 후 메모리에서 제거. |
 | `EvictAll(ctx)` | 모든 활성 Actor를 evict. 서버 종료 시 사용. |
-| `Split(ctx, partitionID, splitKey, newPartitionID)` | 파티션 split. 비활성이면 먼저 활성화. |
+| `Split(ctx, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID) (string, error)` | 파티션 split. splitKey=""이면 SplitHint() 또는 midpoint 사용. 실제 사용된 splitKey 반환. |
+| `KeyRangeMidpoint(start, end string) string` | 두 문자열의 바이트 레벨 산술 평균. SplitHinter 미구현 Actor의 split key 결정에 사용. |
 | `IdleActors(idleSince)` | 마지막 메시지가 idleSince 이전인 파티션 목록. |
 | `ActivePartitions()` | 현재 활성화된 모든 파티션 목록. |
 | `GetStats()` | 활성 Actor 전체의 통계(`[]PartitionStats`) 반환. PM Auto Balancer가 사용. |
@@ -107,19 +108,25 @@ getOrActivate(partitionID):
 ### Split 처리 흐름
 
 ```
-Split(partitionID, splitKey, newPartitionID):
+Split(partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID):
   1. getOrActivate(partitionID)
-  2. mailbox에 split 신호 → Actor.Split(splitKey) → upperHalf
+  2. mailbox에 split 신호 전달 (splitKey, keyRangeStart, keyRangeEnd 포함)
+     mailbox goroutine 내에서 split key 결정:
+       a. splitKey != "" → 그대로 사용 (호출자가 명시)
+       b. splitKey == "" && actor가 SplitHinter 구현 → SplitHint() 호출
+       c. splitKey == "" (또는 SplitHint() == "") → KeyRangeMidpoint(start, end)
+     결정된 splitKey로 Actor.Split(splitKey) → upperHalf
   3. mailbox.checkpoint()           // 하위 파티션 checkpoint
   4. saveRawCheckpoint(newPartitionID, lsn=0, upperHalf)
   5. Activate(newPartitionID)       // 상위 파티션 활성화
+  6. 실제 사용된 splitKey 반환
 ```
 
 ---
 
 ## mailbox / WALFlusher / Scheduler 개요
 
-**mailbox**: Actor당 하나. 단일 goroutine이 inCh에서 순차적으로 메시지를 처리하여 단일 스레드 실행을 보장한다. checkpoint 요청 수신 시 inCh를 일시 중단하고 pendingWAL == 0 후 Snapshot을 찍는다. 각 mailbox는 `rpsCounter`(60초 슬라이딩 윈도우)와 `keyCount atomic.Int64`를 보유하여 stats를 실시간 추적한다.
+**mailbox**: Actor당 하나. 단일 goroutine이 inCh에서 순차적으로 메시지를 처리하여 단일 스레드 실행을 보장한다. checkpoint 요청 수신 시 inCh를 일시 중단하고 pendingWAL == 0 후 Snapshot을 찍는다. 각 mailbox는 `rpsCounter`(60초 슬라이딩 윈도우)와 `keyCount atomic.Int64`를 보유하여 stats를 실시간 추적한다. split 신호 수신 시 splitKey 결정(SplitHinter → midpoint fallback)을 mailbox goroutine 내에서 수행하므로 actor 상태에 별도 동기화 없이 안전하게 접근한다.
 
 **WALFlusher**: 공유 goroutine 하나. submitCh로 각 mailbox의 WAL entry를 수신·배치 누적 후, partitionID별로 그룹화하여 WALStore.AppendBatch를 파티션당 1회 호출한다. 결과를 `reply func(lsn uint64, err error)` 클로저로 각 mailbox에 피드백한다. 클로저 사용으로 WALFlusher 자체는 제네릭이 불필요하다.
 

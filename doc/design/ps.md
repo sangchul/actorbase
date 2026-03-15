@@ -57,7 +57,7 @@ type actorDispatcher interface {
     Activate(ctx context.Context, partitionID string) error
     Evict(ctx context.Context, partitionID string) error
     EvictAll(ctx context.Context) error
-    Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error
+    Split(ctx context.Context, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error)
     StartSchedulers(ctx context.Context, ...)
     GetStats() []engine.PartitionStats  // Auto Balancer용
     TypeID() string
@@ -160,9 +160,9 @@ Send(req):
 
 PM의 split/migrate/stats 명령을 처리한다. 각 핸들러는 `req.ActorType`으로 dispatcher를 조회 후 호출한다.
 
-| RPC | 위임 메서드 |
+| RPC | 처리 흐름 |
 |---|---|
-| ExecuteSplit | dispatcher.Split(ctx, partitionID, splitKey, newPartitionID) |
+| ExecuteSplit | 1) splitKey가 없고 KeyRangeStart/End도 없으면 routing table에서 partition key range 조회<br>2) dispatcher.Split(ctx, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID) → usedKey<br>3) ExecuteSplitResponse{SplitKey: usedKey} 반환 |
 | ExecuteMigrateOut | dispatcher.Evict(ctx, partitionID) |
 | PreparePartition | dispatcher.Activate(ctx, partitionID) |
 | GetStats | 모든 dispatcher.GetStats() 결과를 집계하여 반환 |
