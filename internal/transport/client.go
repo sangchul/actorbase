@@ -87,7 +87,7 @@ func NewPSClient(conn *grpc.ClientConn, codec provider.Codec) *PSClient {
 // Send는 partitionID의 Actor에게 req를 전달하고 respPtr에 응답을 역직렬화한다.
 // payload 직렬화/역직렬화는 Codec이 담당한다.
 // gRPC status error는 provider error로 변환하여 반환한다.
-func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req any, respPtr any) error {
+func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req any, respPtr any) error { //nolint:unparam
 	payload, err := c.codec.Marshal(req)
 	if err != nil {
 		return err
@@ -96,6 +96,27 @@ func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req 
 		PartitionId: partitionID,
 		Payload:     payload,
 		ActorType:   actorType,
+	})
+	if err != nil {
+		return fromGRPCStatus(err)
+	}
+	return c.codec.Unmarshal(resp.Payload, respPtr)
+}
+
+// Scan은 partitionID의 Actor에게 scan 요청을 전달하고 respPtr에 응답을 역직렬화한다.
+// expectedStart/expectedEnd는 SDK가 알고 있는 파티션 key range다.
+// PS의 실제 range와 다르면 ErrPartitionMoved를 반환하여 stale 라우팅을 감지한다.
+func (c *PSClient) Scan(ctx context.Context, actorType, partitionID string, req any, respPtr any, expectedStart, expectedEnd string) error {
+	payload, err := c.codec.Marshal(req)
+	if err != nil {
+		return err
+	}
+	resp, err := c.client.Scan(ctx, &pb.ScanRequest{
+		PartitionId:            partitionID,
+		Payload:                payload,
+		ActorType:              actorType,
+		ExpectedKeyRangeStart:  expectedStart,
+		ExpectedKeyRangeEnd:    expectedEnd,
 	})
 	if err != nil {
 		return fromGRPCStatus(err)

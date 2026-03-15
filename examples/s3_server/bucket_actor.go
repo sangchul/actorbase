@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/sangchul/actorbase/provider"
@@ -10,17 +11,27 @@ import (
 
 // BucketRequest는 bucket 메타데이터 요청.
 type BucketRequest struct {
-	Op     string `json:"op"`     // "create", "get", "delete"
-	Name   string `json:"name"`   // bucket name (= routing key)
-	Region string `json:"region"` // "create" 시에만 사용
+	Op       string `json:"op"`        // "create", "get", "delete", "list"
+	Name     string `json:"name"`      // bucket name (= routing key)
+	Region   string `json:"region"`    // "create" 시에만 사용
+	StartKey string `json:"start_key"` // "list" 시 사용 (포함)
+	EndKey   string `json:"end_key"`   // "list" 시 사용 (미포함, ""=무한대)
+}
+
+// BucketItem은 list 결과 항목이다.
+type BucketItem struct {
+	Name      string    `json:"name"`
+	Region    string    `json:"region"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // BucketResponse는 bucket 메타데이터 응답.
 type BucketResponse struct {
-	Name      string    `json:"name"`
-	Region    string    `json:"region"`
-	CreatedAt time.Time `json:"created_at"`
-	Found     bool      `json:"found"`
+	Name      string       `json:"name"`
+	Region    string       `json:"region"`
+	CreatedAt time.Time    `json:"created_at"`
+	Found     bool         `json:"found"`
+	Items     []BucketItem `json:"items"` // "list" 결과
 }
 
 type bucketMeta struct {
@@ -57,6 +68,16 @@ func (a *bucketActor) Receive(_ provider.Context, req BucketRequest) (BucketResp
 		delete(a.buckets, req.Name)
 		entry, _ := json.Marshal(bucketWALOp{Op: "delete", Name: req.Name})
 		return BucketResponse{Found: true}, entry, nil
+
+	case "list":
+		var items []BucketItem
+		for name, meta := range a.buckets {
+			if name >= req.StartKey && (req.EndKey == "" || name < req.EndKey) {
+				items = append(items, BucketItem{Name: name, Region: meta.Region, CreatedAt: meta.CreatedAt})
+			}
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+		return BucketResponse{Items: items}, nil, nil
 
 	default:
 		return BucketResponse{}, nil, fmt.Errorf("unknown bucket op: %s", req.Op)

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/sangchul/actorbase/provider"
@@ -11,23 +12,36 @@ import (
 // ObjectRequest는 object 메타데이터 요청.
 // routing key는 "{bucket}/{key}" 형태.
 type ObjectRequest struct {
-	Op           string `json:"op"`            // "put", "get", "delete"
+	Op           string `json:"op"`            // "put", "get", "delete", "list"
 	Bucket       string `json:"bucket"`        // bucket name
 	Key          string `json:"key"`           // object key
 	Size         int64  `json:"size"`          // "put" 시에만 사용 (bytes)
 	ETag         string `json:"etag"`          // "put" 시에만 사용
 	StorageClass string `json:"storage_class"` // "put" 시에만 사용 (STANDARD, etc.)
+	StartKey     string `json:"start_key"`     // "list" 시 사용 (포함)
+	EndKey       string `json:"end_key"`       // "list" 시 사용 (미포함, ""=무한대)
 }
 
-// ObjectResponse는 object 메타데이터 응답.
-type ObjectResponse struct {
+// ObjectItem은 list 결과 항목이다.
+type ObjectItem struct {
 	Bucket       string    `json:"bucket"`
 	Key          string    `json:"key"`
 	Size         int64     `json:"size"`
 	ETag         string    `json:"etag"`
 	StorageClass string    `json:"storage_class"`
 	LastModified time.Time `json:"last_modified"`
-	Found        bool      `json:"found"`
+}
+
+// ObjectResponse는 object 메타데이터 응답.
+type ObjectResponse struct {
+	Bucket       string       `json:"bucket"`
+	Key          string       `json:"key"`
+	Size         int64        `json:"size"`
+	ETag         string       `json:"etag"`
+	StorageClass string       `json:"storage_class"`
+	LastModified time.Time    `json:"last_modified"`
+	Found        bool         `json:"found"`
+	Items        []ObjectItem `json:"items"` // "list" 결과
 }
 
 type objectMeta struct {
@@ -89,9 +103,40 @@ func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResp
 		entry, _ := json.Marshal(objectWALOp{Op: "delete", ObjKey: k})
 		return ObjectResponse{Found: true}, entry, nil
 
+	case "list":
+		var items []ObjectItem
+		for objK, meta := range a.objects {
+			if objK >= req.StartKey && (req.EndKey == "" || objK < req.EndKey) {
+				// routing key는 "{bucket}/{key}" 형태 — bucket과 key 분리
+				bucket, key := parseBucketKey(objK)
+				items = append(items, ObjectItem{
+					Bucket:       bucket,
+					Key:          key,
+					Size:         meta.Size,
+					ETag:         meta.ETag,
+					StorageClass: meta.StorageClass,
+					LastModified: meta.LastModified,
+				})
+			}
+		}
+		sort.Slice(items, func(i, j int) bool {
+			return objKey(items[i].Bucket, items[i].Key) < objKey(items[j].Bucket, items[j].Key)
+		})
+		return ObjectResponse{Items: items}, nil, nil
+
 	default:
 		return ObjectResponse{}, nil, fmt.Errorf("unknown object op: %s", req.Op)
 	}
+}
+
+// parseBucketKey는 "{bucket}/{key}" routing key를 분리한다.
+func parseBucketKey(rk string) (bucket, key string) {
+	for i, c := range rk {
+		if c == '/' {
+			return rk[:i], rk[i+1:]
+		}
+	}
+	return rk, ""
 }
 
 func (a *objectActor) Replay(entry []byte) error {

@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	PartitionService_Send_FullMethodName = "/actorbase.v1.PartitionService/Send"
+	PartitionService_Scan_FullMethodName = "/actorbase.v1.PartitionService/Scan"
 )
 
 // PartitionServiceClient is the client API for PartitionService service.
@@ -30,6 +31,10 @@ type PartitionServiceClient interface {
 	// payload는 Codec으로 직렬화된 사용자 정의 Req 타입이다.
 	// 에러는 gRPC status code로 전달한다.
 	Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
+	// Scan은 파티션 내에서 범위 조회를 수행한다.
+	// Send와 동일하게 Actor.Receive()를 호출하지만, expected key range를 함께 전달하여
+	// stale 라우팅으로 인한 누락을 방지한다.
+	Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (*ScanResponse, error)
 }
 
 type partitionServiceClient struct {
@@ -50,6 +55,16 @@ func (c *partitionServiceClient) Send(ctx context.Context, in *SendRequest, opts
 	return out, nil
 }
 
+func (c *partitionServiceClient) Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (*ScanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScanResponse)
+	err := c.cc.Invoke(ctx, PartitionService_Scan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PartitionServiceServer is the server API for PartitionService service.
 // All implementations must embed UnimplementedPartitionServiceServer
 // for forward compatibility.
@@ -58,6 +73,10 @@ type PartitionServiceServer interface {
 	// payload는 Codec으로 직렬화된 사용자 정의 Req 타입이다.
 	// 에러는 gRPC status code로 전달한다.
 	Send(context.Context, *SendRequest) (*SendResponse, error)
+	// Scan은 파티션 내에서 범위 조회를 수행한다.
+	// Send와 동일하게 Actor.Receive()를 호출하지만, expected key range를 함께 전달하여
+	// stale 라우팅으로 인한 누락을 방지한다.
+	Scan(context.Context, *ScanRequest) (*ScanResponse, error)
 	mustEmbedUnimplementedPartitionServiceServer()
 }
 
@@ -70,6 +89,9 @@ type UnimplementedPartitionServiceServer struct{}
 
 func (UnimplementedPartitionServiceServer) Send(context.Context, *SendRequest) (*SendResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Send not implemented")
+}
+func (UnimplementedPartitionServiceServer) Scan(context.Context, *ScanRequest) (*ScanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Scan not implemented")
 }
 func (UnimplementedPartitionServiceServer) mustEmbedUnimplementedPartitionServiceServer() {}
 func (UnimplementedPartitionServiceServer) testEmbeddedByValue()                          {}
@@ -110,6 +132,24 @@ func _PartitionService_Send_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PartitionService_Scan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionServiceServer).Scan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionService_Scan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionServiceServer).Scan(ctx, req.(*ScanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PartitionService_ServiceDesc is the grpc.ServiceDesc for PartitionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -120,6 +160,10 @@ var PartitionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Send",
 			Handler:    _PartitionService_Send_Handler,
+		},
+		{
+			MethodName: "Scan",
+			Handler:    _PartitionService_Scan_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

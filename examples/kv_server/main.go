@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -27,15 +28,24 @@ import (
 
 // KVRequest는 KV Actor의 요청 타입이다.
 type KVRequest struct {
-	Op    string `json:"op"` // "get", "set", "del"
+	Op       string `json:"op"`        // "get", "set", "del", "scan"
+	Key      string `json:"key"`       // "get", "set", "del" 시 사용
+	Value    []byte `json:"value"`     // "set" 시에만 사용
+	StartKey string `json:"start_key"` // "scan" 시 사용 (포함)
+	EndKey   string `json:"end_key"`   // "scan" 시 사용 (미포함, ""=무한대)
+}
+
+// KVItem은 scan 결과 항목이다.
+type KVItem struct {
 	Key   string `json:"key"`
-	Value []byte `json:"value"` // "set" 시에만 사용
+	Value []byte `json:"value"`
 }
 
 // KVResponse는 KV Actor의 응답 타입이다.
 type KVResponse struct {
-	Value []byte `json:"value"`
-	Found bool   `json:"found"`
+	Value []byte   `json:"value"`
+	Found bool     `json:"found"`
+	Items []KVItem `json:"items"` // "scan" 결과
 }
 
 // walOp는 WAL에 기록되는 변경 연산이다.
@@ -63,6 +73,15 @@ func (a *kvActor) Receive(_ provider.Context, req KVRequest) (KVResponse, []byte
 		delete(a.data, req.Key)
 		entry, _ := json.Marshal(walOp{Op: "del", Key: req.Key})
 		return KVResponse{}, entry, nil
+	case "scan":
+		var items []KVItem
+		for k, v := range a.data {
+			if k >= req.StartKey && (req.EndKey == "" || k < req.EndKey) {
+				items = append(items, KVItem{Key: k, Value: v})
+			}
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+		return KVResponse{Items: items}, nil, nil
 	default:
 		return KVResponse{}, nil, fmt.Errorf("unknown op: %s", req.Op)
 	}

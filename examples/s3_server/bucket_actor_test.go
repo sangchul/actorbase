@@ -59,7 +59,7 @@ func TestBucketActor_Delete(t *testing.T) {
 
 func TestBucketActor_UnknownOp(t *testing.T) {
 	a := newBucket()
-	_, _, err := a.Receive(nil, BucketRequest{Op: "list"})
+	_, _, err := a.Receive(nil, BucketRequest{Op: "invalid"})
 	require.Error(t, err)
 }
 

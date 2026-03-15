@@ -30,28 +30,37 @@ import (
 // (Codec이 동일한 직렬화 형식을 사용하므로 구조체 레이아웃만 맞으면 된다.)
 
 type KVRequest struct {
-	Op    string `json:"op"`
+	Op       string `json:"op"`
+	Key      string `json:"key"`
+	Value    []byte `json:"value"`
+	StartKey string `json:"start_key"`
+	EndKey   string `json:"end_key"`
+}
+
+type KVItem struct {
 	Key   string `json:"key"`
 	Value []byte `json:"value"`
 }
 
 type KVResponse struct {
-	Value []byte `json:"value"`
-	Found bool   `json:"found"`
+	Value []byte   `json:"value"`
+	Found bool     `json:"found"`
+	Items []KVItem `json:"items"`
 }
 
 func main() {
 	pmAddr := flag.String("pm", "localhost:8000", "PM gRPC address")
 	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: kv_client [-pm <addr>] <get|set|del> <key> [value]
+		fmt.Fprint(os.Stderr, `Usage: kv_client [-pm <addr>] <get|set|del|scan> <key|start> [value|end]
 
 Flags:
   -pm string   PM gRPC address (default: localhost:8000)
 
 Commands:
-  get <key>          Retrieve a value by key
-  set <key> <value>  Store a key-value pair
-  del <key>          Delete a key
+  get <key>              Retrieve a value by key
+  set <key> <value>      Store a key-value pair
+  del <key>              Delete a key
+  scan <start> [end]     List all keys in [start, end) across partitions
 
 `)
 	}
@@ -73,6 +82,8 @@ Commands:
 			fmt.Fprintln(os.Stderr, "usage: kv_client set <key> <value>")
 			os.Exit(1)
 		}
+	case "scan":
+		// ok — end key is optional (default: "")
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", op)
 		flag.Usage()
@@ -126,5 +137,28 @@ Commands:
 			os.Exit(1)
 		}
 		fmt.Println("ok")
+
+	case "scan":
+		startKey := key
+		endKey := ""
+		if flag.NArg() >= 3 {
+			endKey = flag.Arg(2)
+		}
+		req := KVRequest{Op: "scan", StartKey: startKey, EndKey: endKey}
+		partResults, err := client.Scan(ctx, startKey, endKey, req)
+		if err != nil {
+			slog.Error("scan failed", "err", err)
+			os.Exit(1)
+		}
+		total := 0
+		for _, pr := range partResults {
+			for _, item := range pr.Items {
+				fmt.Printf("%s\t%s\n", item.Key, item.Value)
+				total++
+			}
+		}
+		if total == 0 {
+			fmt.Println("(no keys found)")
+		}
 	}
 }

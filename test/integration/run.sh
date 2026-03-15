@@ -124,6 +124,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+kv_scan() {
+  local start="$1" end="$2"
+  "$BIN_DIR/kv_client" -pm "$PM_ADDR" scan "$start" "$end" 2>/dev/null || true
+}
+
 # ── 바이너리 확인 ──────────────────────────────────────────────────────────────
 
 for bin in pm abctl kv_server kv_client kv_stress; do
@@ -384,6 +389,56 @@ assert_eq "mango 조회 (drain 후)"  "orange" "$(kv_get mango)"
 
 wait "$STRESS7_PID" 2>/dev/null || true
 PS1_PID=""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 시나리오 8: Range Scan (다중 파티션 조회)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 이 시점의 클러스터 상태:
+#   파티션: [start,f), [f,m), [m,end) — 모두 ps-2에 존재
+#   키:  apple=red2, avocado=green, banana=yellow, cherry=red3 → [start,f) 또는 [f,m)
+#        mango=orange, zebra=black → [m,end)
+#
+# 검증 목표:
+#   - 전체 range scan이 여러 파티션에 걸쳐 누락 없이 동작하는지
+#   - 부분 range scan이 올바른 파티션만 조회하는지
+
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "시나리오 8: Range Scan (다중 파티션 fan-out)"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# 현재 키 상태 확인 (이전 시나리오에서 삽입된 값 유지)
+kv_set peach pink >/dev/null  # [start,f) 또는 [f,m) — p는 f~m 사이
+kv_set quince yellow2 >/dev/null  # q는 [f,m)
+
+# 전체 range scan: 모든 파티션을 가로질러야 함
+scan_all=$(kv_scan "" "")
+assert_contains "scan 전체: apple 포함"   "apple"   "$scan_all"
+assert_contains "scan 전체: banana 포함"  "banana"  "$scan_all"
+assert_contains "scan 전체: mango 포함"   "mango"   "$scan_all"
+assert_contains "scan 전체: zebra 포함"   "zebra"   "$scan_all"
+assert_contains "scan 전체: peach 포함"   "peach"   "$scan_all"
+assert_contains "scan 전체: quince 포함"  "quince"  "$scan_all"
+
+# 상위 range scan: [m, end) — mango, zebra만
+scan_upper=$(kv_scan "m" "")
+assert_contains     "scan [m,): mango 포함"  "mango"  "$scan_upper"
+assert_contains     "scan [m,): zebra 포함"  "zebra"  "$scan_upper"
+assert_not_contains "scan [m,): apple 제외"  "apple"  "$scan_upper"
+assert_not_contains "scan [m,): banana 제외" "banana" "$scan_upper"
+
+# 하위 range scan: [a, m) — a~m 미만 키들만
+scan_lower=$(kv_scan "a" "m")
+assert_contains     "scan [a,m): apple 포함"   "apple"   "$scan_lower"
+assert_contains     "scan [a,m): banana 포함"  "banana"  "$scan_lower"
+assert_contains     "scan [a,m): cherry 포함"  "cherry"  "$scan_lower"
+assert_not_contains "scan [a,m): mango 제외"   "mango"   "$scan_lower"
+assert_not_contains "scan [a,m): zebra 제외"   "zebra"   "$scan_lower"
+
+# 값 정합성: scan 결과에서 값도 확인
+assert_contains "scan 전체: apple=red2"   "red2"   "$scan_all"
+assert_contains "scan 전체: mango=orange" "orange" "$scan_all"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 결과 요약

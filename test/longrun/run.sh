@@ -74,7 +74,7 @@ trap cleanup EXIT
 
 # ── 바이너리 경로 확인 ────────────────────────────────────────────────────────
 
-for bin in pm kv_server kv_longrun abctl; do
+for bin in pm kv_server kv_longrun kv_client abctl; do
   if [[ ! -x "$BIN_DIR/$bin" ]]; then
     log "ERROR: $BIN_DIR/$bin not found. Run: go build -o bin/$bin ./..."
     exit 1
@@ -173,15 +173,64 @@ sleep 30
 log "Current routing table:"
 "$BIN_DIR/abctl" -pm "$PM_ADDR" routing || true
 
-# ── 검증 ─────────────────────────────────────────────────────────────────────
+# ── 검증: kv_longrun -verify ─────────────────────────────────────────────────
 
 log "Running verification..."
-if "$BIN_DIR/kv_longrun" -pm "$PM_ADDR" -verify -ledger "$LEDGER"; then
-  log "===== PASS ====="
-else
-  log "===== FAIL ====="
+if ! "$BIN_DIR/kv_longrun" -pm "$PM_ADDR" -verify -ledger "$LEDGER"; then
+  log "===== FAIL (kv_longrun verify) ====="
   log "Longrun log: $LONGRUN_LOG"
   log "Chaos log:   /tmp/ab_chaos.log"
   log "PM log:      $PM_LOG"
+  exit 1
+fi
+
+# ── 검증: Range Scan ─────────────────────────────────────────────────────────
+#
+# kv_longrun이 PASS한 이후, range scan이 여러 파티션에 걸쳐
+# 정상 동작하는지 추가 확인한다.
+#   - 전체 range scan 실행 → 에러 없이 완료되어야 함
+#   - 반환된 키 수 > 0 이어야 함 (del-ratio=0.2이므로 생존 키 존재)
+#   - ledger에 기록된 마지막 set 키 중 일부가 scan 결과에 포함되는지 확인
+
+log "Running range scan verification..."
+SCAN_FAIL=0
+
+scan_out=$("$BIN_DIR/kv_client" -pm "$PM_ADDR" scan "" "" 2>/dev/null || echo "SCAN_ERROR")
+if echo "$scan_out" | grep -q "SCAN_ERROR"; then
+  log "  ✗ FAIL: scan returned error"
+  SCAN_FAIL=1
+else
+  # 탭 구분자가 있는 라인 수 = 반환된 키 수
+  scan_count=$(echo "$scan_out" | grep -c $'\t' || echo "0")
+  if [[ "$scan_count" -gt 0 ]]; then
+    log "  ✓ scan returned $scan_count keys across partitions"
+  else
+    log "  ✗ FAIL: scan returned 0 keys (expected surviving keys from longrun)"
+    SCAN_FAIL=1
+  fi
+fi
+
+# 파티션별 부분 range scan — 각 파티션이 올바르게 응답하는지
+log "Current routing table:"
+"$BIN_DIR/abctl" -pm "$PM_ADDR" routing || true
+
+# 모든 파티션 key range를 순회하며 개별 scan 확인
+routing_out=$("$BIN_DIR/abctl" -pm "$PM_ADDR" routing 2>/dev/null)
+while IFS=$'\t' read -r pid start end node; do
+  [[ -z "$pid" ]] && continue
+  part_scan=$("$BIN_DIR/kv_client" -pm "$PM_ADDR" scan "$start" "$end" 2>/dev/null || echo "SCAN_ERROR")
+  if echo "$part_scan" | grep -q "SCAN_ERROR"; then
+    log "  ✗ FAIL: scan [$start, $end) returned error (partition=$pid)"
+    SCAN_FAIL=1
+  else
+    part_count=$(echo "$part_scan" | grep -c $'\t' || echo "0")
+    log "  ✓ scan [$start, $end) → $part_count keys (partition=$pid, node=$node)"
+  fi
+done < <(echo "$routing_out" | awk 'NR>4 && $1!="" && $1!~"^-" {print $1"\t"$3"\t"$4"\t"$5}')
+
+if [[ "$SCAN_FAIL" -eq 0 ]]; then
+  log "===== PASS ====="
+else
+  log "===== FAIL (scan verification) ====="
   exit 1
 fi

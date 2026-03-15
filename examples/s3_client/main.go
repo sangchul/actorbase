@@ -32,16 +32,25 @@ import (
 // BucketRequest / BucketResponse — s3_server와 동일해야 한다.
 
 type BucketRequest struct {
-	Op     string `json:"op"`
-	Name   string `json:"name"`
-	Region string `json:"region"`
+	Op       string `json:"op"`
+	Name     string `json:"name"`
+	Region   string `json:"region"`
+	StartKey string `json:"start_key"`
+	EndKey   string `json:"end_key"`
 }
 
-type BucketResponse struct {
+type BucketItem struct {
 	Name      string    `json:"name"`
 	Region    string    `json:"region"`
 	CreatedAt time.Time `json:"created_at"`
-	Found     bool      `json:"found"`
+}
+
+type BucketResponse struct {
+	Name      string       `json:"name"`
+	Region    string       `json:"region"`
+	CreatedAt time.Time    `json:"created_at"`
+	Found     bool         `json:"found"`
+	Items     []BucketItem `json:"items"`
 }
 
 // ObjectRequest / ObjectResponse — s3_server와 동일해야 한다.
@@ -53,16 +62,28 @@ type ObjectRequest struct {
 	Size         int64  `json:"size"`
 	ETag         string `json:"etag"`
 	StorageClass string `json:"storage_class"`
+	StartKey     string `json:"start_key"`
+	EndKey       string `json:"end_key"`
 }
 
-type ObjectResponse struct {
+type ObjectItem struct {
 	Bucket       string    `json:"bucket"`
 	Key          string    `json:"key"`
 	Size         int64     `json:"size"`
 	ETag         string    `json:"etag"`
 	StorageClass string    `json:"storage_class"`
 	LastModified time.Time `json:"last_modified"`
-	Found        bool      `json:"found"`
+}
+
+type ObjectResponse struct {
+	Bucket       string       `json:"bucket"`
+	Key          string       `json:"key"`
+	Size         int64        `json:"size"`
+	ETag         string       `json:"etag"`
+	StorageClass string       `json:"storage_class"`
+	LastModified time.Time    `json:"last_modified"`
+	Found        bool         `json:"found"`
+	Items        []ObjectItem `json:"items"`
 }
 
 func main() {
@@ -77,10 +98,12 @@ Resources:
   bucket create <name> <region>        Create a bucket
   bucket get <name>                    Get bucket metadata
   bucket delete <name>                 Delete a bucket
+  bucket list [prefix]                 List all buckets (optionally filtered by prefix)
 
   object put <bucket> <key> <size> <etag>   Put object metadata
   object get <bucket> <key>                  Get object metadata
   object delete <bucket> <key>               Delete object metadata
+  object list <bucket> [prefix]              List objects in a bucket (across partitions)
 
 `)
 	}
@@ -169,10 +192,50 @@ func runBucket(ctx context.Context, pmAddr string) {
 		}
 		fmt.Println("deleted")
 
+	case "list":
+		prefix := ""
+		if flag.NArg() >= 3 {
+			prefix = flag.Arg(2)
+		}
+		endKey := ""
+		if prefix != "" {
+			// prefix 범위: [prefix, prefix의 마지막 바이트+1)
+			endKey = prefixEnd(prefix)
+		}
+		req := BucketRequest{Op: "list", StartKey: prefix, EndKey: endKey}
+		partResults, err := client.Scan(ctx, prefix, endKey, req)
+		if err != nil {
+			slog.Error("bucket list failed", "err", err)
+			os.Exit(1)
+		}
+		total := 0
+		for _, pr := range partResults {
+			for _, item := range pr.Items {
+				fmt.Printf("%-40s %-15s %s\n", item.Name, item.Region, item.CreatedAt.Format(time.RFC3339))
+				total++
+			}
+		}
+		if total == 0 {
+			fmt.Println("(no buckets found)")
+		}
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown bucket op: %s\n", op)
 		os.Exit(1)
 	}
+}
+
+// prefixEnd는 prefix 범위의 상한 key를 반환한다.
+// 예: "foo" → "fop" (마지막 바이트 +1). 0xFF이면 잘라낸다.
+func prefixEnd(prefix string) string {
+	b := []byte(prefix)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] < 0xFF {
+			b[i]++
+			return string(b[:i+1])
+		}
+	}
+	return "" // 모든 바이트가 0xFF인 경우 — 상한 없음
 }
 
 func runObject(ctx context.Context, pmAddr string) {
@@ -249,6 +312,37 @@ func runObject(ctx context.Context, pmAddr string) {
 			os.Exit(1)
 		}
 		fmt.Println("deleted")
+
+	case "list":
+		if flag.NArg() < 3 {
+			fmt.Fprintln(os.Stderr, "usage: s3_client object list <bucket> [prefix]")
+			os.Exit(1)
+		}
+		bucket := flag.Arg(2)
+		objPrefix := ""
+		if flag.NArg() >= 4 {
+			objPrefix = flag.Arg(3)
+		}
+		// object routing key: "{bucket}/{key}" — bucket 내 모든 object 범위
+		startKey := bucket + "/" + objPrefix
+		endKey := prefixEnd(bucket + "/" + objPrefix)
+		req := ObjectRequest{Op: "list", Bucket: bucket, StartKey: startKey, EndKey: endKey}
+		partResults, err := client.Scan(ctx, startKey, endKey, req)
+		if err != nil {
+			slog.Error("object list failed", "err", err)
+			os.Exit(1)
+		}
+		total := 0
+		for _, pr := range partResults {
+			for _, item := range pr.Items {
+				fmt.Printf("%-50s %10d  %s  %s\n",
+					item.Key, item.Size, item.ETag, item.LastModified.Format(time.RFC3339))
+				total++
+			}
+		}
+		if total == 0 {
+			fmt.Println("(no objects found)")
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown object op: %s\n", op)

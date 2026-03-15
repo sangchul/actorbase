@@ -63,3 +63,44 @@ func (h *partitionHandler) Send(
 
 	return &pb.SendResponse{Payload: payload}, nil
 }
+
+// Scan은 SDK의 범위 조회 요청을 Actor.Receive()로 전달한다.
+// Send와 동일하지만 expected key range를 검증하여 stale 라우팅을 감지한다.
+func (h *partitionHandler) Scan(
+	ctx context.Context,
+	req *pb.ScanRequest,
+) (*pb.ScanResponse, error) {
+	d, ok := h.dispatchers[req.ActorType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
+	}
+
+	rt := h.routing.Load()
+	if rt == nil {
+		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+	}
+
+	entry, ok := rt.LookupByPartition(req.PartitionId)
+	if !ok {
+		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+	}
+	if entry.Node.ID != h.nodeID {
+		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+	}
+	if entry.PartitionStatus == domain.PartitionStatusDraining {
+		return nil, status.Error(codes.ResourceExhausted, provider.ErrPartitionBusy.Error())
+	}
+
+	// 파티션 key range가 SDK의 기대값과 다르면 라우팅 테이블이 stale한 것 (파티션이 split됨)
+	if req.ExpectedKeyRangeStart != entry.Partition.KeyRange.Start ||
+		req.ExpectedKeyRangeEnd != entry.Partition.KeyRange.End {
+		return nil, status.Error(codes.FailedPrecondition, provider.ErrPartitionMoved.Error())
+	}
+
+	payload, err := d.Send(ctx, req.PartitionId, req.Payload)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+
+	return &pb.ScanResponse{Payload: payload}, nil
+}

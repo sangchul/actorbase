@@ -13,6 +13,11 @@ service PartitionService {
   // payload는 Codec으로 직렬화된 사용자 정의 Req 타입이다.
   // 에러는 gRPC status code로 전달한다.
   rpc Send(SendRequest) returns (SendResponse);
+
+  // Scan은 파티션 내에서 범위 조회를 수행한다.
+  // Send와 동일하게 Actor.Receive()를 호출하지만, expected key range를 함께 전달하여
+  // stale 라우팅으로 인한 누락을 방지한다.
+  rpc Scan(ScanRequest) returns (ScanResponse);
 }
 
 message SendRequest {
@@ -23,6 +28,18 @@ message SendRequest {
 
 message SendResponse {
   bytes payload = 1; // Codec.Marshal(resp)
+}
+
+message ScanRequest {
+  string partition_id             = 1;
+  bytes  payload                  = 2; // Codec.Marshal(req)
+  string actor_type               = 3;
+  string expected_key_range_start = 4; // SDK가 알고 있는 파티션 key range (stale routing 감지용)
+  string expected_key_range_end   = 5;
+}
+
+message ScanResponse {
+  bytes payload = 1; // Codec.Marshal(resp) — Resp는 actor가 리스트 타입으로 정의
 }
 
 // ─────────────────────────────────────────────────────────

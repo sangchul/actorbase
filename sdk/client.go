@@ -3,6 +3,8 @@ package sdk
 import (
 	"context"
 	"errors"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -129,4 +131,95 @@ func (c *Client[Req, Resp]) Send(ctx context.Context, key string, req Req) (Resp
 	}
 
 	return zero, lastErr
+}
+
+// Scan은 [startKey, endKey) 범위에 걸친 모든 파티션에 req를 fan-out하고
+// 파티션 순서대로 정렬된 []Resp를 반환한다.
+//
+// 보장:
+//   - 누락 없음: stale 라우팅 또는 partition split으로 인한 ErrPartitionMoved/Busy 시
+//     해당 파티션 범위부터 재시도하여 키 누락을 방지한다.
+//   - 순서 보장: 결과는 파티션 KeyRange.Start 기준 오름차순이다.
+//
+// endKey == ""이면 모든 파티션의 끝까지 scan한다.
+func (c *Client[Req, Resp]) Scan(ctx context.Context, startKey, endKey string, req Req) ([]Resp, error) {
+	type scanResult struct {
+		entry domain.RouteEntry
+		resp  Resp
+		err   error
+	}
+
+	var results []Resp
+	currentStart := startKey
+
+	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
+		rt := c.routing.Load()
+		partitions := rt.PartitionsInRange(c.cfg.TypeID, currentStart, endKey)
+		if len(partitions) == 0 {
+			break
+		}
+
+		// 병렬 fan-out
+		resCh := make(chan scanResult, len(partitions))
+		var wg sync.WaitGroup
+		for _, entry := range partitions {
+			entry := entry
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				conn, err := c.connPool.Get(entry.Node.Address)
+				if err != nil {
+					resCh <- scanResult{entry: entry, err: err}
+					return
+				}
+				var resp Resp
+				err = transport.NewPSClient(conn, c.cfg.Codec).Scan(
+					ctx, c.cfg.TypeID, entry.Partition.ID, req, &resp,
+					entry.Partition.KeyRange.Start, entry.Partition.KeyRange.End,
+				)
+				resCh <- scanResult{entry: entry, resp: resp, err: err}
+			}()
+		}
+		wg.Wait()
+		close(resCh)
+
+		// 결과 수집 후 KeyRange.Start 기준 정렬
+		collected := make([]scanResult, 0, len(partitions))
+		for r := range resCh {
+			collected = append(collected, r)
+		}
+		sort.Slice(collected, func(i, j int) bool {
+			return collected[i].entry.Partition.KeyRange.Start < collected[j].entry.Partition.KeyRange.Start
+		})
+
+		// 앞에서부터 성공한 파티션 결과를 순서대로 누적.
+		// 실패한 파티션에서 멈추고 currentStart를 해당 파티션의 시작으로 설정.
+		allSucceeded := true
+		for _, r := range collected {
+			if r.err != nil {
+				allSucceeded = false
+				currentStart = r.entry.Partition.KeyRange.Start
+				// 재시도 불필요한 에러는 즉시 반환
+				if !errors.Is(r.err, provider.ErrPartitionMoved) &&
+					!errors.Is(r.err, provider.ErrPartitionNotOwned) &&
+					!errors.Is(r.err, provider.ErrPartitionBusy) {
+					return nil, r.err
+				}
+				break
+			}
+			results = append(results, r.resp)
+		}
+
+		if allSucceeded {
+			break
+		}
+
+		select {
+		case <-time.After(c.cfg.RetryInterval):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	return results, nil
 }

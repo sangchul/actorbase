@@ -147,3 +147,38 @@ func (rt *RoutingTable) LookupByPartition(partitionID string) (RouteEntry, bool)
 	e, ok := rt.partitions[partitionID]
 	return e, ok
 }
+
+// PartitionsInRange는 actorType 내에서 [startKey, endKey) 범위와 겹치는 파티션을
+// KeyRange.Start 기준 오름차순으로 반환한다.
+// endKey == ""이면 상한 없음 (모든 파티션의 상위 범위까지 포함).
+func (rt *RoutingTable) PartitionsInRange(actorType, startKey, endKey string) []RouteEntry {
+	group := rt.byType[actorType]
+	n := len(group)
+	if n == 0 {
+		return nil
+	}
+
+	// startKey를 포함할 수 있는 첫 파티션 위치: Start <= startKey인 마지막 항목
+	idx := sort.Search(n, func(i int) bool {
+		return group[i].Partition.KeyRange.Start > startKey
+	}) - 1
+	if idx < 0 {
+		idx = 0
+	}
+
+	var result []RouteEntry
+	for i := idx; i < n; i++ {
+		e := group[i]
+		kr := e.Partition.KeyRange
+		// 파티션 Start가 요청 endKey 이상이면 더 이상 겹치지 않음
+		if endKey != "" && kr.Start >= endKey {
+			break
+		}
+		// 파티션 End가 startKey 이하이면 겹치지 않음 (End==""은 무한대)
+		if kr.End != "" && kr.End <= startKey {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
+}
