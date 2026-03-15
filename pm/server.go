@@ -307,7 +307,7 @@ func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.B
 		switch action.Type {
 		case provider.ActionSplit:
 			s.opMu.Lock()
-			_, err := s.splitter.Split(ctx, action.ActorType, action.PartitionID, action.SplitKey)
+			_, err := s.splitter.Split(ctx, action.ActorType, action.PartitionID, "")
 			s.opMu.Unlock()
 			if err != nil {
 				slog.Error("pm: policy split failed", "partition", action.PartitionID, "err", err)

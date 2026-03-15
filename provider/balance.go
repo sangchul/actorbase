@@ -73,7 +73,6 @@ type BalanceAction struct {
 	Type        BalanceActionType
 	ActorType   string
 	PartitionID string
-	SplitKey    string // ActionSplit 전용
 	TargetNode  string // ActionMigrate / ActionFailover 전용
 }
 

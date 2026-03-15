@@ -113,12 +113,16 @@ service PartitionControlService {
 
 message ExecuteSplitRequest {
   string partition_id     = 1;
-  string split_key        = 2;
+  string split_key        = 2; // 비어 있으면 PS가 SplitHinter 또는 key range midpoint로 결정
   string new_partition_id = 3;
   string actor_type       = 4; // PS가 올바른 ActorHost로 라우팅하는 데 사용.
+  string key_range_start  = 5; // split_key 미제공 시 PS의 midpoint 계산용
+  string key_range_end    = 6; // split_key 미제공 시 PS의 midpoint 계산용
 }
 
-message ExecuteSplitResponse {}
+message ExecuteSplitResponse {
+  string split_key = 1; // PS가 실제 사용한 split key (PM이 routing table 업데이트에 사용)
+}
 
 message ExecuteMigrateOutRequest {
   string partition_id    = 1;

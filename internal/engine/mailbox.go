@@ -28,11 +28,14 @@ type checkpointReq struct {
 
 // splitReq는 외부에서 mailbox에 split을 요청할 때 사용한다.
 type splitReq struct {
-	splitKey string
-	done     chan splitResult
+	splitKey      string // ""이면 Actor가 SplitHinter 또는 midpoint로 결정
+	keyRangeStart string // midpoint fallback용
+	keyRangeEnd   string // midpoint fallback용
+	done          chan splitResult
 }
 
 type splitResult struct {
+	splitKey  string // 실제 사용된 split key
 	upperHalf []byte
 	err       error
 }
@@ -149,22 +152,24 @@ func (m *mailbox[Req, Resp]) checkpoint(ctx context.Context) error {
 }
 
 // split은 mailbox에 split 요청을 보내고 결과를 기다린다.
-func (m *mailbox[Req, Resp]) split(ctx context.Context, splitKey string) ([]byte, error) {
+// splitKey가 ""이면 Actor의 SplitHint() 또는 midpoint(keyRangeStart, keyRangeEnd)를 사용한다.
+// 실제 사용된 splitKey와 상위 파티션 데이터를 반환한다.
+func (m *mailbox[Req, Resp]) split(ctx context.Context, splitKey, keyRangeStart, keyRangeEnd string) (string, []byte, error) {
 	done := make(chan splitResult, 1)
 	select {
-	case m.splitCh <- splitReq{splitKey: splitKey, done: done}:
+	case m.splitCh <- splitReq{splitKey: splitKey, keyRangeStart: keyRangeStart, keyRangeEnd: keyRangeEnd, done: done}:
 	case <-m.doneCh:
-		return nil, provider.ErrPartitionNotOwned
+		return "", nil, provider.ErrPartitionNotOwned
 	case <-ctx.Done():
-		return nil, provider.ErrTimeout
+		return "", nil, provider.ErrTimeout
 	}
 	select {
 	case res := <-done:
-		return res.upperHalf, res.err
+		return res.splitKey, res.upperHalf, res.err
 	case <-m.doneCh:
-		return nil, provider.ErrPartitionNotOwned
+		return "", nil, provider.ErrPartitionNotOwned
 	case <-ctx.Done():
-		return nil, provider.ErrTimeout
+		return "", nil, provider.ErrTimeout
 	}
 }
 
@@ -241,8 +246,18 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 			m.lastMsg.Store(time.Now())
 
 		case req := <-splitCh:
-			upperHalf, err := safeSplit(actor, actCtx, req.splitKey)
-			req.done <- splitResult{upperHalf: upperHalf, err: err}
+			// split key 결정: 제공된 key > SplitHinter > midpoint
+			splitKey := req.splitKey
+			if splitKey == "" {
+				if hinter, ok := any(actor).(provider.SplitHinter); ok {
+					splitKey = hinter.SplitHint()
+				}
+			}
+			if splitKey == "" {
+				splitKey = KeyRangeMidpoint(req.keyRangeStart, req.keyRangeEnd)
+			}
+			upperHalf, err := safeSplit(actor, actCtx, splitKey)
+			req.done <- splitResult{splitKey: splitKey, upperHalf: upperHalf, err: err}
 			if err == nil {
 				dirty = true // WAL 없이 actor 상태가 변경됨 → checkpoint skip 방지
 			}

@@ -44,7 +44,8 @@ type objectWALOp struct {
 }
 
 type objectActor struct {
-	objects map[string]objectMeta // "{bucket}/{key}" → meta
+	objects  map[string]objectMeta // "{bucket}/{key}" → meta
+	accessCt map[string]int64      // routing key별 누적 접근 수 (hotspot 추적)
 }
 
 func objKey(bucket, key string) string {
@@ -53,6 +54,7 @@ func objKey(bucket, key string) string {
 
 func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResponse, []byte, error) {
 	k := objKey(req.Bucket, req.Key)
+	a.accessCt[k]++ // mailbox goroutine 내에서만 호출되므로 별도 동기화 불필요
 	switch req.Op {
 	case "put":
 		meta := objectMeta{
@@ -126,3 +128,18 @@ func (a *objectActor) Split(splitKey string) ([]byte, error) {
 }
 
 func (a *objectActor) KeyCount() int64 { return int64(len(a.objects)) }
+
+// SplitHint는 가장 많이 접근된 routing key를 split 위치로 제안한다.
+// 해당 key 이상의 object들이 상위 파티션으로 이동하므로 hotspot이 분산된다.
+// mailbox goroutine 내에서 호출되므로 accessCt 접근이 thread-safe하다.
+func (a *objectActor) SplitHint() string {
+	var hotKey string
+	var maxCt int64
+	for k, ct := range a.accessCt {
+		if ct > maxCt {
+			maxCt = ct
+			hotKey = k
+		}
+	}
+	return hotKey
+}

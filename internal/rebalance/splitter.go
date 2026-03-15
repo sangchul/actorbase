@@ -51,31 +51,33 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey s
 			partitionID, entry.Partition.ActorType, actorType)
 	}
 
-	// 4. splitKey 유효성 검증
+	// 4. splitKey 유효성 검증 (명시적으로 제공된 경우에만)
 	kr := entry.Partition.KeyRange
-	if splitKey <= kr.Start {
-		return "", fmt.Errorf("splitKey %q must be greater than partition start %q", splitKey, kr.Start)
-	}
-	if kr.End != "" && splitKey >= kr.End {
-		return "", fmt.Errorf("splitKey %q must be less than partition end %q", splitKey, kr.End)
+	if splitKey != "" {
+		if splitKey <= kr.Start {
+			return "", fmt.Errorf("splitKey %q must be greater than partition start %q", splitKey, kr.Start)
+		}
+		if kr.End != "" && splitKey >= kr.End {
+			return "", fmt.Errorf("splitKey %q must be less than partition end %q", splitKey, kr.End)
+		}
 	}
 
-	// 6. newPartitionID 생성
+	// 5. newPartitionID 생성
 	newPartitionID := uuid.New().String()
 
-	// 5. Source PS에 ExecuteSplit 명령
+	// 6. Source PS에 ExecuteSplit 명령. splitKey=""이면 PS가 결정하고 실제 key를 반환한다.
 	conn, err := s.connPool.Get(entry.Node.Address)
 	if err != nil {
 		return "", fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
 	}
 	psCtrl := transport.NewPSControlClient(conn)
-	if err := psCtrl.ExecuteSplit(ctx, entry.Partition.ActorType, partitionID, splitKey, newPartitionID); err != nil {
+	usedKey, err := psCtrl.ExecuteSplit(ctx, entry.Partition.ActorType, partitionID, splitKey, kr.Start, kr.End, newPartitionID)
+	if err != nil {
 		return "", fmt.Errorf("execute split on PS: %w", err)
 	}
 
-	// 6. 라우팅 테이블 갱신
-	// 기존 [start, end) → 두 파티션: [start, splitKey) + [splitKey, end)
-	newEntries := buildSplitEntries(rt.Entries(), partitionID, splitKey, newPartitionID, entry)
+	// 7. 라우팅 테이블 갱신: PS가 결정한 실제 splitKey 사용
+	newEntries := buildSplitEntries(rt.Entries(), partitionID, usedKey, newPartitionID, entry)
 	newRT, err := domain.NewRoutingTable(rt.Version()+1, newEntries)
 	if err != nil {
 		return "", fmt.Errorf("build new routing table: %w", err)

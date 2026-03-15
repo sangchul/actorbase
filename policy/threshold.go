@@ -48,7 +48,7 @@ func NewThresholdPolicy(cfg *ThresholdConfig) *ThresholdPolicy {
 // Evaluate는 절대 임계값 기반으로 split/migrate 액션을 반환한다.
 // split은 한 사이클에 하나만 반환한다 (연쇄 split 방지).
 func (p *ThresholdPolicy) Evaluate(_ context.Context, stats provider.ClusterStats) []provider.BalanceAction {
-	// split 대상 탐색 (첫 번째 대상만)
+	// split 대상 탐색 (첫 번째 대상만). split key는 PS가 결정한다 (SplitHinter 또는 midpoint).
 	for _, ns := range stats.Nodes {
 		if !ns.Reachable {
 			continue
@@ -59,15 +59,10 @@ func (p *ThresholdPolicy) Evaluate(_ context.Context, stats provider.ClusterStat
 			if !needSplit {
 				continue
 			}
-			splitKey := keyRangeMidpoint(part.KeyRangeStart, part.KeyRangeEnd)
-			if splitKey == "" {
-				continue
-			}
 			return []provider.BalanceAction{{
 				Type:        provider.ActionSplit,
 				ActorType:   part.ActorType,
 				PartitionID: part.PartitionID,
-				SplitKey:    splitKey,
 			}}
 		}
 	}

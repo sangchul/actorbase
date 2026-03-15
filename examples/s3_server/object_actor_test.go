@@ -10,7 +10,7 @@ import (
 
 // newObject는 테스트용 빈 objectActor를 생성한다.
 func newObject() *objectActor {
-	return &objectActor{objects: make(map[string]objectMeta)}
+	return &objectActor{objects: make(map[string]objectMeta), accessCt: make(map[string]int64)}
 }
 
 func TestObjectActor_Put(t *testing.T) {
@@ -186,6 +186,58 @@ func TestObjectActor_LastModifiedPreservedOnReplay(t *testing.T) {
 	require.NoError(t, restored.Replay(walEntry))
 	require.True(t, restored.objects["photos/cat.jpg"].LastModified.Equal(originalTime),
 		"LastModified should be preserved from WAL, not regenerated")
+}
+
+func TestObjectActor_SplitHint(t *testing.T) {
+	// SplitHint는 가장 많이 접근된 routing key를 반환한다.
+	// 이 key를 기준으로 split하면 hotspot이 상위 파티션으로 분리된다.
+	a := newObject()
+
+	t.Run("empty actor returns empty hint", func(t *testing.T) {
+		require.Empty(t, a.SplitHint())
+	})
+
+	// cat.jpg를 5회, dog.jpg를 2회, bird.jpg를 1회 접근
+	for i := 0; i < 5; i++ {
+		a.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: "cat.jpg"})
+	}
+	for i := 0; i < 2; i++ {
+		a.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: "dog.jpg"})
+	}
+	a.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: "bird.jpg"})
+
+	t.Run("returns hottest key", func(t *testing.T) {
+		hint := a.SplitHint()
+		require.Equal(t, "photos/cat.jpg", hint, "가장 많이 접근된 key가 split 위치로 제안되어야 한다")
+	})
+
+	t.Run("split at hint separates hotspot", func(t *testing.T) {
+		// hotspot key("photos/cat.jpg")를 기준으로 split하면
+		// "photos/cat.jpg" 이상의 key들이 상위 파티션으로 이동한다.
+		a2 := newObject()
+		a2.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "bird.jpg", Size: 1, ETag: "e1"})
+		a2.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "cat.jpg", Size: 2, ETag: "e2"})
+		a2.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "dog.jpg", Size: 3, ETag: "e3"})
+		for i := 0; i < 10; i++ {
+			a2.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: "cat.jpg"})
+		}
+
+		hint := a2.SplitHint()
+		upperData, err := a2.Split(hint)
+		require.NoError(t, err)
+
+		upper := newObject()
+		require.NoError(t, upper.Restore(upperData))
+
+		// hotspot("cat.jpg")과 그 이후 key("dog.jpg")는 상위 파티션으로 이동
+		for _, key := range []string{"cat.jpg", "dog.jpg"} {
+			resp, _, _ := upper.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: key})
+			require.True(t, resp.Found, "photos/%s should be in upper partition", key)
+		}
+		// "bird.jpg"는 하위 파티션에 남아야 한다
+		resp, _, _ := a2.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: "bird.jpg"})
+		require.True(t, resp.Found, "photos/bird.jpg should remain in lower partition")
+	})
 }
 
 func TestObjectActor_PutOverwrite(t *testing.T) {

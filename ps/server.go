@@ -29,7 +29,7 @@ type actorDispatcher interface {
 	Evict(ctx context.Context, partitionID string) error
 	EvictAll(ctx context.Context) error
 	Activate(ctx context.Context, partitionID string) error
-	Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error
+	Split(ctx context.Context, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error)
 	StartSchedulers(ctx context.Context, idleTimeout, evictInterval, checkpointInterval time.Duration)
 	GetStats() []engine.PartitionStats
 	TypeID() string
@@ -79,8 +79,8 @@ func (d *typedDispatcher[Req, Resp]) Activate(ctx context.Context, partitionID s
 	return d.host.Activate(ctx, partitionID)
 }
 
-func (d *typedDispatcher[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error {
-	return d.host.Split(ctx, partitionID, splitKey, newPartitionID)
+func (d *typedDispatcher[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error) {
+	return d.host.Split(ctx, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID)
 }
 
 func (d *typedDispatcher[Req, Resp]) StartSchedulers(
@@ -180,6 +180,7 @@ func (b *ServerBuilder) Build() (*Server, error) {
 	pb.RegisterPartitionControlServiceServer(grpcSrv, &controlHandler{
 		dispatchers: b.dispatchers,
 		nodeID:      b.base.NodeID,
+		routing:     &s.routing,
 	})
 
 	return s, nil

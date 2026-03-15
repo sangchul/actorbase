@@ -75,7 +75,7 @@ func main() {
 	if err := ps.Register(builder, ps.TypeConfig[ObjectRequest, ObjectResponse]{
 		TypeID: "object",
 		Factory: func(_ string) provider.Actor[ObjectRequest, ObjectResponse] {
-			return &objectActor{objects: make(map[string]objectMeta)}
+			return &objectActor{objects: make(map[string]objectMeta), accessCt: make(map[string]int64)}
 		},
 		Codec:           adapterjson.New(),
 		WALStore:        walStore,

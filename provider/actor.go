@@ -38,6 +38,17 @@ type Countable interface {
 	KeyCount() int64
 }
 
+// SplitHinter는 Actor가 선택적으로 구현하는 split 위치 제안 인터페이스.
+//
+// 구현하지 않으면 engine이 partition key range의 midpoint를 사용한다 (기본 동작).
+// 구현하면 Actor가 내부 상태(hotspot 등)를 기반으로 split 위치를 직접 결정할 수 있다.
+//
+// 반환값이 ""이면 engine이 midpoint fallback을 사용한다.
+// SplitHint()는 mailbox goroutine 내에서 호출되므로 별도 동기화가 필요 없다.
+type SplitHinter interface {
+	SplitHint() string
+}
+
 // Context는 Actor.Receive 호출 시 프레임워크가 주입하는 런타임 정보.
 // 사용자는 구현하지 않고 사용만 한다.
 type Context interface {

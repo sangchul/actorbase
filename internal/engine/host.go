@@ -158,30 +158,76 @@ func (h *ActorHost[Req, Resp]) Activate(ctx context.Context, partitionID string)
 // Split은 partitionID Actor를 splitKey 기준으로 두 파티션으로 분리한다.
 // Actor가 비활성이면 먼저 활성화한다 (checkpoint + WAL replay).
 // 분리 완료 후 두 Actor 모두 활성 상태로 등록된다.
-func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, newPartitionID string) error {
+//
+// splitKey가 ""이면 Actor가 SplitHinter를 구현한 경우 SplitHint()를 사용하고,
+// 그렇지 않으면 keyRangeStart/End로 midpoint를 계산한다.
+// 실제 사용된 splitKey를 반환한다.
+func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error) {
 	entry, err := h.getOrActivate(ctx, partitionID)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// 1. Actor goroutine 내에서 split 실행
-	upperHalf, err := entry.mailbox.split(ctx, splitKey)
+	// 1. Actor goroutine 내에서 split 실행 (SplitHint 또는 midpoint 결정 포함)
+	usedKey, upperHalf, err := entry.mailbox.split(ctx, splitKey, keyRangeStart, keyRangeEnd)
 	if err != nil {
-		return fmt.Errorf("split actor: %w", err)
+		return "", fmt.Errorf("split actor: %w", err)
 	}
 
 	// 2. 하위 파티션 checkpoint (split 이후 상태)
 	if err := entry.mailbox.checkpoint(ctx); err != nil {
-		return fmt.Errorf("checkpoint lower half: %w", err)
+		return "", fmt.Errorf("checkpoint lower half: %w", err)
 	}
 
 	// 3. 상위 파티션 checkpoint 저장 (LSN=0: WAL 없음)
 	if err := h.saveRawCheckpoint(ctx, newPartitionID, 0, upperHalf); err != nil {
-		return fmt.Errorf("save upper half checkpoint: %w", err)
+		return "", fmt.Errorf("save upper half checkpoint: %w", err)
 	}
 
 	// 4. 상위 파티션 활성화 (CheckpointStore에서 로드)
-	return h.Activate(ctx, newPartitionID)
+	return usedKey, h.Activate(ctx, newPartitionID)
+}
+
+// KeyRangeMidpoint는 [start, end) 키 범위의 중간값을 계산한다.
+// SplitHinter를 구현하지 않은 Actor의 split key 결정에 사용한다.
+func KeyRangeMidpoint(start, end string) string {
+	if start == "" && end == "" {
+		return "m"
+	}
+	if end == "" {
+		return start + "m"
+	}
+	sb := []byte(start)
+	eb := []byte(end)
+	maxLen := len(eb)
+	if len(sb) > maxLen {
+		maxLen = len(sb)
+	}
+	for len(sb) < maxLen {
+		sb = append(sb, 0)
+	}
+	for len(eb) < maxLen {
+		eb = append(eb, 0)
+	}
+	result := make([]byte, maxLen)
+	carry := 0
+	for i := maxLen - 1; i >= 0; i-- {
+		sum := int(sb[i]) + int(eb[i]) + carry*256
+		result[i] = byte(sum / 2)
+		carry = sum % 2
+	}
+	n := len(result)
+	for n > 0 && result[n-1] == 0 {
+		n--
+	}
+	if n == 0 {
+		n = 1
+	}
+	mid := string(result[:n])
+	if mid <= start {
+		return start + "m"
+	}
+	return mid
 }
 
 // GetStats는 현재 활성화된 모든 파티션의 통계를 반환한다.

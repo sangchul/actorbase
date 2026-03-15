@@ -372,7 +372,7 @@ func TestActorHost_Split(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// "c" 기준으로 split: p1=[a,b], p2=[c,d]
-	if err := h.Split(ctx, "p1", "c", "p2"); err != nil {
+	if _, err := h.Split(ctx, "p1", "c", "", "", "p2"); err != nil {
 		t.Fatalf("Split: %v", err)
 	}
 

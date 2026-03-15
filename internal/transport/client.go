@@ -292,14 +292,21 @@ func NewPSControlClient(conn *grpc.ClientConn) *PSControlClient {
 }
 
 // ExecuteSplit은 PS에게 파티션 split을 명령한다.
-func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, newPartitionID string) error {
-	_, err := c.client.ExecuteSplit(ctx, &pb.ExecuteSplitRequest{
+// splitKey가 ""이면 PS가 SplitHinter 또는 midpoint로 결정한다.
+// 실제 사용된 splitKey를 반환한다.
+func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error) {
+	resp, err := c.client.ExecuteSplit(ctx, &pb.ExecuteSplitRequest{
 		PartitionId:    partitionID,
 		SplitKey:       splitKey,
+		KeyRangeStart:  keyRangeStart,
+		KeyRangeEnd:    keyRangeEnd,
 		NewPartitionId: newPartitionID,
 		ActorType:      actorType,
 	})
-	return fromGRPCStatus(err)
+	if err != nil {
+		return "", fromGRPCStatus(err)
+	}
+	return resp.SplitKey, nil
 }
 
 // ExecuteMigrateOut은 PS에게 파티션을 대상 노드로 이동시키도록 명령한다.

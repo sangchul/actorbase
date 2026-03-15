@@ -197,9 +197,9 @@ func (r *balancerRunner) executeActions(ctx context.Context, actions []provider.
 		switch action.Type {
 		case provider.ActionSplit:
 			slog.Info("autoBalancer: split triggered",
-				"partition", action.PartitionID, "actor_type", action.ActorType, "split_key", action.SplitKey)
+				"partition", action.PartitionID, "actor_type", action.ActorType)
 			r.opMu.Lock()
-			newID, err := r.splitter.Split(ctx, action.ActorType, action.PartitionID, action.SplitKey)
+			newID, err := r.splitter.Split(ctx, action.ActorType, action.PartitionID, "")
 			r.opMu.Unlock()
 			if err != nil {
 				slog.Error("autoBalancer: split failed", "partition", action.PartitionID, "err", err)
