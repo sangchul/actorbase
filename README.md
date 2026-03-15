@@ -1,5 +1,9 @@
 # actorbase
 
+> There's an old saying in software: *"Don't reinvent the wheel."*
+> In the age of AI-assisted development, that advice has changed:
+> **"Build the wheel that fits you perfectly."**
+
 A Go framework for building distributed, actor-based stateful services — where each shard of data is a single-threaded actor that knows how to split itself under load.
 
 ---
@@ -227,6 +231,51 @@ test/
   integration/ — Automated integration scenarios 1–7 (~2.5 min)
   longrun/     — 8-minute chaos test with correctness verification
 ```
+
+---
+
+## Comparison: actorbase vs HBase
+
+With Redis Streams as WALStore and HDFS as CheckpointStore, actorbase and HBase share the same core recovery path: when a node dies, another node replays the WAL from the shared store and restores state. Neither system replicates data within a partition — both delegate durability to the underlying store.
+
+**Similarities**
+
+| Concept | HBase | actorbase |
+|---|---|---|
+| Partition | Region | Actor |
+| Partition server | RegionServer | PS |
+| Cluster brain | HMaster | PM |
+| Coordination | ZooKeeper | etcd |
+| WAL | HLog on HDFS | Redis Streams / Kafka / filesystem |
+| Snapshot | HFile flush to HDFS | HDFS CheckpointStore |
+| Failover | WAL replay by another RegionServer | WAL replay by another PS |
+
+**Key differences**
+
+| | actorbase | HBase |
+|---|---|---|
+| Business logic | Lives inside the Actor (server-side) | Client-side or Coprocessor |
+| Data model | Arbitrary Go struct | Fixed: row × column family × version |
+| Split key | Decided by the Actor (`SplitHinter`) or midpoint | HMaster or midpoint |
+| Range scan | Not supported (future work) | Native |
+| Merge / compaction | Not supported | Minor/major compaction, region merge |
+| Proven scale | Unverified beyond millions of partitions | Billions of rows, hundreds of nodes |
+
+**When to choose actorbase over HBase**
+
+- Your workload is point-access (key-based), not range-scan-heavy
+- Business logic belongs inside the partition — e.g. session state, object metadata, game rooms
+- You want a simpler operational stack without HBase expertise
+- A moderate partition count (up to low millions) is sufficient
+
+**When HBase is still the right choice**
+
+- Range scan is required
+- You need billions of rows at proven production scale
+- Compaction and region merge are necessary for long-term storage efficiency
+- Your team relies on the Hadoop ecosystem (Phoenix, Spark, Hive)
+
+See [`doc/design/hbase-comparison.md`](doc/design/hbase-comparison.md) for a detailed analysis.
 
 ---
 
