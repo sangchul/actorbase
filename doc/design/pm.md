@@ -25,7 +25,7 @@ Partition Manager(PM) 조립 패키지. 클러스터 멤버십 감시, 라우팅
 | Metrics | nil이면 no-op 구현체 사용 |
 | BalancePolicy | nil이면 NoopBalancePolicy 사용. YAML policy 적용 중에는 YAML policy가 우선. |
 
-> PM은 NodeRegistry에 등록하지 않는다. PS가 PM 없이 기동되는 것을 방지하기 위해 별도 presence 키(`/actorbase/pm/{addr}`)를 lease로 등록한다.
+> PM은 NodeRegistry에 등록하지 않는다. etcd election(`/actorbase/pm/election`)을 통해 리더를 선출하며, 리더만 gRPC 서버를 기동한다. PS는 `WaitForLeader`로 리더 선출을 확인한 후 기동된다.
 
 ---
 
@@ -47,21 +47,26 @@ NewServer:
 
 ```
 Start:
-  1. serverCtx = ctx                                    // balancer goroutine lifetime 참조용
-  2. cluster.RegisterPM(ctx, etcdCli, cfg.ListenAddr)  // etcd에 PM presence 등록
-  3. cluster.LoadPolicy(ctx, etcdCli)                   // 저장된 AutoPolicy 복원 (있으면 balancer 시작)
+  1. serverCtx = ctx                                                   // balancer goroutine lifetime 참조용
+  2. sess = cluster.CampaignLeader(ctx, etcdCli, cfg.ListenAddr)      // etcd election — 리더 될 때까지 블로킹
+                                                                       // standby PM은 여기서 대기
+     defer sess.Close()                                                // 종료 시 resign → standby가 새 리더 선출
+  3. cluster.LoadPolicy(ctx, etcdCli)                                  // 저장된 AutoPolicy 복원 (있으면 balancer 시작)
   4. currentRT = routingStore.Load()
   5. routing.Store(currentRT)
   6. go watchRouting(ctx)        // etcd watch → 구독자 broadcast
   7. go watchMembership(ctx)     // 노드 join/leave → Policy 호출
   8. if currentRT == nil:
        go bootstrap(ctx)         // 첫 PS 등록 대기 후 초기 테이블 생성
-  9. grpcSrv.Serve(listener)
+  9. grpcSrv.Serve(listener)     // 리더만 gRPC 포트 오픈
   10. <-ctx.Done()
   11. grpcSrv.GracefulStop() + connPool.Close()
+      // defer sess.Close() 실행 → etcd lease revoke → standby 자동 선출
 ```
 
-> PM은 자신이 보유한 Actor나 상태가 없으므로 종료가 단순하다. 모든 상태는 etcd에 있다.
+> **HA 동작**: leader가 종료되면 `sess.Close()`가 etcd lease를 revoke한다. standby PM들은 `Campaign()`에서 대기 중이다가 하나가 새 leader로 선출된다. 새 leader는 etcd에서 routing table, policy를 복원하고 gRPC 서버를 오픈한다.
+
+> PM은 자신이 보유한 Actor나 상태가 없으므로 leader 전환이 단순하다. 모든 상태는 etcd에 있다.
 
 ### watchRouting (내부)
 
@@ -169,12 +174,12 @@ for action in actions:
 | bootstrap CAS | etcd Compare-And-Swap | PM HA 환경에서 중복 생성 방어. |
 | NodeLeft 장애 복구 위치 | BalancePolicy.OnNodeLeft 반환 ActionFailover | 정책 구현체가 failover 여부를 결정. graceful이면 파티션 없어 자연히 no-op. |
 | Failover vs Migrate | Migrator.Failover: ExecuteMigrateOut 건너뜀 | source PS 죽었으면 gRPC 호출 불가. checkpoint에서 직접 복원. |
-| PM presence 등록 | etcd `/actorbase/pm/{addr}`에 lease로 등록 | PS가 PM 없이 기동되는 것을 방지. |
+| PM 리더 선출 | etcd election (`concurrency.Campaign`) | 여러 PM 중 하나만 active. 리더 장애 시 standby가 자동 승계. PS가 PM 없이 기동되는 것도 방지. |
 
 ---
 
 ## 알려진 한계
 
-- **PM 단일 인스턴스**: PM이 다운되면 split/migrate/WatchRouting 불가. PS는 계속 동작하고 SDK는 캐시된 라우팅으로 요청을 처리할 수 있으나, 라우팅 변경은 반영되지 않는다. PM HA는 향후 과제.
+- **PM leader 전환 중 가용성 간격**: leader 종료 후 etcd TTL 만료(~10초)까지 새 leader가 gRPC 서버를 열지 않는다. 이 기간 동안 SDK는 캐시된 라우팅으로 PS에 직접 요청할 수 있지만 split/migrate/WatchRouting은 불가하다.
 - **단일 PS 클러스터 장애**: 가용 target 노드가 없으면 failoverNode가 파티션을 재배치하지 못한다.
 - **autoBalancer split key 품질**: keyRangeMidpoint는 바이트 레벨 산술 평균으로 계산하므로, 키 분포가 균등하지 않은 경우 편향된 split이 발생할 수 있다.

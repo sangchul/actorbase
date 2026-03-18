@@ -108,13 +108,17 @@ func NewServer(cfg Config) (*Server, error) {
 }
 
 // Start는 PM을 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
+// HA 모드에서는 etcd election을 통해 리더가 될 때까지 블로킹한다.
+// 리더가 된 PM만 gRPC 포트를 열고 실제 서비스를 시작한다.
 func (s *Server) Start(ctx context.Context) error {
 	s.serverCtx = ctx
 
-	// 1. etcd에 PM presence 등록
-	if err := cluster.RegisterPM(ctx, s.etcdCli, s.cfg.ListenAddr); err != nil {
-		return fmt.Errorf("pm: register presence: %w", err)
+	// 1. etcd election — 리더가 될 때까지 블로킹 (standby는 여기서 대기)
+	sess, err := cluster.CampaignLeader(ctx, s.etcdCli, s.cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("pm: leader election: %w", err)
 	}
+	defer sess.Close() //nolint:errcheck — resign on shutdown
 
 	// 2. etcd에서 YAML policy 복원
 	if yamlStr, err := cluster.LoadPolicy(ctx, s.etcdCli); err != nil {

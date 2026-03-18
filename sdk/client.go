@@ -3,14 +3,18 @@ package sdk
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/sangchul/actorbase/internal/cluster"
 	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/internal/transport"
 	"github.com/sangchul/actorbase/provider"
@@ -30,6 +34,7 @@ type Client[Req, Resp any] struct {
 }
 
 // NewClient는 Config를 검증하고 PM 연결을 포함한 Client를 생성한다.
+// EtcdEndpoints가 설정된 경우 etcd에서 현재 PM 리더 주소를 조회한다.
 // Start를 호출하기 전까지는 Send를 호출하면 안 된다.
 func NewClient[Req, Resp any](cfg Config[Req, Resp]) (*Client[Req, Resp], error) {
 	cfg.setDefaults()
@@ -37,7 +42,16 @@ func NewClient[Req, Resp any](cfg Config[Req, Resp]) (*Client[Req, Resp], error)
 		return nil, err
 	}
 
-	pmConn, err := grpc.NewClient(cfg.PMAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	pmAddr := cfg.PMAddr
+	if cfg.haMode() {
+		addr, err := discoverLeaderAddr(cfg.EtcdEndpoints)
+		if err != nil {
+			return nil, fmt.Errorf("sdk: discover PM leader: %w", err)
+		}
+		pmAddr = addr
+	}
+
+	pmConn, err := grpc.NewClient(pmAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +61,28 @@ func NewClient[Req, Resp any](cfg Config[Req, Resp]) (*Client[Req, Resp], error)
 		pmClient: transport.NewPMClient(pmConn),
 		connPool: transport.NewConnPool(),
 	}, nil
+}
+
+// discoverLeaderAddr는 etcd에서 현재 PM 리더 주소를 조회한다.
+// 리더가 선출될 때까지 최대 30초 대기한다.
+func discoverLeaderAddr(endpoints []string) (string, error) {
+	etcdCli, err := clientv3.New(clientv3.Config{
+		Endpoints:   endpoints,
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create etcd client: %w", err)
+	}
+	defer etcdCli.Close() //nolint:errcheck
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	addr, err := cluster.WaitForLeader(ctx, etcdCli)
+	if err != nil {
+		return "", err
+	}
+	return addr, nil
 }
 
 // Start는 PM WatchRouting 스트림을 시작하고 첫 라우팅 테이블을 수신할 때까지 대기한다.
@@ -75,10 +111,58 @@ func (c *Client[Req, Resp]) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client[Req, Resp]) consumeRouting(_ context.Context, ch <-chan *domain.RoutingTable) {
-	for rt := range ch {
-		c.routing.Store(rt)
+// consumeRouting은 WatchRouting 채널에서 라우팅 테이블을 수신한다.
+// HA 모드에서 채널이 닫히면 (PM 장애) etcd에서 새 리더를 발견하여 재연결한다.
+func (c *Client[Req, Resp]) consumeRouting(ctx context.Context, ch <-chan *domain.RoutingTable) {
+	for {
+		for rt := range ch {
+			c.routing.Store(rt)
+		}
+
+		// 채널 닫힘 — HA 모드가 아니거나 ctx가 취소됐으면 종료
+		if !c.cfg.haMode() || ctx.Err() != nil {
+			return
+		}
+
+		// HA 모드: 새 PM 리더를 발견하여 재연결
+		slog.Warn("sdk: PM connection lost, re-discovering leader...")
+		newAddr, err := c.rediscoverLeader(ctx)
+		if err != nil {
+			slog.Error("sdk: leader re-discovery failed, stopping", "err", err)
+			return
+		}
+
+		slog.Info("sdk: reconnecting to new PM leader", "addr", newAddr)
+		newConn, err := grpc.NewClient(newAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			slog.Error("sdk: failed to create PM connection", "addr", newAddr, "err", err)
+			return
+		}
+		c.pmClient = transport.NewPMClient(newConn)
+		ch = c.pmClient.WatchRouting(ctx, c.cfg.ClientID)
 	}
+}
+
+// rediscoverLeader는 etcd에서 새 PM 리더를 발견할 때까지 재시도한다.
+func (c *Client[Req, Resp]) rediscoverLeader(ctx context.Context) (string, error) {
+	etcdCli, err := clientv3.New(clientv3.Config{
+		Endpoints:   c.cfg.EtcdEndpoints,
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create etcd client: %w", err)
+	}
+	defer etcdCli.Close() //nolint:errcheck
+
+	// 새 리더가 선출될 때까지 대기 (최대 30초)
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	addr, err := cluster.WaitForLeader(waitCtx, etcdCli)
+	if err != nil {
+		return "", err
+	}
+	return addr, nil
 }
 
 // Send는 key를 담당하는 Actor에 req를 전달하고 Resp를 반환한다.

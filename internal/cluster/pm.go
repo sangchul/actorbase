@@ -7,89 +7,85 @@ import (
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
 const (
-	pmKeyPrefix   = "/actorbase/pm/"
+	pmElectionKey = "/actorbase/pm/election"
 	pmLeaseTTL    = 10 // seconds
-	pmWaitTimeout = 10 * time.Second
+	pmWaitTimeout = 30 * time.Second
 )
 
-// RegisterPM은 PM을 etcd에 lease로 등록한다.
-// 등록 성공 후 즉시 반환하며, keepalive와 ctx 취소 시 revoke는 내부 goroutine에서 처리한다.
-// PM Start() 초반에 호출한다.
-func RegisterPM(ctx context.Context, client *clientv3.Client, pmAddr string) error {
-	leaseResp, err := client.Grant(ctx, pmLeaseTTL)
+// CampaignLeader는 etcd election을 통해 PM 리더 자리를 획득한다.
+// 리더가 될 때까지 블로킹한다. ctx가 취소되면 에러를 반환한다.
+//
+// 반환된 Session은 PM 정상 종료 시 Close를 호출해 리더십을 반납해야 한다.
+// Session이 닫히면 standby PM 중 하나가 자동으로 새 리더로 선출된다.
+func CampaignLeader(ctx context.Context, client *clientv3.Client, pmAddr string) (*concurrency.Session, error) {
+	sess, err := concurrency.NewSession(client, concurrency.WithTTL(pmLeaseTTL))
 	if err != nil {
-		return fmt.Errorf("pm presence: grant lease: %w", err)
+		return nil, fmt.Errorf("pm election: create session: %w", err)
 	}
 
-	key := pmKeyPrefix + pmAddr
-	if _, err := client.Put(ctx, key, pmAddr, clientv3.WithLease(leaseResp.ID)); err != nil {
-		return fmt.Errorf("pm presence: register: %w", err)
+	election := concurrency.NewElection(sess, pmElectionKey)
+
+	slog.Info("pm: campaigning for leadership...", "addr", pmAddr)
+	if err := election.Campaign(ctx, pmAddr); err != nil {
+		sess.Close() //nolint:errcheck
+		return nil, fmt.Errorf("pm election: campaign: %w", err)
 	}
 
-	keepAliveCh, err := client.KeepAlive(ctx, leaseResp.ID)
-	if err != nil {
-		return fmt.Errorf("pm presence: keepalive: %w", err)
-	}
-
-	// keepalive 응답 소비 + ctx 취소 시 revoke
-	go func() {
-		for range keepAliveCh {
-		}
-		revokeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = client.Revoke(revokeCtx, leaseResp.ID)
-	}()
-
-	return nil
+	slog.Info("pm: elected as leader", "addr", pmAddr)
+	return sess, nil
 }
 
-// GetPMAddr는 etcd에서 PM 주소를 조회한다. PS의 drainPartitions에서 사용한다.
-func GetPMAddr(ctx context.Context, client *clientv3.Client) (string, error) {
-	resp, err := client.Get(ctx, pmKeyPrefix, clientv3.WithPrefix(), clientv3.WithLimit(1))
+// GetLeaderAddr는 etcd에서 현재 PM 리더 주소를 조회한다.
+// 리더가 없으면 에러를 반환한다.
+func GetLeaderAddr(ctx context.Context, client *clientv3.Client) (string, error) {
+	// etcd election은 {electionKey}/{leaseID} 형태의 키를 생성한다.
+	// 리더는 CreateRevision이 가장 작은 키다.
+	resp, err := client.Get(ctx, pmElectionKey+"/",
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByCreateRevision, clientv3.SortAscend),
+		clientv3.WithLimit(1))
 	if err != nil {
-		return "", fmt.Errorf("get pm addr: %w", err)
+		return "", fmt.Errorf("get leader addr: %w", err)
 	}
 	if len(resp.Kvs) == 0 {
-		return "", fmt.Errorf("no PM registered in etcd")
+		return "", fmt.Errorf("no PM leader elected")
 	}
 	return string(resp.Kvs[0].Value), nil
 }
 
-// WaitForPM은 etcd에 PM이 등록될 때까지 최대 pmWaitTimeout 동안 기다린다.
-// PM이 없으면 에러를 반환한다. PS Start() 초반에 호출한다.
-func WaitForPM(ctx context.Context, client *clientv3.Client) error {
+// WaitForLeader는 PM 리더가 선출될 때까지 최대 pmWaitTimeout 동안 대기한다.
+// 리더 주소를 반환한다. PS Start() 초반에 호출한다.
+func WaitForLeader(ctx context.Context, client *clientv3.Client) (string, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, pmWaitTimeout)
 	defer cancel()
 
-	// 이미 PM이 있으면 즉시 반환
-	resp, err := client.Get(waitCtx, pmKeyPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
-	if err != nil {
-		return fmt.Errorf("ps: check pm presence: %w", err)
-	}
-	if resp.Count > 0 {
-		return nil
+	// 이미 리더가 있으면 즉시 반환
+	if addr, err := GetLeaderAddr(waitCtx, client); err == nil {
+		return addr, nil
 	}
 
-	// PM이 없으면 watch로 대기
-	slog.Warn("ps: PM not found in etcd, waiting...", "timeout", pmWaitTimeout)
-	watchCh := client.Watch(waitCtx, pmKeyPrefix, clientv3.WithPrefix())
+	// 없으면 watch로 대기
+	slog.Warn("ps: PM leader not found, waiting...", "timeout", pmWaitTimeout)
+	watchCh := client.Watch(waitCtx, pmElectionKey+"/", clientv3.WithPrefix())
 	for {
 		select {
 		case wresp, ok := <-watchCh:
 			if !ok {
-				return fmt.Errorf("ps: PM watch closed before PM appeared")
+				return "", fmt.Errorf("ps: PM leader watch closed before leader appeared")
 			}
 			for _, ev := range wresp.Events {
 				if ev.Type == clientv3.EventTypePut {
-					slog.Info("ps: PM detected, continuing startup")
-					return nil
+					addr := string(ev.Kv.Value)
+					slog.Info("ps: PM leader detected", "addr", addr)
+					return addr, nil
 				}
 			}
 		case <-waitCtx.Done():
-			return fmt.Errorf("ps: PM did not appear within %s; start PM first", pmWaitTimeout)
+			return "", fmt.Errorf("ps: PM leader did not appear within %s; start PM first", pmWaitTimeout)
 		}
 	}
 }

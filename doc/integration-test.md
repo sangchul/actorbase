@@ -730,13 +730,121 @@ pgrep -a pm
 
 ---
 
+---
+
+## 시나리오 9: PM HA Failover
+
+### 목표
+
+두 번째 PM(PM-2)을 standby로 기동하고, 현재 leader(PM-1)를 SIGKILL했을 때
+PM-2가 자동으로 새 leader로 선출되어 클러스터가 계속 서비스하는지 확인한다.
+
+**시나리오 7·8 이후 상태를 이어받아도 되고, 클러스터가 정상 동작 중이면 어느 시점에서도 실행 가능하다.**
+
+### 전제
+
+```bash
+export PM2_ADDR="localhost:8003"
+```
+
+### 절차
+
+**PM-2 standby로 기동**
+
+PM-2는 `CampaignLeader`에서 블로킹 중이며, gRPC 포트를 열지 않는다.
+
+```bash
+./bin/pm -addr :8003 -etcd $ETCD_ADDR -actor-types kv &
+PM2_PID=$!
+sleep 2
+```
+
+**PM-2가 아직 gRPC 서버를 열지 않았는지 확인 (standby 상태 검증)**
+
+```bash
+# PM-2로 abctl 명령 시도 → connection refused 또는 타임아웃 예상
+./bin/abctl -pm $PM2_ADDR routing && echo "UNEXPECTED: should fail" || echo "OK: standby confirmed"
+```
+
+**PM-1 강제 종료**
+
+```bash
+kill -9 $PM_PID
+```
+
+**etcd lease 만료 + PM-2 선출 대기 (~15초)**
+
+```bash
+sleep 18
+```
+
+**PM-2가 leader로 선출되어 gRPC 서버를 열었는지 확인**
+
+```bash
+./bin/abctl -pm $PM2_ADDR routing
+```
+
+예상 출력: 기존 라우팅 테이블이 etcd에서 복원됨
+
+```
+Version: <N>
+
+PARTITION-ID   ACTOR-TYPE   KEY-START   KEY-END   NODE-ID   NODE-ADDR
+...
+```
+
+PM-2 프로세스 로그 확인:
+
+```
+pm: elected as leader addr=:8003
+```
+
+**PM-2를 통해 데이터 접근**
+
+```bash
+# 기존 데이터 조회
+./bin/kv_client -pm $PM2_ADDR get apple
+
+# 신규 데이터 저장/조회
+./bin/kv_client -pm $PM2_ADDR set ha_test "works"
+./bin/kv_client -pm $PM2_ADDR get ha_test
+```
+
+### 검증 포인트
+
+- [ ] PM-2 기동 직후 gRPC 포트가 열리지 않는다 (standby 상태 확인).
+- [ ] PM-1 SIGKILL 후 etcd TTL 만료 (~10초) 뒤 PM-2가 leader로 선출된다.
+- [ ] PM-2 로그에 `"pm: elected as leader"` 메시지가 출력된다.
+- [ ] PM-2에서 `abctl routing`으로 기존 라우팅 테이블이 복원된 것을 확인한다.
+- [ ] PM-2를 통해 기존 데이터 조회 및 신규 데이터 저장이 정상 동작한다.
+
+### HA 모드 SDK 자동 재연결 검증 (선택)
+
+SDK `EtcdEndpoints`를 사용하는 경우, PM 장애 시 SDK가 자동으로 새 PM에 재연결한다.
+아래는 programmatic 검증 예시 (`examples/kv_stress` 등에서 `EtcdEndpoints` 사용 시):
+
+```go
+client, _ := sdk.NewClient(sdk.Config[KVReq, KVResp]{
+    EtcdEndpoints: []string{"localhost:2379"},  // PMAddr 대신 etcd로 리더 자동 발견
+    TypeID: "kv",
+    Codec:  codec,
+})
+```
+
+PM-1 SIGKILL → PM-2 선출 후 SDK는 `consumeRouting`에서 채널 닫힘을 감지하고
+etcd에서 PM-2 주소를 재발견하여 자동 재연결한다. 이 기간 동안 Send는 캐시된 라우팅으로 계속 동작한다.
+
+---
+
 ## 시나리오 실행 순서 요약
 
 ```
-시나리오 1 → 시나리오 2 → 시나리오 3 → 시나리오 4 → 시나리오 5 (SIGKILL → 자동 failover)
+시나리오 1 → 시나리오 2 → 시나리오 3 → 시나리오 4 → 시나리오 5 (SIGKILL → PS 자동 failover)
                                     │                └→ 시나리오 7 (SIGTERM → graceful drain)
-                                    ↘
+                                    ↘                └→ 시나리오 8 (Range Scan)
                                      시나리오 6 (시나리오 2에서 분기, SDK 재시도)
+
+시나리오 9 (PM HA Failover) — 클러스터가 정상 동작 중 어느 시점에서도 실행 가능
 ```
 
 | 시나리오 | 핵심 검증 항목 | 예상 소요 시간 |
@@ -748,3 +856,5 @@ pgrep -a pm
 | 5. 예기치 않은 장애 복구 | SIGKILL, TTL 만료, PM 자동 failover, 데이터 복원 | 5분 |
 | 6. SDK 라우팅 자동 갱신 | SDK 재시도, WatchRouting push | 5분 |
 | 7. Graceful Shutdown | SIGTERM, drainPartitions, 연산 중단 최소화 | 5분 |
+| 8. Range Scan | 다중 파티션 fan-out, 부분 범위 조회 | 3분 |
+| 9. PM HA Failover | PM-2 standby, PM-1 SIGKILL, PM-2 리더 승계, 데이터 정상 접근 | 5분 |

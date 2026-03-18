@@ -97,7 +97,7 @@ Build():
 
 ```
 Start:
-  1. cluster.WaitForPM(ctx, etcdCli)      // PM이 etcd에 등록될 때까지 대기 (최대 10초)
+  1. cluster.WaitForLeader(ctx, etcdCli)  // PM 리더가 선출될 때까지 대기 (최대 30초)
   2. go registry.Register(ctx, myNode)    // etcd 등록 + keepalive 시작
   3. rtCh = rtStore.Watch(ctx)            // RoutingTable watch 시작
   4. <초기 RoutingTable 수신 대기>         // 준비 전 요청 수락 방지
@@ -127,7 +127,7 @@ PS 종료 전 자신의 파티션을 PM에 위임하는 절차.
 
 ```
 drainPartitions(ctx):
-  1. cluster.GetPMAddr(ctx, etcdCli)  // etcd에서 PM 주소 조회
+  1. cluster.GetLeaderAddr(ctx, etcdCli)  // etcd에서 현재 PM 리더 주소 조회
   2. PMClient.ListMembers()           // 가용 노드 목록 조회
   3. routing.Load()에서 내 파티션 추출 (entry.Node.ID == myNodeID)
   4. for each 파티션:

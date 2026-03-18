@@ -31,6 +31,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BIN_DIR="$ROOT_DIR/bin"
 
 PM_ADDR="localhost:8000"
+PM2_ADDR="localhost:8003"
 ETCD_ADDR="localhost:2379"
 WAL_DIR="/tmp/actorbase-itest/wal"
 CKPT_DIR="/tmp/actorbase-itest/checkpoint"
@@ -40,10 +41,12 @@ LOG_DIR="/tmp/actorbase-itest/logs/$RUN_ID"
 mkdir -p "$LOG_DIR"
 
 PM_LOG="$LOG_DIR/pm.log"
+PM2_LOG="$LOG_DIR/pm2.log"
 PS1_LOG="$LOG_DIR/ps1.log"
 PS2_LOG="$LOG_DIR/ps2.log"
 
 PM_PID=""
+PM2_PID=""
 PS1_PID=""
 PS2_PID=""
 
@@ -116,9 +119,10 @@ partition_count() {
 }
 
 cleanup() {
-  [[ -n "$PS2_PID" ]] && kill "$PS2_PID" 2>/dev/null || true
-  [[ -n "$PS1_PID" ]] && kill "$PS1_PID" 2>/dev/null || true
-  [[ -n "$PM_PID"  ]] && kill "$PM_PID"  2>/dev/null || true
+  [[ -n "$PS2_PID"  ]] && kill "$PS2_PID"  2>/dev/null || true
+  [[ -n "$PS1_PID"  ]] && kill "$PS1_PID"  2>/dev/null || true
+  [[ -n "$PM2_PID"  ]] && kill "$PM2_PID"  2>/dev/null || true
+  [[ -n "$PM_PID"   ]] && kill "$PM_PID"   2>/dev/null || true
   pkill -f "kv_stress" 2>/dev/null || true
   log "Cleanup done. Logs: $LOG_DIR"
 }
@@ -439,6 +443,71 @@ assert_not_contains "scan [a,m): zebra 제외"   "zebra"   "$scan_lower"
 # 값 정합성: scan 결과에서 값도 확인
 assert_contains "scan 전체: apple=red2"   "red2"   "$scan_all"
 assert_contains "scan 전체: mango=orange" "orange" "$scan_all"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 시나리오 9: PM HA Failover (standby PM이 리더를 인계받음)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 이 시점: 클러스터가 정상 동작 중 (PM-1 leader, PS-2 active)
+# 절차:
+#   1. PM-2를 standby로 기동 (CampaignLeader에서 블로킹, gRPC 미오픈)
+#   2. PM-1 SIGKILL → etcd 리더십 해제 → PM-2가 리더 승계
+#   3. PM-2 gRPC 포트 오픈 확인 (라우팅 테이블 조회 성공)
+#   4. 데이터 접근 정상 확인 (기존 라우팅 테이블 etcd에서 복원)
+
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "시나리오 9: PM HA Failover"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# 데이터 삽입 (failover 전)
+kv_set "ha_test" "before_failover" >/dev/null
+
+# PM-2 standby로 기동 (Campaign에서 블로킹)
+log "Starting PM-2 as standby ($PM2_ADDR)..."
+"$BIN_DIR/pm" -addr :8003 -etcd "$ETCD_ADDR" -actor-types kv >"$PM2_LOG" 2>&1 &
+PM2_PID=$!
+sleep 2
+if ! kill -0 "$PM2_PID" 2>/dev/null; then
+  fail "PM-2 process died immediately. See $PM2_LOG"
+else
+  pass "PM-2 standby 프로세스 실행 중"
+fi
+
+# PM-2는 아직 리더가 아니므로 gRPC 포트가 열리지 않아야 함
+if "$BIN_DIR/abctl" -pm "$PM2_ADDR" routing >/dev/null 2>&1; then
+  fail "PM-2가 standby인데 gRPC 포트가 열림 (예상: 실패)"
+else
+  pass "PM-2 standby 상태: gRPC 포트 미오픈 확인"
+fi
+
+# PM-1 SIGKILL
+log "Killing PM-1 (SIGKILL)..."
+kill -9 "$PM_PID" 2>/dev/null || true
+PM_PID=""
+log "PM-1 killed. Waiting for etcd lease expiry (~15s) and PM-2 election..."
+sleep 18
+
+# PM-2가 리더로 승계되어 gRPC 서버를 열었는지 확인
+pm2_rt=$("$BIN_DIR/abctl" -pm "$PM2_ADDR" routing 2>/dev/null || true)
+if [[ -n "$pm2_rt" ]]; then
+  pass "PM-2 gRPC 서버 오픈됨 (라우팅 테이블 조회 성공)"
+else
+  fail "PM-2 gRPC 서버 미오픈 (라우팅 테이블 조회 실패)"
+fi
+
+assert_contains "PM-2 라우팅 테이블: kv 파티션 존재" "kv" "$pm2_rt"
+
+pm2_log_leader=$(grep "elected as leader" "$PM2_LOG" 2>/dev/null || true)
+assert_contains "PM-2 로그: 리더 선출 확인" "elected as leader" "$pm2_log_leader"
+
+# PM-2를 통해 데이터 접근
+PM_ADDR="$PM2_ADDR"  # 이후 kv_client도 PM-2로 접근
+assert_eq "failover 후 ha_test 조회" "before_failover" "$(kv_get ha_test)"
+assert_eq "failover 후 기존 데이터 접근 (apple)" "red2" "$(kv_get apple)"
+
+kv_set "ha_test2" "after_failover" >/dev/null
+assert_eq "failover 후 신규 데이터 저장/조회" "after_failover" "$(kv_get ha_test2)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 결과 요약

@@ -17,7 +17,13 @@ const (
 type Config[Req, Resp any] struct {
 	// ─── 필수 (사용자 제공) ───────────────────────────────────────
 
-	PMAddr string         // PM gRPC 주소 ("host:port")
+	// PMAddr: 단일 PM 모드. EtcdEndpoints가 없을 때 필수.
+	PMAddr string
+	// EtcdEndpoints: HA 모드. 설정 시 etcd에서 리더 PM 주소를 자동 조회한다.
+	// PM 장애 시 자동으로 새 리더를 재발견하여 연결을 복구한다.
+	// PMAddr와 EtcdEndpoints 중 하나만 설정하면 된다.
+	EtcdEndpoints []string
+
 	TypeID string         // 이 Client가 대상으로 하는 actor type 식별자
 	Codec  provider.Codec // PS와 동일한 구현체를 주입해야 한다
 
@@ -45,8 +51,8 @@ func (c *Config[Req, Resp]) setDefaults() {
 }
 
 func (c *Config[Req, Resp]) validate() error {
-	if c.PMAddr == "" {
-		return fmt.Errorf("sdk: PMAddr is required")
+	if c.PMAddr == "" && len(c.EtcdEndpoints) == 0 {
+		return fmt.Errorf("sdk: PMAddr or EtcdEndpoints is required")
 	}
 	if c.TypeID == "" {
 		return fmt.Errorf("sdk: TypeID is required")
@@ -55,4 +61,9 @@ func (c *Config[Req, Resp]) validate() error {
 		return fmt.Errorf("sdk: Codec is required")
 	}
 	return nil
+}
+
+// haMode는 etcd 기반 HA 모드인지 반환한다.
+func (c *Config[Req, Resp]) haMode() bool {
+	return len(c.EtcdEndpoints) > 0
 }

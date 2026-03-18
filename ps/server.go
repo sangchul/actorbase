@@ -202,8 +202,8 @@ type Server struct {
 
 // Start는 PS를 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
 func (s *Server) Start(ctx context.Context) error {
-	// 1. PM이 기동 중인지 확인
-	if err := cluster.WaitForPM(ctx, s.etcdCli); err != nil {
+	// 1. PM 리더가 선출될 때까지 대기
+	if _, err := cluster.WaitForLeader(ctx, s.etcdCli); err != nil {
 		return err
 	}
 
@@ -286,7 +286,7 @@ func (s *Server) shutdown() error {
 
 // drainPartitions는 이 PS가 담당하는 모든 파티션을 다른 PS로 migrate 요청한다.
 func (s *Server) drainPartitions(ctx context.Context) {
-	pmAddr, err := cluster.GetPMAddr(ctx, s.etcdCli)
+	pmAddr, err := cluster.GetLeaderAddr(ctx, s.etcdCli)
 	if err != nil {
 		slog.Warn("ps: drain: cannot get PM address, skipping drain", "err", err)
 		return
