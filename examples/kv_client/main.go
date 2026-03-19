@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	adapterjson "github.com/sangchul/actorbase/adapter/json"
@@ -49,12 +50,14 @@ type KVResponse struct {
 }
 
 func main() {
-	pmAddr := flag.String("pm", "localhost:8000", "PM gRPC address")
+	pmAddr := flag.String("pm", "", "PM gRPC address (mutually exclusive with -etcd)")
+	etcdAddrs := flag.String("etcd", "", "etcd endpoints for HA mode, comma-separated (mutually exclusive with -pm)")
 	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: kv_client [-pm <addr>] <get|set|del|scan> <key|start> [value|end]
+		fmt.Fprint(os.Stderr, `Usage: kv_client [-pm <addr>|-etcd <endpoints>] <get|set|del|scan> <key|start> [value|end]
 
 Flags:
-  -pm string   PM gRPC address (default: localhost:8000)
+  -pm   string   PM gRPC address (default: localhost:8000)
+  -etcd string   etcd endpoints for HA mode (comma-separated)
 
 Commands:
   get <key>              Retrieve a value by key
@@ -90,14 +93,25 @@ Commands:
 		os.Exit(1)
 	}
 
+	// -pm 기본값: etcd 미지정 시 localhost:8000
+	cfg := sdk.Config[KVRequest, KVResponse]{
+		TypeID: "kv",
+		Codec:  adapterjson.New(),
+	}
+	if *etcdAddrs != "" {
+		cfg.EtcdEndpoints = strings.Split(*etcdAddrs, ",")
+	} else {
+		addr := *pmAddr
+		if addr == "" {
+			addr = "localhost:8000"
+		}
+		cfg.PMAddr = addr
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := sdk.NewClient(sdk.Config[KVRequest, KVResponse]{
-		PMAddr: *pmAddr,
-		TypeID: "kv",
-		Codec:  adapterjson.New(),
-	})
+	client, err := sdk.NewClient(cfg)
 	if err != nil {
 		slog.Error("failed to create client", "err", err)
 		os.Exit(1)

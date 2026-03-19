@@ -153,6 +153,87 @@ func TestRoutingTable_EntriesReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestRoutingTable_PartitionsInRange(t *testing.T) {
+	// setup: p1=[a,f), p2=[f,m), p3=[m,z), p4=[z,"")
+	entries := []RouteEntry{
+		makeEntry("p1", "a", "f", "n1", "n1:9000"),
+		makeEntry("p2", "f", "m", "n1", "n1:9000"),
+		makeEntry("p3", "m", "z", "n2", "n2:9000"),
+		makeEntry("p4", "z", "", "n2", "n2:9000"),
+	}
+	rt, err := NewRoutingTable(1, entries)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		start   string
+		end     string
+		wantIDs []string
+	}{
+		{
+			name:    "[a,m) → p1,p2",
+			start:   "a", end: "m",
+			wantIDs: []string{"p1", "p2"},
+		},
+		{
+			name:    "[l,x) crossing — p2,p3",
+			start:   "l", end: "x",
+			wantIDs: []string{"p2", "p3"},
+		},
+		{
+			name:    `[z,"") 상한 없음 → p4까지`,
+			start:   "z", end: "",
+			wantIDs: []string{"p4"},
+		},
+		{
+			name:    "start==end: [f,g) → p2",
+			start:   "f", end: "g",
+			wantIDs: []string{"p2"},
+		},
+		{
+			name:    "경계선 정확히 일치: [f,m) → p2",
+			start:   "f", end: "m",
+			wantIDs: []string{"p2"},
+		},
+		{
+			name:    `전체 범위 [a,"") → 모든 파티션`,
+			start:   "a", end: "",
+			wantIDs: []string{"p1", "p2", "p3", "p4"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rt.PartitionsInRange("test", tt.start, tt.end)
+			if len(got) != len(tt.wantIDs) {
+				t.Fatalf("PartitionsInRange(%q, %q): got %d entries %v, want %d %v",
+					tt.start, tt.end, len(got), partIDs(got), len(tt.wantIDs), tt.wantIDs)
+			}
+			for i, e := range got {
+				if e.Partition.ID != tt.wantIDs[i] {
+					t.Errorf("entry[%d]: got %s, want %s", i, e.Partition.ID, tt.wantIDs[i])
+				}
+			}
+		})
+	}
+
+	// 알 수 없는 actorType → nil
+	got := rt.PartitionsInRange("other", "a", "z")
+	if got != nil {
+		t.Error("PartitionsInRange with unknown actorType should return nil")
+	}
+}
+
+func partIDs(entries []RouteEntry) []string {
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.Partition.ID
+	}
+	return ids
+}
+
 func TestRoutingTable_EntriesByType(t *testing.T) {
 	entries := []RouteEntry{
 		{Partition: Partition{ID: "b1", ActorType: "bucket", KeyRange: KeyRange{Start: "a", End: "m"}}, Node: NodeInfo{ID: "n1"}},

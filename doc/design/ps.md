@@ -22,14 +22,13 @@ multi-actor-type 지원을 위해 설정이 두 레벨로 분리된다.
 |---|---|
 | NodeID, Addr | 클러스터 내 유일한 PS 식별자, gRPC 수신 주소 |
 | EtcdEndpoints | etcd 엔드포인트 목록 |
-| MailboxSize, FlushSize, FlushInterval | ActorHost / WAL 배치 설정 |
 | IdleTimeout, EvictInterval | EvictionScheduler 설정 |
-| CheckpointInterval, CheckpointWALThreshold | CheckpointScheduler 설정 |
+| CheckpointInterval | CheckpointScheduler 설정. 기본값: 1분 |
 | EtcdLeaseTTL | 노드 lease TTL. 기본값: 10초 |
 | DrainTimeout | 파티션 선이전 최대 대기 시간. 기본값: 60초 |
 | ShutdownTimeout | EvictAll 최대 대기 시간. 기본값: 30초 |
 
-**TypeConfig[Req, Resp]**: 특정 actor type에 대한 설정.
+**TypeConfig[Req, Resp]**: 특정 actor type에 대한 설정. actor type마다 독립적으로 지정 가능.
 
 | 필드 | 설명 |
 |---|---|
@@ -37,6 +36,10 @@ multi-actor-type 지원을 위해 설정이 두 레벨로 분리된다.
 | Factory | 파티션별 Actor 생성 팩토리 |
 | Codec | SDK와 동일한 구현체를 주입해야 한다 |
 | WALStore, CheckpointStore | 스토리지 구현체 |
+| MailboxSize | mailbox 버퍼 크기. 0이면 engine 기본값 사용 |
+| FlushSize | WAL 배치 최대 크기. 0이면 engine 기본값 사용 |
+| FlushInterval | WAL 배치 최대 대기 시간. 0이면 engine 기본값 사용 |
+| CheckpointWALThreshold | 이 수만큼 WAL entry가 쌓이면 자동 checkpoint. 기본값: 100 |
 
 ---
 

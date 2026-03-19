@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sangchul/actorbase/adapter/fs"
 	adapterjson "github.com/sangchul/actorbase/adapter/json"
@@ -125,6 +126,101 @@ func (a *kvActor) KeyCount() int64 {
 	return int64(len(a.data))
 }
 
+// ── Counter Actor 타입 정의 ───────────────────────────────────────────────────
+
+// CounterRequest는 Counter Actor의 요청 타입이다.
+type CounterRequest struct {
+	Op  string `json:"op"`  // "inc", "dec", "get", "reset"
+	Key string `json:"key"`
+	By  int64  `json:"by"` // inc/dec 량 (0이면 1로 간주)
+}
+
+// CounterResponse는 Counter Actor의 응답 타입이다.
+type CounterResponse struct {
+	Value int64 `json:"value"`
+}
+
+// counterWALOp는 WAL에 기록되는 counter 변경 연산이다.
+type counterWALOp struct {
+	Op  string `json:"op"`
+	Key string `json:"key"`
+	By  int64  `json:"by"`
+}
+
+// counterActor는 파티션이 담당하는 키 범위의 카운터를 인메모리 map으로 관리한다.
+type counterActor struct {
+	data map[string]int64
+}
+
+func (a *counterActor) Receive(_ provider.Context, req CounterRequest) (CounterResponse, []byte, error) {
+	switch req.Op {
+	case "get":
+		return CounterResponse{Value: a.data[req.Key]}, nil, nil
+	case "inc":
+		by := req.By
+		if by == 0 {
+			by = 1
+		}
+		a.data[req.Key] += by
+		entry, _ := json.Marshal(counterWALOp{Op: "inc", Key: req.Key, By: by})
+		return CounterResponse{Value: a.data[req.Key]}, entry, nil
+	case "dec":
+		by := req.By
+		if by == 0 {
+			by = 1
+		}
+		a.data[req.Key] -= by
+		entry, _ := json.Marshal(counterWALOp{Op: "dec", Key: req.Key, By: by})
+		return CounterResponse{Value: a.data[req.Key]}, entry, nil
+	case "reset":
+		a.data[req.Key] = 0
+		entry, _ := json.Marshal(counterWALOp{Op: "reset", Key: req.Key})
+		return CounterResponse{}, entry, nil
+	default:
+		return CounterResponse{}, nil, fmt.Errorf("unknown op: %s", req.Op)
+	}
+}
+
+func (a *counterActor) Replay(entry []byte) error {
+	var op counterWALOp
+	if err := json.Unmarshal(entry, &op); err != nil {
+		return err
+	}
+	switch op.Op {
+	case "inc":
+		a.data[op.Key] += op.By
+	case "dec":
+		a.data[op.Key] -= op.By
+	case "reset":
+		a.data[op.Key] = 0
+	}
+	return nil
+}
+
+func (a *counterActor) Snapshot() ([]byte, error) {
+	return json.Marshal(a.data)
+}
+
+func (a *counterActor) Restore(data []byte) error {
+	return json.Unmarshal(data, &a.data)
+}
+
+func (a *counterActor) Split(splitKey string) ([]byte, error) {
+	upper := make(map[string]int64)
+	for k, v := range a.data {
+		if k >= splitKey {
+			upper[k] = v
+			delete(a.data, k)
+		}
+	}
+	return json.Marshal(upper)
+}
+
+// KeyCount는 provider.Countable 구현.
+func (a *counterActor) KeyCount() int64 {
+	return int64(len(a.data))
+}
+
 // ── main ───────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -133,6 +229,10 @@ func main() {
 	etcdAddrs := flag.String("etcd", "localhost:2379", "etcd endpoints (comma-separated)")
 	walDir := flag.String("wal-dir", "/tmp/actorbase/wal", "WAL directory (shared across PS nodes, partitioned by partition ID)")
 	checkpointDir := flag.String("checkpoint-dir", "/tmp/actorbase/checkpoint", "Checkpoint directory (shared across PS nodes)")
+	idleTimeout := flag.Duration("idle-timeout", 5*time.Minute, "Actor idle timeout before eviction")
+	evictInterval := flag.Duration("evict-interval", time.Minute, "Eviction scheduler check interval")
+	drainTimeout := flag.Duration("drain-timeout", 60*time.Second, "Maximum time to wait for partition drain on graceful shutdown")
+	actorTypes := flag.String("actor-types", "kv", "Comma-separated list of actor types to enable (kv, counter)")
 	flag.Parse()
 
 	if *nodeID == "" {
@@ -156,24 +256,50 @@ func main() {
 		os.Exit(1)
 	}
 
-	factory := func(_ string) provider.Actor[KVRequest, KVResponse] {
-		return &kvActor{data: make(map[string][]byte)}
-	}
-
 	builder := ps.NewServerBuilder(ps.BaseConfig{
 		NodeID:        *nodeID,
 		Addr:          *addr,
 		EtcdEndpoints: strings.Split(*etcdAddrs, ","),
+		IdleTimeout:   *idleTimeout,
+		EvictInterval: *evictInterval,
+		DrainTimeout:  *drainTimeout,
 	})
-	if err := ps.Register(builder, ps.TypeConfig[KVRequest, KVResponse]{
-		TypeID:          "kv",
-		Factory:         factory,
-		Codec:           adapterjson.New(),
-		WALStore:        walStore,
-		CheckpointStore: cpStore,
-	}); err != nil {
-		slog.Error("failed to register kv actor type", "err", err)
-		os.Exit(1)
+
+	enabledTypes := make(map[string]bool)
+	for _, t := range strings.Split(*actorTypes, ",") {
+		enabledTypes[strings.TrimSpace(t)] = true
+	}
+
+	if enabledTypes["kv"] {
+		kvFactory := func(_ string) provider.Actor[KVRequest, KVResponse] {
+			return &kvActor{data: make(map[string][]byte)}
+		}
+		if err := ps.Register(builder, ps.TypeConfig[KVRequest, KVResponse]{
+			TypeID:          "kv",
+			Factory:         kvFactory,
+			Codec:           adapterjson.New(),
+			WALStore:        walStore,
+			CheckpointStore: cpStore,
+		}); err != nil {
+			slog.Error("failed to register kv actor type", "err", err)
+			os.Exit(1)
+		}
+	}
+
+	if enabledTypes["counter"] {
+		counterFactory := func(_ string) provider.Actor[CounterRequest, CounterResponse] {
+			return &counterActor{data: make(map[string]int64)}
+		}
+		if err := ps.Register(builder, ps.TypeConfig[CounterRequest, CounterResponse]{
+			TypeID:          "counter",
+			Factory:         counterFactory,
+			Codec:           adapterjson.New(),
+			WALStore:        walStore,
+			CheckpointStore: cpStore,
+		}); err != nil {
+			slog.Error("failed to register counter actor type", "err", err)
+			os.Exit(1)
+		}
 	}
 	srv, err := builder.Build()
 	if err != nil {

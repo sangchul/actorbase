@@ -22,6 +22,7 @@ Partition Manager(PM) 조립 패키지. 클러스터 멤버십 감시, 라우팅
 | ListenAddr | gRPC 수신 주소 (필수) |
 | EtcdEndpoints | etcd 엔드포인트 목록 (필수) |
 | ActorTypes | bootstrap 시 생성할 actor type 목록 (필수, 최소 1개) |
+| HTTPAddr | 웹 콘솔 HTTP 서버 주소 (예: `:8080`). 비어 있으면 웹 콘솔을 시작하지 않는다. |
 | Metrics | nil이면 no-op 구현체 사용 |
 | BalancePolicy | nil이면 NoopBalancePolicy 사용. YAML policy 적용 중에는 YAML policy가 우선. |
 
@@ -58,9 +59,11 @@ Start:
   7. go watchMembership(ctx)     // 노드 join/leave → Policy 호출
   8. if currentRT == nil:
        go bootstrap(ctx)         // 첫 PS 등록 대기 후 초기 테이블 생성
-  9. grpcSrv.Serve(listener)     // 리더만 gRPC 포트 오픈
-  10. <-ctx.Done()
-  11. grpcSrv.GracefulStop() + connPool.Close()
+  9. if cfg.HTTPAddr != "":
+       go consoleSrv.Start(ctx)  // 웹 콘솔 HTTP 서버 (go:embed 정적 파일 + REST API)
+  10. grpcSrv.Serve(listener)    // 리더만 gRPC 포트 오픈
+  11. <-ctx.Done()
+  12. grpcSrv.GracefulStop() + connPool.Close()
       // defer sess.Close() 실행 → etcd lease revoke → standby 자동 선출
 ```
 

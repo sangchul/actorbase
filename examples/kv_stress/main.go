@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	adapterjson "github.com/sangchul/actorbase/adapter/json"
@@ -22,16 +24,34 @@ type KVResponse struct {
 }
 
 func main() {
+	pmAddr := flag.String("pm", "", "PM gRPC address (mutually exclusive with -etcd)")
+	etcdAddrs := flag.String("etcd", "", "etcd endpoints for HA mode, comma-separated (mutually exclusive with -pm)")
+	duration := flag.Duration("duration", 60*time.Second, "Stress test duration")
+	interval := flag.Duration("interval", 100*time.Millisecond, "Request interval")
+	maxRetries := flag.Int("max-retries", 5, "Maximum retries per request")
+	retryInterval := flag.Duration("retry-interval", 200*time.Millisecond, "Retry interval")
+	flag.Parse()
+
+	cfg := sdk.Config[KVRequest, KVResponse]{
+		TypeID:        "kv",
+		Codec:         adapterjson.New(),
+		MaxRetries:    *maxRetries,
+		RetryInterval: *retryInterval,
+	}
+	if *etcdAddrs != "" {
+		cfg.EtcdEndpoints = strings.Split(*etcdAddrs, ",")
+	} else {
+		addr := *pmAddr
+		if addr == "" {
+			addr = "localhost:8000"
+		}
+		cfg.PMAddr = addr
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client, err := sdk.NewClient(sdk.Config[KVRequest, KVResponse]{
-		PMAddr:        "localhost:8000",
-		TypeID:        "kv",
-		Codec:         adapterjson.New(),
-		MaxRetries:    5,
-		RetryInterval: 200 * time.Millisecond,
-	})
+	client, err := sdk.NewClient(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -41,10 +61,10 @@ func main() {
 	}
 
 	success, fail := 0, 0
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 
-	timer := time.NewTimer(60 * time.Second)
+	timer := time.NewTimer(*duration)
 	defer timer.Stop()
 
 	i := 0

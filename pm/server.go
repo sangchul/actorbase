@@ -18,6 +18,7 @@ import (
 	"github.com/sangchul/actorbase/internal/rebalance"
 	"github.com/sangchul/actorbase/internal/transport"
 	pb "github.com/sangchul/actorbase/internal/transport/proto"
+	"github.com/sangchul/actorbase/pm/console"
 	"github.com/sangchul/actorbase/policy"
 	"github.com/sangchul/actorbase/provider"
 )
@@ -158,7 +159,13 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.bootstrap(ctx)
 	}
 
-	// 7. gRPC 수신 시작
+	// 7. 웹 콘솔 HTTP 서버 시작 (설정된 경우)
+	if s.cfg.HTTPAddr != "" {
+		consoleSrv := console.NewServer(s.cfg.HTTPAddr, s.cfg.ListenAddr)
+		go consoleSrv.Start(ctx)
+	}
+
+	// 8. gRPC 수신 시작
 	lis, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("pm: listen %s: %w", s.cfg.ListenAddr, err)
@@ -184,6 +191,7 @@ func (s *Server) watchRouting(ctx context.Context) {
 	for rt := range ch {
 		s.routing.Store(rt)
 		if rt != nil {
+			slog.Info("pm: routing table updated", "version", rt.Version(), "partitions", len(rt.Entries()))
 			s.broadcast(rt)
 		}
 	}
@@ -203,50 +211,129 @@ func (s *Server) broadcast(rt *domain.RoutingTable) {
 
 // watchMembership은 노드 join/leave 이벤트를 BalancePolicy에 전달하고 반환된 액션을 실행한다.
 func (s *Server) watchMembership(ctx context.Context) {
+	slog.Info("pm: membership watcher started")
 	ch := s.membership.Watch(ctx)
 	for event := range ch {
 		switch event.Type {
 		case cluster.NodeJoined:
+			slog.Info("pm: node joined", "node", event.Node.ID, "addr", event.Node.Address)
 			go s.handleNodeJoined(ctx, event.Node)
 		case cluster.NodeLeft:
+			slog.Info("pm: node left", "node", event.Node.ID, "reason", event.Reason)
 			go s.handleNodeLeft(ctx, event.Node, event.Reason)
 		}
 	}
+	slog.Info("pm: membership watcher stopped")
 }
 
 func (s *Server) handleNodeJoined(ctx context.Context, node domain.NodeInfo) {
 	nodes, err := s.nodeRegistry.ListNodes(ctx)
 	if err != nil {
+		slog.Error("pm: handleNodeJoined: list nodes failed", "node", node.ID, "err", err)
 		return
 	}
 	rt, err := s.routingStore.Load(ctx)
 	if err != nil {
+		slog.Error("pm: handleNodeJoined: load routing table failed", "node", node.ID, "err", err)
 		return
 	}
 
-	// cfg.BalancePolicy (코드 주입) 우선, YAML policy 없으면 이것 사용
 	pol := s.activeBalancePolicy()
 	stats := s.quickClusterStats(ctx, nodes, rt, "")
 	actions := pol.OnNodeJoined(ctx, domainToProviderNodeInfo(node), stats)
+	slog.Info("pm: handleNodeJoined: policy returned actions", "node", node.ID, "actions", len(actions))
 	s.executeBalanceActions(ctx, actions)
 }
 
 func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reason cluster.NodeLeaveReason) {
 	nodes, err := s.nodeRegistry.ListNodes(ctx)
 	if err != nil {
+		slog.Error("pm: handleNodeLeft: list nodes failed", "node", node.ID, "err", err)
 		return
 	}
 	rt, err := s.routingStore.Load(ctx)
 	if err != nil {
+		slog.Error("pm: handleNodeLeft: load routing table failed", "node", node.ID, "err", err)
 		return
 	}
 
+	var deadPartitions int
+	if rt != nil {
+		for _, e := range rt.Entries() {
+			if e.Node.ID == node.ID {
+				deadPartitions++
+			}
+		}
+	}
+	slog.Info("pm: handleNodeLeft: computing failover actions",
+		"node", node.ID, "reason", reason,
+		"live_nodes", len(nodes), "dead_partitions", deadPartitions)
+
 	pol := s.activeBalancePolicy()
-	// dead node 포함한 stats: dead node는 라우팅 테이블 기반, live 노드는 목록만
 	stats := s.quickClusterStats(ctx, nodes, rt, node.ID)
 	providerReason := provider.NodeLeaveReason(reason)
 	actions := pol.OnNodeLeft(ctx, domainToProviderNodeInfo(node), providerReason, stats)
+	slog.Info("pm: handleNodeLeft: policy returned actions", "node", node.ID, "actions", len(actions))
 	s.executeBalanceActions(ctx, actions)
+
+	// Policy와 무관하게 항상 dead node의 잔여 파티션을 failover.
+	// policy가 이미 처리했으면 라우팅 테이블에 해당 파티션이 없으므로 자연히 no-op.
+	s.failoverDeadNode(ctx, node.ID)
+}
+
+// failoverDeadNode는 Policy와 무관하게 dead node의 잔여 파티션을 active 노드로 failover한다.
+// graceful shutdown으로 미리 drain된 경우 라우팅 테이블에 해당 파티션이 없어 no-op가 된다.
+func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
+	rt, err := s.routingStore.Load(ctx)
+	if err != nil || rt == nil {
+		return
+	}
+
+	// dead node의 잔여 파티션 목록 (policy가 이미 처리했으면 비어 있음)
+	var remaining []domain.RouteEntry
+	for _, entry := range rt.Entries() {
+		if entry.Node.ID == deadNodeID {
+			remaining = append(remaining, entry)
+		}
+	}
+	if len(remaining) == 0 {
+		slog.Info("pm: failoverDeadNode: no remaining partitions, skipping", "dead_node", deadNodeID)
+		return
+	}
+
+	// 가용 target 노드 조회
+	nodes, err := s.nodeRegistry.ListNodes(ctx)
+	if err != nil {
+		slog.Error("pm: failoverDeadNode: list nodes failed", "err", err)
+		return
+	}
+	var targets []domain.NodeInfo
+	for _, n := range nodes {
+		if n.ID != deadNodeID && n.Status == domain.NodeStatusActive {
+			targets = append(targets, n)
+		}
+	}
+	if len(targets) == 0 {
+		slog.Warn("pm: failoverDeadNode: no available target nodes", "dead_node", deadNodeID, "partitions", len(remaining))
+		return
+	}
+
+	slog.Info("pm: failoverDeadNode: starting", "dead_node", deadNodeID, "partitions", len(remaining), "targets", len(targets))
+	for i, entry := range remaining {
+		target := targets[i%len(targets)]
+		slog.Info("pm: failoverDeadNode: failing over partition",
+			"partition", entry.Partition.ID, "actor_type", entry.Partition.ActorType, "target", target.ID)
+		s.opMu.Lock()
+		ferr := s.migrator.Failover(ctx, entry.Partition.ID, target.ID)
+		s.opMu.Unlock()
+		if ferr != nil {
+			slog.Error("pm: failoverDeadNode: failover failed",
+				"partition", entry.Partition.ID, "target", target.ID, "err", ferr)
+		} else {
+			slog.Info("pm: failoverDeadNode: failover complete",
+				"partition", entry.Partition.ID, "to", target.ID)
+		}
+	}
 }
 
 // activeBalancePolicy는 현재 활성 BalancePolicy를 반환한다.
@@ -310,27 +397,34 @@ func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.B
 	for _, action := range actions {
 		switch action.Type {
 		case provider.ActionSplit:
+			slog.Info("pm: executing split", "actor_type", action.ActorType, "partition", action.PartitionID)
 			s.opMu.Lock()
 			_, err := s.splitter.Split(ctx, action.ActorType, action.PartitionID, "")
 			s.opMu.Unlock()
 			if err != nil {
 				slog.Error("pm: policy split failed", "partition", action.PartitionID, "err", err)
+			} else {
+				slog.Info("pm: split complete", "partition", action.PartitionID)
 			}
 
 		case provider.ActionMigrate:
+			slog.Info("pm: executing migrate", "actor_type", action.ActorType, "partition", action.PartitionID, "target", action.TargetNode)
 			s.opMu.Lock()
 			err := s.migrator.Migrate(ctx, action.ActorType, action.PartitionID, action.TargetNode)
 			s.opMu.Unlock()
 			if err != nil {
-				slog.Error("pm: policy migrate failed", "partition", action.PartitionID, "err", err)
+				slog.Error("pm: policy migrate failed", "partition", action.PartitionID, "target", action.TargetNode, "err", err)
+			} else {
+				slog.Info("pm: migrate complete", "partition", action.PartitionID, "target", action.TargetNode)
 			}
 
 		case provider.ActionFailover:
+			slog.Info("pm: executing failover", "partition", action.PartitionID, "target", action.TargetNode)
 			s.opMu.Lock()
 			err := s.migrator.Failover(ctx, action.PartitionID, action.TargetNode)
 			s.opMu.Unlock()
 			if err != nil {
-				slog.Error("pm: policy failover failed", "partition", action.PartitionID, "err", err)
+				slog.Error("pm: policy failover failed", "partition", action.PartitionID, "target", action.TargetNode, "err", err)
 			} else {
 				slog.Info("pm: failover complete", "partition", action.PartitionID, "to", action.TargetNode)
 			}

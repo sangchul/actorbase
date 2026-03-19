@@ -15,6 +15,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":7000", "gRPC listen address")
+	httpAddr := flag.String("http", "", "web console HTTP address (e.g. :8080, empty to disable)")
 	etcdAddrs := flag.String("etcd", "localhost:2379", "etcd endpoints (comma-separated)")
 	actorTypes := flag.String("actor-types", "", "actor types to bootstrap (comma-separated, e.g. kv or bucket,object)")
 	flag.Parse()
@@ -26,6 +27,7 @@ func main() {
 
 	srv, err := pm.NewServer(pm.Config{
 		ListenAddr:    *addr,
+		HTTPAddr:      *httpAddr,
 		EtcdEndpoints: strings.Split(*etcdAddrs, ","),
 		ActorTypes:    strings.Split(*actorTypes, ","),
 	})

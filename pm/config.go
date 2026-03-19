@@ -19,6 +19,10 @@ type Config struct {
 	// 최소 1개 이상 지정해야 한다.
 	ActorTypes []string
 
+	// HTTPAddr는 웹 콘솔 HTTP 서버 주소 (예: ":8080").
+	// 비어 있으면 웹 콘솔을 시작하지 않는다.
+	HTTPAddr string
+
 	// ─── 선택 (기본값 있음) ───────────────────────────────────────
 
 	Metrics provider.Metrics // nil이면 no-op 구현체 사용

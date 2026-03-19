@@ -202,10 +202,14 @@ type Server struct {
 
 // Start는 PS를 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
 func (s *Server) Start(ctx context.Context) error {
+	slog.Info("ps: waiting for PM leader", "node", s.cfg.NodeID)
+
 	// 1. PM 리더가 선출될 때까지 대기
-	if _, err := cluster.WaitForLeader(ctx, s.etcdCli); err != nil {
+	pmAddr, err := cluster.WaitForLeader(ctx, s.etcdCli)
+	if err != nil {
 		return err
 	}
+	slog.Info("ps: PM leader found, starting", "node", s.cfg.NodeID, "addr", s.cfg.Addr, "pm", pmAddr)
 
 	// 2. etcd 노드 등록 시작 (백그라운드)
 	node := domain.NodeInfo{
@@ -222,6 +226,9 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("routing table watch closed before receiving initial value")
 	}
 	s.routing.Store(firstRT)
+	if firstRT != nil {
+		slog.Info("ps: initial routing table received", "node", s.cfg.NodeID, "version", firstRT.Version(), "partitions", len(firstRT.Entries()))
+	}
 
 	// 4. 이후 라우팅 갱신을 백그라운드에서 처리
 	go s.watchRouting(ctx, rtCh)
@@ -235,9 +242,12 @@ func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		grpcErrCh <- s.grpcSrv.Serve(lis)
 	}()
+	slog.Info("ps: gRPC server started", "node", s.cfg.NodeID, "addr", s.cfg.Addr)
 
 	// 6. actor type별 스케줄러 시작
 	for _, d := range s.dispatchers {
+		slog.Info("ps: starting schedulers", "node", s.cfg.NodeID, "type", d.TypeID(),
+			"idle_timeout", s.cfg.IdleTimeout, "evict_interval", s.cfg.EvictInterval)
 		d.StartSchedulers(ctx, s.cfg.IdleTimeout, s.cfg.EvictInterval, s.cfg.CheckpointInterval)
 	}
 
@@ -254,32 +264,42 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) watchRouting(ctx context.Context, ch <-chan *domain.RoutingTable) {
 	for rt := range ch {
 		s.routing.Store(rt)
+		if rt != nil {
+			slog.Info("ps: routing table updated", "node", s.cfg.NodeID, "version", rt.Version(), "partitions", len(rt.Entries()))
+		}
 	}
 }
 
 func (s *Server) shutdown() error {
+	slog.Info("ps: shutdown initiated", "node", s.cfg.NodeID)
+
 	// 1. 파티션 선이전
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), s.cfg.DrainTimeout)
 	defer drainCancel()
 	s.drainPartitions(drainCtx)
+	slog.Info("ps: drain complete", "node", s.cfg.NodeID)
 
 	// 2. gRPC: 진행 중인 RPC 완료 대기 후 중단
 	s.grpcSrv.GracefulStop()
+	slog.Info("ps: gRPC server stopped", "node", s.cfg.NodeID)
 
 	// 3. 모든 actor type의 Actor checkpoint 저장
+	slog.Info("ps: evicting all actors", "node", s.cfg.NodeID)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
 	for _, d := range s.dispatchers {
 		if err := d.EvictAll(shutdownCtx); err != nil {
-			_ = err
+			slog.Warn("ps: evictAll failed", "node", s.cfg.NodeID, "type", d.TypeID(), "err", err)
 		}
 	}
 
 	// 4. etcd lease 즉시 revoke
+	slog.Info("ps: deregistering from etcd", "node", s.cfg.NodeID)
 	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer deregCancel()
 	_ = s.registry.Deregister(deregCtx, s.cfg.NodeID)
 
+	slog.Info("ps: shutdown complete", "node", s.cfg.NodeID)
 	// 5. etcd 클라이언트 종료
 	return s.etcdCli.Close()
 }

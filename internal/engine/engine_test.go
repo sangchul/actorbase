@@ -446,6 +446,185 @@ func TestActorHost_PanicActor_ReturnsErrActorPanicked(t *testing.T) {
 	}
 }
 
+// ── Countable actor ──────────────────────────────────────────────────────────
+
+type countableKVActor struct {
+	kvActor
+}
+
+func newCountableKVActor(_ string) provider.Actor[kvReq, kvResp] {
+	return &countableKVActor{kvActor: kvActor{data: make(map[string]string)}}
+}
+
+func (a *countableKVActor) KeyCount() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return int64(len(a.data))
+}
+
+// ── SplitHinter actor ─────────────────────────────────────────────────────────
+
+type splitHinterKVActor struct {
+	kvActor
+	hint string
+}
+
+func (a *splitHinterKVActor) SplitHint() string { return a.hint }
+
+// ── GetStats 테스트 ───────────────────────────────────────────────────────────
+
+func TestActorHost_GetStats_NonCountable(t *testing.T) {
+	// kvActor는 Countable을 구현하지 않으므로 KeyCount == -1
+	h := newTestHost(t)
+	ctx := context.Background()
+
+	put(t, h, "p1", "k1", "v1")
+	put(t, h, "p1", "k2", "v2")
+	time.Sleep(20 * time.Millisecond) // WAL flush 대기
+
+	stats := h.GetStats()
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 partition stat, got %d", len(stats))
+	}
+	if stats[0].KeyCount != -1 {
+		t.Errorf("non-Countable actor: KeyCount = %d, want -1", stats[0].KeyCount)
+	}
+
+	h.EvictAll(ctx) //nolint:errcheck
+}
+
+func TestActorHost_GetStats_Countable(t *testing.T) {
+	h := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory:         newCountableKVActor,
+		WALStore:        newMemWALStore(),
+		CheckpointStore: newMemCheckpointStore(),
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctx := context.Background()
+
+	put(t, h, "p1", "k1", "v1")
+	put(t, h, "p1", "k2", "v2")
+	time.Sleep(20 * time.Millisecond) // WAL flush + keyCount 갱신 대기
+
+	stats := h.GetStats()
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 partition stat, got %d", len(stats))
+	}
+	if stats[0].KeyCount != 2 {
+		t.Errorf("Countable actor: KeyCount = %d, want 2", stats[0].KeyCount)
+	}
+
+	h.EvictAll(ctx) //nolint:errcheck
+}
+
+func TestActorHost_GetStats_EvictedActorNotReported(t *testing.T) {
+	h := newTestHost(t)
+	ctx := context.Background()
+
+	put(t, h, "p1", "k", "v")
+	put(t, h, "p2", "k", "v")
+	time.Sleep(20 * time.Millisecond)
+
+	if err := h.Evict(ctx, "p1"); err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+
+	stats := h.GetStats()
+	for _, s := range stats {
+		if s.PartitionID == "p1" {
+			t.Error("evicted partition p1 should not appear in GetStats()")
+		}
+	}
+	if len(stats) != 1 {
+		t.Errorf("expected 1 stat (p2 only), got %d", len(stats))
+	}
+
+	h.EvictAll(ctx) //nolint:errcheck
+}
+
+// ── Split auto key 테스트 ─────────────────────────────────────────────────────
+
+func TestActorHost_Split_WithSplitHinter(t *testing.T) {
+	hintKey := "c"
+	factory := func(_ string) provider.Actor[kvReq, kvResp] {
+		a := &splitHinterKVActor{hint: hintKey}
+		a.data = make(map[string]string)
+		return a
+	}
+	h := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory:         factory,
+		WALStore:        newMemWALStore(),
+		CheckpointStore: newMemCheckpointStore(),
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctx := context.Background()
+
+	for _, k := range []string{"a", "b", "c", "d"} {
+		put(t, h, "p1", k, k+"-val")
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	// splitKey="" → SplitHinter.SplitHint() = "c"
+	usedKey, err := h.Split(ctx, "p1", "", "a", "z", "p2")
+	if err != nil {
+		t.Fatalf("Split: %v", err)
+	}
+	if usedKey != hintKey {
+		t.Errorf("expected hint key %q, got %q", hintKey, usedKey)
+	}
+
+	// p1: a,b (< "c")
+	for _, k := range []string{"a", "b"} {
+		if v := get(t, h, "p1", k); v != k+"-val" {
+			t.Errorf("p1[%s] = %q, want %s-val", k, v, k)
+		}
+	}
+	// p2: c,d (>= "c")
+	for _, k := range []string{"c", "d"} {
+		if v := get(t, h, "p2", k); v != k+"-val" {
+			t.Errorf("p2[%s] = %q, want %s-val", k, v, k)
+		}
+	}
+
+	h.EvictAll(ctx) //nolint:errcheck
+}
+
+func TestActorHost_Split_MidpointFallback(t *testing.T) {
+	// splitKey="" + SplitHinter 없음 → KeyRangeMidpoint("a","z") = "m"
+	h := newTestHost(t)
+	ctx := context.Background()
+
+	for _, k := range []string{"a", "b", "c", "n", "y", "z"} {
+		put(t, h, "p1", k, k+"-val")
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	usedKey, err := h.Split(ctx, "p1", "", "a", "z", "p2")
+	if err != nil {
+		t.Fatalf("Split: %v", err)
+	}
+	if usedKey != "m" {
+		t.Errorf("expected midpoint key 'm', got %q", usedKey)
+	}
+
+	// p1: a,b,c (< "m")
+	for _, k := range []string{"a", "b", "c"} {
+		if v := get(t, h, "p1", k); v != k+"-val" {
+			t.Errorf("p1[%s] = %q, want %s-val", k, v, k)
+		}
+	}
+	// p2: n,y,z (>= "m")
+	for _, k := range []string{"n", "y", "z"} {
+		if v := get(t, h, "p2", k); v != k+"-val" {
+			t.Errorf("p2[%s] = %q, want %s-val", k, v, k)
+		}
+	}
+
+	h.EvictAll(ctx) //nolint:errcheck
+}
+
+// ── panic actor ───────────────────────────────────────────────────────────────
+
 type panicActor struct{}
 
 func (a *panicActor) Receive(_ provider.Context, _ kvReq) (kvResp, []byte, error) {
