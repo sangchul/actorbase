@@ -295,6 +295,12 @@ bash test/longrun/run.sh
 # Redis WAL 백엔드 (Redis가 localhost:6379에서 실행 중이어야 함)
 WAL_BACKEND=redis REDIS_ADDR=localhost:6379 bash test/longrun/run.sh
 
+# MinIO Checkpoint 백엔드 (MinIO가 localhost:9000에서 실행 중이어야 함)
+CHECKPOINT_BACKEND=minio bash test/longrun/run.sh
+
+# Redis WAL + MinIO Checkpoint 조합
+WAL_BACKEND=redis CHECKPOINT_BACKEND=minio bash test/longrun/run.sh
+
 # 3. 결과 확인: PASS or FAIL + 불일치 항목 출력
 # 로그: /tmp/actorbase_runs/<YYYYMMDD_HHMMSS>/
 # 심볼릭 링크: /tmp/ab_pm.log, /tmp/ab_ps1.log 등

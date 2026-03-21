@@ -30,15 +30,21 @@ actorbase/
 │   └── error.go               # 사용자에게 노출되는 공개 에러 타입
 │
 ├── policy/                    # BalancePolicy 참조 구현체 (adapter/와 같은 위상)
-│   ├── threshold.go           # ThresholdPolicy, ThresholdConfig, RunnerConfig, ParsePolicy
+│   ├── policy.go              # ParsePolicy(yaml) — YAML → BalancePolicy 파싱
+│   ├── threshold.go           # ThresholdPolicy, ThresholdConfig
+│   ├── relative.go            # RelativePolicy — 클러스터 평균 대비 배수 기반 정책
 │   └── noop.go                # NoopBalancePolicy (기본값: 아무 작업도 하지 않음)
 │
 ├── adapter/                   # provider 인터페이스의 기본 구현체
 │   ├── fs/                    # 파일시스템 기반 WALStore, CheckpointStore
 │   │   ├── wal.go
 │   │   └── checkpoint.go
-│   └── json/                  # JSON 기반 Codec 구현체
-│       └── codec.go
+│   ├── json/                  # JSON 기반 Codec 구현체
+│   │   └── codec.go
+│   ├── redis/                 # Redis Streams 기반 WALStore
+│   │   └── wal.go
+│   └── s3/                    # S3(MinIO 호환) 기반 CheckpointStore
+│       └── checkpoint.go
 │
 ├── internal/                  # 모듈 내 공유 라이브러리 (외부 import 불가)
 │   ├── domain/                # [Entities] 핵심 도메인. 의존성 없음.
@@ -58,7 +64,7 @@ actorbase/
 │   │   ├── membership.go      # MembershipWatcher: 노드 join/leave 이벤트
 │   │   ├── routing.go         # RoutingTableStore: 라우팅 테이블 저장/조회/watch
 │   │   ├── policy.go          # etcd 기반 policy YAML 저장/로드/삭제
-│   │   └── pm.go              # PM presence 등록 (RegisterPM, WaitForPM)
+│   │   └── pm.go              # PM 리더 선출 (CampaignLeader, WaitForLeader, GetLeaderAddr)
 │   │
 │   ├── rebalance/             # [Use Cases] Split/Migration 조율. PM이 사용.
 │   │   ├── splitter.go        # 파티션 분할 조율
@@ -121,7 +127,8 @@ internal/domain                # 의존성 없음
 
 provider                       # 인터페이스만. 표준 라이브러리 외 의존 없음.
 policy                         # provider.BalancePolicy 구현체. pm이 내부에서 사용.
-adapter/fs, adapter/json       # provider 인터페이스 구현체. examples가 사용.
+adapter/fs, adapter/json,       # provider 인터페이스 구현체. examples가 사용.
+adapter/redis, adapter/s3       # 네트워크 기반 구현체. examples에서 선택적 사용.
 
 cmd/abctl → pm.Client          # internal/* 직접 의존 없음
 ```
@@ -176,7 +183,9 @@ func (p *MyPolicy) Evaluate(ctx context.Context, stats provider.ClusterStats) []
 
 | 파일 | 내용 |
 |---|---|
-| `threshold.go` | `ThresholdPolicy`, `ThresholdConfig`, `RunnerConfig`, `ParsePolicy(yaml)` |
+| `policy.go` | `ParsePolicy(yaml)` — YAML → `BalancePolicy` + `RunnerConfig` 파싱 |
+| `threshold.go` | `ThresholdPolicy`, `ThresholdConfig` |
+| `relative.go` | `RelativePolicy` — 클러스터 평균 RPS 대비 배수 기반 정책 |
 | `noop.go` | `NoopBalancePolicy` — 모든 메서드가 nil 반환. pm.Config 기본값. |
 
 ### adapter/ — provider 구현체
@@ -185,6 +194,8 @@ func (p *MyPolicy) Evaluate(ctx context.Context, stats provider.ClusterStats) []
 |---|---|
 | `adapter/fs` | 파일시스템 기반 `WALStore`, `CheckpointStore` |
 | `adapter/json` | JSON 기반 `Codec` |
+| `adapter/redis` | Redis Streams 기반 `WALStore` (명시적 uint64 ID) |
+| `adapter/s3` | S3/MinIO 호환 `CheckpointStore` (aws-sdk-go-v2) |
 
 ### pm.Client — PM 관리 플레인 클라이언트
 
@@ -211,9 +222,11 @@ client.ApplyPolicy(ctx, yamlStr)
 | `policy` | BalancePolicy 참조 구현체 (ThresholdPolicy, NoopBalancePolicy) |
 | `adapter/fs` | 파일시스템 기반 WALStore, CheckpointStore |
 | `adapter/json` | JSON 기반 Codec |
+| `adapter/redis` | Redis Streams 기반 WALStore |
+| `adapter/s3` | S3/MinIO 호환 CheckpointStore |
 | `internal/domain` | 파티션, 노드, 라우팅 테이블 핵심 도메인 타입 |
 | `internal/engine` | Actor 생명주기, mailbox, WAL batch commit, stats 수집 |
-| `internal/cluster` | etcd 기반 멤버십, 라우팅 테이블, policy YAML, PM presence |
+| `internal/cluster` | etcd 기반 멤버십, 라우팅 테이블, policy YAML, PM 리더 선출 |
 | `internal/rebalance` | 파티션 split/migrate/failover 조율 |
 | `internal/transport` | gRPC 서버/클라이언트, proto 관리, 에러 변환 |
 | `ps` | Partition Server 조립 및 기동 (ServerBuilder, Register) |

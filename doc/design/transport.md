@@ -102,7 +102,7 @@ message ListMembersResponse { repeated MemberInfo members = 1; }
 message GetClusterStatsRequest  { string node_id = 1; } // 빈 문자열이면 전체
 message GetClusterStatsResponse { repeated NodeStatsProto nodes = 1; }
 message NodeStatsProto {
-  string node_id   = 1; string node_addr = 2; float node_rps = 3;
+  string node_id   = 1; string node_addr = 2; double node_rps = 3;
   int32  partition_count = 4; repeated PartitionStatsProto partitions = 5;
 }
 // ApplyPolicy: YAML raw string을 PM에 전송 → AutoPolicy 활성화
@@ -148,14 +148,14 @@ message PreparePartitionResponse {}
 // GetStats: PS 노드 전체 통계 조회 (파티션별 RPS, key count)
 message GetStatsRequest {}
 message GetStatsResponse {
-  float  node_rps        = 1;
-  int32  partition_count = 2;
-  repeated PartitionStatsProto partitions = 3;
+  repeated PartitionStatsProto partitions    = 1;
+  double                       node_rps      = 2;
+  int32                        partition_count = 3;
 }
 message PartitionStatsProto {
   string partition_id = 1; string actor_type = 2;
   int64  key_count    = 3; // -1이면 Countable 미구현
-  float  rps          = 4;
+  double rps          = 4; // 최근 60초 슬라이딩 윈도우 평균
 }
 
 // ─── Shared ───────────────────────────────────────────────

@@ -83,7 +83,8 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey s
 func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNodeID string) error
 
 // 장애 복구: source PS가 죽었을 때. ExecuteMigrateOut을 건너뛴다.
-func (m *Migrator) Failover(ctx context.Context, actorType, partitionID, targetNodeID string) error
+// actorType은 라우팅 테이블의 RouteEntry에서 조회하므로 파라미터로 받지 않는다.
+func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID string) error
 ```
 
 **검증 조건:**

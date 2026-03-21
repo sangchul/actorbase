@@ -37,7 +37,7 @@ Partition Manager(PM) 조립 패키지. 클러스터 멤버십 감시, 라우팅
 ```
 NewServer:
   1. cfg 검증 (필수 필드 누락 확인)
-  2. cfg.Policy == nil이면 ManualPolicy로 대체
+  2. cfg.BalancePolicy == nil이면 NoopBalancePolicy로 대체
   3. etcd 클라이언트 생성
   4. NodeRegistry, MembershipWatcher, RoutingTableStore 생성
   5. ConnPool, Splitter, Migrator 생성
@@ -98,10 +98,27 @@ handleNodeLeft(node, reason):
   2. quickClusterStats에 dead node를 Reachable=false로 포함 (라우팅 테이블 기반 파티션 목록)
   3. activeBalancePolicy().OnNodeLeft(ctx, node, reason, stats) → []BalanceAction
   4. executeBalanceActions(actions)  // ActionFailover가 포함될 수 있음
+  5. failoverDeadNode(ctx, node.ID) // Policy와 무관한 보장 failover (아래 참조)
 ```
 
 > graceful drain 완료 후 NodeLeft가 발생하면 라우팅 테이블에 해당 노드 파티션이 없으므로
-> OnNodeLeft가 ActionFailover를 반환하지 않아 no-op가 된다.
+> OnNodeLeft가 ActionFailover를 반환하지 않고, failoverDeadNode도 no-op이 된다.
+
+### failoverDeadNode (내부)
+
+Policy와 **무관하게** dead node에 잔여 파티션이 남아 있으면 active 노드로 자동 failover한다. `handleNodeLeft`의 마지막 단계에서 호출된다.
+
+```
+failoverDeadNode(ctx, deadNodeID):
+  1. routingStore.Load()로 현재 라우팅 테이블 조회
+  2. dead node에 남은 파티션 목록 추출
+  3. active 노드 목록 구성 (dead node 제외)
+  4. 파티션을 round-robin으로 active 노드에 배분
+  5. 각 파티션에 대해 migrator.Failover(ctx, partitionID, targetNodeID) 호출
+```
+
+> Policy의 `OnNodeLeft`가 ActionFailover를 반환하지 않는 경우(예: `NoopBalancePolicy`)에도
+> failoverDeadNode가 잔여 파티션을 반드시 복구한다. 이는 **Policy 구현과 무관한 안전망**이다.
 
 ### activeBalancePolicy (내부)
 
@@ -145,7 +162,7 @@ for action in actions:
 | GetClusterStats | 모든 PS에 GetStats RPC를 병렬 호출 (5초 timeout) 후 집계 |
 | ApplyPolicy | YAML 파싱 → cluster.SavePolicy → autoBalancer 재시작 |
 | GetPolicy | 현재 activePolicyYAML 및 active 여부 반환 |
-| ClearPolicy | cluster.ClearPolicy → autoBalancer 중단 → ManualPolicy |
+| ClearPolicy | cluster.ClearPolicy → autoBalancer 중단 → NoopBalancePolicy(또는 cfg.BalancePolicy)로 복귀 |
 
 > `opMu`로 split/migrate를 직렬화한다. autoBalancer도 동일한 `opMu`를 사용한다.
 
@@ -175,7 +192,7 @@ for action in actions:
 | BalancePolicy 인터페이스 | provider.BalancePolicy (OnNodeJoined / OnNodeLeft / Evaluate) | Policy 교체 가능. 기본값은 NoopBalancePolicy. |
 | bootstrap 초기 파티션 | ActorTypes별로 전체 키 범위 파티션 생성 | 다중 actor type 클러스터 지원. |
 | bootstrap CAS | etcd Compare-And-Swap | PM HA 환경에서 중복 생성 방어. |
-| NodeLeft 장애 복구 위치 | BalancePolicy.OnNodeLeft 반환 ActionFailover | 정책 구현체가 failover 여부를 결정. graceful이면 파티션 없어 자연히 no-op. |
+| NodeLeft 장애 복구 위치 | Policy + failoverDeadNode 이중 보장 | Policy가 ActionFailover를 반환할 수 있고, 그 후 failoverDeadNode가 잔여 파티션을 추가 복구. graceful이면 파티션 없어 자연히 no-op. |
 | Failover vs Migrate | Migrator.Failover: ExecuteMigrateOut 건너뜀 | source PS 죽었으면 gRPC 호출 불가. checkpoint에서 직접 복원. |
 | PM 리더 선출 | etcd election (`concurrency.Campaign`) | 여러 PM 중 하나만 active. 리더 장애 시 standby가 자동 승계. PS가 PM 없이 기동되는 것도 방지. |
 

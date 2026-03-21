@@ -889,6 +889,10 @@ etcd에서 PM-2 주소를 재발견하여 자동 재연결한다. 이 기간 동
 | 7. Graceful Shutdown | SIGTERM, drainPartitions, 연산 중단 최소화 | 5분 |
 | 8. Range Scan | 다중 파티션 fan-out, 부분 범위 조회 | 3분 |
 | 9. PM HA Failover | PM-2 standby, PM-1 SIGKILL, PM-2 리더 승계, 데이터 정상 접근 | 5분 |
+| 10. Actor Eviction + Re-activation | EvictionScheduler idle evict, re-activation checkpoint+WAL 복원 | 3분 |
+| 11. SDK HA Mode 자동 재발견 | etcd 모드 SDK, PM 장애 중 자동 PM 리더 재발견+재연결 | 5분 |
+| 12. Multi-actor-type 동시 운영 | kv+counter 파티션 공존, 타입별 split, 라우팅 격리 | 3분 |
+| 13. drainPartitions 타임아웃 | PM 없는 환경 → drain 타임아웃 → EvictAll → checkpoint 복원 | 3분 |
 
 ---
 
@@ -930,6 +934,11 @@ WAL_BACKEND=redis bash test/integration/run.sh 5 12
 |---|---|---|
 | `WAL_BACKEND` | `fs` | WAL 백엔드: `fs` 또는 `redis` |
 | `REDIS_ADDR` | `localhost:6379` | Redis 주소 (WAL_BACKEND=redis 시 사용) |
+| `CHECKPOINT_BACKEND` | `fs` | Checkpoint 백엔드: `fs` 또는 `minio` |
+| `MINIO_ADDR` | `localhost:9000` | MinIO 주소 (CHECKPOINT_BACKEND=minio 시 사용) |
+| `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
+| `MINIO_SECRET_KEY` | `minioadmin` | MinIO secret key |
+| `MINIO_BUCKET` | `actorbase-itest` | MinIO 버킷명 |
 
 ### 검증 결과 (2026-03-21)
 
@@ -937,3 +946,4 @@ WAL_BACKEND=redis bash test/integration/run.sh 5 12
 |---|---|---|
 | macOS Darwin 25.3.0, Go 1.26, etcd v3.6.8 | fs | 89/89 PASS |
 | macOS Darwin 25.3.0, Go 1.26, etcd v3.6.8, Redis 7.x | redis | 89/89 PASS |
+| macOS Darwin 25.3.0, Go 1.26, etcd v3.6.8, MinIO | fs + minio checkpoint | 89/89 PASS |

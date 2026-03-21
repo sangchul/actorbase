@@ -5,7 +5,7 @@
 파일 목록:
 - `partition.go` — KeyRange, Partition
 - `node.go` — NodeInfo, NodeStatus
-- `routing.go` — RoutingTable, RouteEntry
+- `routing.go` — RoutingTable, RouteEntry, PartitionStatus
 
 ---
 
@@ -62,9 +62,17 @@ type NodeInfo struct {
 - `partitions map[string]RouteEntry` — partitionID → entry (O(1) 조회)
 
 ```go
+// PartitionStatus는 파티션의 현재 운영 상태.
+type PartitionStatus int
+const (
+    PartitionStatusActive   PartitionStatus = iota // 정상 운영 중. 요청 수락.
+    PartitionStatusDraining                        // migration 진행 중. 요청 거부 (ErrPartitionBusy).
+)
+
 type RouteEntry struct {
-    Partition Partition
-    Node      NodeInfo
+    Partition       Partition
+    Node            NodeInfo
+    PartitionStatus PartitionStatus // Active 또는 Draining
 }
 
 func NewRoutingTable(version int64, entries []RouteEntry) (*RoutingTable, error)

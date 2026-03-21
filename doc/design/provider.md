@@ -6,6 +6,7 @@
 - `actor.go` — Actor, ActorFactory, Context
 - `wal.go` — WALStore, WALEntry
 - `checkpoint.go` — CheckpointStore
+- `codec.go` — Codec (직렬화/역직렬화 추상화)
 - `metrics.go` — Metrics, Counter, Gauge, Histogram
 - `error.go` — 공개 에러 타입
 
@@ -229,8 +230,8 @@ type WALStore interface {
     // 에러 시 전체 실패(부분 성공 없음).
     AppendBatch(ctx context.Context, partitionID string, data [][]byte) (lsns []uint64, err error)
 
-    // ReadFrom은 fromLSN 이후의 모든 WAL 엔트리를 순서대로 반환한다.
-    // 복구 시 checkpoint LSN 이후부터 replay하는 데 사용한다.
+    // ReadFrom은 fromLSN 이상의 모든 WAL 엔트리를 순서대로 반환한다.
+    // 복구 시 checkpoint LSN 이상부터 replay하는 데 사용한다.
     ReadFrom(ctx context.Context, partitionID string, fromLSN uint64) ([]WALEntry, error)
 
     // TrimBefore는 lsn 미만의 오래된 WAL 엔트리를 삭제한다.
@@ -267,6 +268,20 @@ type CheckpointStore interface {
     Save(ctx context.Context, partitionID string, data []byte) error
     Load(ctx context.Context, partitionID string) ([]byte, error)
     Delete(ctx context.Context, partitionID string) error
+}
+```
+
+---
+
+## codec.go
+
+```go
+// Codec는 Actor의 Req/Resp 타입을 직렬화/역직렬화하는 추상화.
+// SDK와 PS에 동일한 구현체를 주입해야 한다.
+// adapter/json에 기본 JSON 구현체를 제공한다.
+type Codec interface {
+    Marshal(v any) ([]byte, error)
+    Unmarshal(data []byte, v any) error
 }
 ```
 
@@ -342,10 +357,10 @@ type BalancePolicy interface {
 // 관련 타입
 // =============================================
 
-type NodeStatus string
+type NodeStatus int
 const (
-    NodeStatusActive   NodeStatus = "active"
-    NodeStatusDraining NodeStatus = "draining"
+    NodeStatusActive   NodeStatus = iota // 정상 동작 중
+    NodeStatusDraining                   // migration 진행 중
 )
 
 type NodeInfo struct {
@@ -357,10 +372,10 @@ type NodeInfo struct {
 // NodeLeaveReason은 노드 이탈 원인.
 // etcd watch로는 정상/장애를 구분할 수 없으므로 항상 NodeLeaveFailure로 전달된다.
 // 정상 이탈 감지는 OnNodeLeft 시점에 라우팅 테이블에서 파티션이 없음을 확인하는 방식으로 한다.
-type NodeLeaveReason string
+type NodeLeaveReason int
 const (
-    NodeLeaveGraceful NodeLeaveReason = "graceful"
-    NodeLeaveFailure  NodeLeaveReason = "failure"
+    NodeLeaveGraceful NodeLeaveReason = iota
+    NodeLeaveFailure
 )
 
 type PartitionInfo struct {
@@ -383,11 +398,11 @@ type ClusterStats struct {
     Nodes []NodeStats
 }
 
-type BalanceActionType string
+type BalanceActionType int
 const (
-    ActionSplit    BalanceActionType = "split"
-    ActionMigrate  BalanceActionType = "migrate"
-    ActionFailover BalanceActionType = "failover"  // source PS가 죽었을 때 사용
+    ActionSplit    BalanceActionType = iota
+    ActionMigrate
+    ActionFailover // source PS가 죽었을 때 사용
 )
 
 type BalanceAction struct {
@@ -402,7 +417,7 @@ type BalanceAction struct {
 
 ### 기본 제공 구현체
 
-`pm/policy` 패키지에서 두 가지 구현체를 제공한다.
+최상위 `policy/` 패키지에서 세 가지 구현체를 제공한다.
 
 | 구현체 | 설명 |
 |---|---|
