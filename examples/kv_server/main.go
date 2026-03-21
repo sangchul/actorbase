@@ -19,8 +19,15 @@ import (
 	"syscall"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/sangchul/actorbase/adapter/fs"
 	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	adapterredis "github.com/sangchul/actorbase/adapter/redis"
+	adapters3 "github.com/sangchul/actorbase/adapter/s3"
 	"github.com/sangchul/actorbase/provider"
 	"github.com/sangchul/actorbase/ps"
 )
@@ -228,7 +235,15 @@ func main() {
 	addr := flag.String("addr", ":7001", "gRPC listen address")
 	etcdAddrs := flag.String("etcd", "localhost:2379", "etcd endpoints (comma-separated)")
 	walDir := flag.String("wal-dir", "/tmp/actorbase/wal", "WAL directory (shared across PS nodes, partitioned by partition ID)")
-	checkpointDir := flag.String("checkpoint-dir", "/tmp/actorbase/checkpoint", "Checkpoint directory (shared across PS nodes)")
+	walBackend := flag.String("wal-backend", "fs", "WAL backend: fs | redis")
+	redisAddr := flag.String("redis-addr", "localhost:6379", "Redis address (used when -wal-backend=redis)")
+	redisPrefix := flag.String("redis-prefix", "wal", "Redis key prefix (used when -wal-backend=redis)")
+	checkpointDir := flag.String("checkpoint-dir", "/tmp/actorbase/checkpoint", "Checkpoint directory (shared across PS nodes, used when -checkpoint-backend=fs)")
+	checkpointBackend := flag.String("checkpoint-backend", "fs", "Checkpoint backend: fs | s3")
+	s3Bucket := flag.String("s3-bucket", "", "S3 bucket name (used when -checkpoint-backend=s3)")
+	s3Prefix := flag.String("s3-prefix", "checkpoint", "S3 object key prefix (used when -checkpoint-backend=s3)")
+	s3Endpoint := flag.String("s3-endpoint", "", "S3 endpoint override (e.g. http://localhost:9000, empty=AWS)")
+	s3Region := flag.String("s3-region", "us-east-1", "S3 region (used when -checkpoint-backend=s3)")
 	idleTimeout := flag.Duration("idle-timeout", 5*time.Minute, "Actor idle timeout before eviction")
 	evictInterval := flag.Duration("evict-interval", time.Minute, "Eviction scheduler check interval")
 	drainTimeout := flag.Duration("drain-timeout", 60*time.Second, "Maximum time to wait for partition drain on graceful shutdown")
@@ -244,15 +259,65 @@ func main() {
 		*nodeID = hostname
 	}
 
-	walStore, err := fs.NewWALStore(*walDir)
-	if err != nil {
-		slog.Error("failed to create WAL store", "err", err)
+	var walStore provider.WALStore
+	switch *walBackend {
+	case "redis":
+		rdb := goredis.NewClient(&goredis.Options{Addr: *redisAddr})
+		walStore = adapterredis.NewWALStore(rdb, *redisPrefix)
+		slog.Info("using Redis WAL store", "addr", *redisAddr, "prefix", *redisPrefix)
+	case "fs":
+		var err error
+		walStore, err = fs.NewWALStore(*walDir)
+		if err != nil {
+			slog.Error("failed to create WAL store", "err", err)
+			os.Exit(1)
+		}
+	default:
+		slog.Error("unknown -wal-backend value", "value", *walBackend)
 		os.Exit(1)
 	}
 
-	cpStore, err := fs.NewCheckpointStore(*checkpointDir)
-	if err != nil {
-		slog.Error("failed to create checkpoint store", "err", err)
+	var cpStore provider.CheckpointStore
+	switch *checkpointBackend {
+	case "s3":
+		if *s3Bucket == "" {
+			slog.Error("-s3-bucket is required when -checkpoint-backend=s3")
+			os.Exit(1)
+		}
+		opts := []func(*awsconfig.LoadOptions) error{
+			awsconfig.WithRegion(*s3Region),
+		}
+		if *s3Endpoint != "" {
+			opts = append(opts,
+				awsconfig.WithBaseEndpoint(*s3Endpoint),
+				awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+					os.Getenv("AWS_ACCESS_KEY_ID"),
+					os.Getenv("AWS_SECRET_ACCESS_KEY"),
+					"",
+				)),
+			)
+		}
+		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
+		if err != nil {
+			slog.Error("failed to load AWS config", "err", err)
+			os.Exit(1)
+		}
+		s3Client := awss3.NewFromConfig(awsCfg, func(o *awss3.Options) {
+			if *s3Endpoint != "" {
+				o.UsePathStyle = true
+			}
+		})
+		cpStore = adapters3.NewCheckpointStore(s3Client, *s3Bucket, *s3Prefix)
+		slog.Info("using S3 checkpoint store", "bucket", *s3Bucket, "prefix", *s3Prefix)
+	case "fs":
+		var err error
+		cpStore, err = fs.NewCheckpointStore(*checkpointDir)
+		if err != nil {
+			slog.Error("failed to create checkpoint store", "err", err)
+			os.Exit(1)
+		}
+	default:
+		slog.Error("unknown -checkpoint-backend value", "value", *checkpointBackend)
 		os.Exit(1)
 	}
 

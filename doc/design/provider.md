@@ -167,6 +167,40 @@ func (a *objectActor) SplitHint() string {
 
 bucket과 같이 접근 패턴이 고른 Actor는 `SplitHinter`를 구현하지 않아도 된다. engine이 파티션 key range의 midpoint로 split key를 결정한다.
 
+### WAL 기록과 멱등성 요구사항
+
+**Actor의 쓰기 연산은 멱등(idempotent)하게 설계해야 한다.**
+
+WAL에 기록된 연산이 두 번 적용되는 상황이 발생할 수 있기 때문이다.
+
+**double-apply가 발생하는 경로:**
+
+```
+1. Actor.Receive 처리 → walEntry 반환
+2. engine이 WALStore에 성공적으로 기록
+3. 네트워크 장애로 응답이 클라이언트에 도달하지 않음
+4. 클라이언트: 에러로 간주하고 재시도
+5. engine: 에러 전파 → actor evict
+6. actor 재활성화: WAL replay → 2에서 기록한 walEntry 적용 (1회)
+7. 클라이언트 재시도 처리 → 동일 연산 다시 적용 (2회)
+```
+
+WAL replay는 정상 경로이고, 클라이언트 재시도도 정상 경로다. 두 경로가 독립적으로 실행되면서 같은 연산이 두 번 적용된다.
+
+**멱등 연산 예시 (안전):**
+- `set(key, value)` — 같은 값을 두 번 써도 결과 동일
+- `delete(key)` — 없는 키를 삭제해도 결과 동일
+- `put_if_absent(key, value)` — 이미 있으면 무시
+
+**비멱등 연산 예시 (위험):**
+- `increment(key)` — 두 번 적용되면 2 증가
+- `append(key, value)` — 두 번 적용되면 두 번 추가
+
+**비멱등 연산이 필요한 경우:**
+클라이언트가 요청에 고유한 sequence number 또는 idempotency key를 포함하고, Actor가 처리 전 중복 여부를 확인하는 방식으로 구현한다. deduplication 상태 자체도 WAL에 기록해야 한다.
+
+> 이 제약은 WALStore 구현 방식과 무관하다. Lua 스크립트 등으로 WAL 쓰기를 원자적으로 만들어도, "WAL 쓰기 성공 + 응답 유실" 시나리오는 동일하게 발생한다.
+
 ### 알려진 한계
 
 - `Req`는 단일 타입이므로, Get/Put/Delete처럼 여러 종류의 연산을 표현하려면 사용자가 직접 discriminator 필드(예: `Op string`)나 내부 variant 패턴을 사용해야 한다. 컴파일 타임에 연산 종류를 강제하지는 않는다.

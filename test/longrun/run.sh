@@ -29,6 +29,17 @@ CKPT_DIR="/tmp/actorbase/checkpoint"
 LEDGER="/tmp/ab_ledger.json"
 DURATION="8m"
 
+# WAL 백엔드 설정: fs(기본) 또는 redis
+WAL_BACKEND="${WAL_BACKEND:-fs}"
+REDIS_ADDR="${REDIS_ADDR:-localhost:6379}"
+
+# Checkpoint 백엔드 설정: fs(기본) 또는 minio
+CHECKPOINT_BACKEND="${CHECKPOINT_BACKEND:-fs}"
+MINIO_ADDR="${MINIO_ADDR:-localhost:9000}"
+MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
+MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
+MINIO_BUCKET="${MINIO_BUCKET:-actorbase-longrun}"
+
 RUN_ID="$(date '+%Y%m%d_%H%M%S')"
 LOG_DIR="/tmp/actorbase_runs/$RUN_ID"
 mkdir -p "$LOG_DIR"
@@ -68,6 +79,12 @@ cleanup() {
     fi
   done
   [[ -n "$PM_PID" ]] && kill "$PM_PID" 2>/dev/null || true
+  if [[ "$WAL_BACKEND" == "redis" ]]; then
+    redis-cli -u "redis://$REDIS_ADDR" FLUSHDB >/dev/null 2>&1 || true
+  fi
+  if [[ "$CHECKPOINT_BACKEND" == "minio" ]]; then
+    mc rm --recursive --force "minio-longrun/$MINIO_BUCKET" >/dev/null 2>&1 || true
+  fi
   log "Cleanup done."
 }
 trap cleanup EXIT
@@ -85,7 +102,32 @@ done
 
 log "Cleaning old data (etcd, WAL, checkpoint, ledger)..."
 etcdctl --endpoints="$ETCD_ADDR" del /actorbase/ --prefix >/dev/null 2>&1 || true
-rm -rf "$WAL_DIR" "$CKPT_DIR" "$LEDGER"
+if [[ "$WAL_BACKEND" == "redis" ]]; then
+  if ! redis-cli -u "redis://$REDIS_ADDR" PING >/dev/null 2>&1; then
+    log "ERROR: Redis is not running at $REDIS_ADDR (required for WAL_BACKEND=redis)"
+    exit 1
+  fi
+  redis-cli -u "redis://$REDIS_ADDR" FLUSHDB >/dev/null 2>&1 || true
+  log "WAL_BACKEND=redis — using Redis at $REDIS_ADDR"
+else
+  rm -rf "$WAL_DIR"
+fi
+if [[ "$CHECKPOINT_BACKEND" == "minio" ]]; then
+  if ! curl -sf "http://$MINIO_ADDR/minio/health/live" >/dev/null 2>&1; then
+    log "ERROR: MinIO is not running at $MINIO_ADDR (required for CHECKPOINT_BACKEND=minio)"
+    log "  Start with: docker run -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data"
+    exit 1
+  fi
+  mc alias set minio-longrun "http://$MINIO_ADDR" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" >/dev/null 2>&1
+  mc mb "minio-longrun/$MINIO_BUCKET" >/dev/null 2>&1 || true
+  mc rm --recursive --force "minio-longrun/$MINIO_BUCKET" >/dev/null 2>&1 || true
+  export AWS_ACCESS_KEY_ID="$MINIO_ACCESS_KEY"
+  export AWS_SECRET_ACCESS_KEY="$MINIO_SECRET_KEY"
+  log "CHECKPOINT_BACKEND=minio — using MinIO at $MINIO_ADDR, bucket=$MINIO_BUCKET"
+else
+  rm -rf "$CKPT_DIR"
+fi
+rm -f "$LEDGER"
 mkdir -p "$WAL_DIR" "$CKPT_DIR"
 for log_file in "$PM_LOG" "$PS1_LOG" "$PS2_LOG" "$PS3_LOG" "$LONGRUN_LOG"; do
   > "$log_file"
@@ -107,12 +149,30 @@ log "PM started (pid=$PM_PID)"
 
 start_ps() {
   local node_id="$1" addr="$2" pid_file="$3" log_file="$4"
+  local wal_args=()
+  if [[ "$WAL_BACKEND" == "redis" ]]; then
+    wal_args=(-wal-backend redis -redis-addr "$REDIS_ADDR")
+  else
+    wal_args=(-wal-dir "$WAL_DIR")
+  fi
+  local ckpt_args=()
+  if [[ "$CHECKPOINT_BACKEND" == "minio" ]]; then
+    ckpt_args=(
+      -checkpoint-backend s3
+      -s3-endpoint "http://$MINIO_ADDR"
+      -s3-bucket "$MINIO_BUCKET"
+      -s3-prefix checkpoint
+      -s3-region us-east-1
+    )
+  else
+    ckpt_args=(-checkpoint-dir "$CKPT_DIR")
+  fi
   "$BIN_DIR/kv_server" \
     -node-id "$node_id" \
     -addr "$addr" \
     -etcd "$ETCD_ADDR" \
-    -wal-dir "$WAL_DIR" \
-    -checkpoint-dir "$CKPT_DIR" \
+    "${wal_args[@]}" \
+    "${ckpt_args[@]}" \
     >> "$log_file" 2>&1 &
   echo $! > "$pid_file"
   log "$node_id started (pid=$(cat "$pid_file"), addr=$addr)"
@@ -148,6 +208,7 @@ LONGRUN_PID=$!
 
 log "Starting chaos events..."
 bash "$SCRIPT_DIR/chaos.sh" "$BIN_DIR" "$PM_ADDR" "$WAL_DIR" "$CKPT_DIR" "$ETCD_ADDR" \
+  "$WAL_BACKEND" "$REDIS_ADDR" "$CHECKPOINT_BACKEND" "$MINIO_ADDR" "$MINIO_BUCKET" \
   >> /tmp/ab_chaos.log 2>&1 &
 CHAOS_PID=$!
 

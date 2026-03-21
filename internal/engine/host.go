@@ -376,7 +376,9 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 		}
 	}
 
-	// 4. checkpointFn 클로저: mailbox goroutine 내에서 호출되므로 actor 접근이 thread-safe
+	// 4. checkpointFn 클로저: mailbox goroutine 내에서 호출되므로 actor 접근이 thread-safe.
+	// 활성화 요청 ctx를 캡처하면 해당 요청 완료 후 ctx가 취소되어 이후 checkpoint가 실패한다.
+	// mailbox는 장기 실행 goroutine이므로 context.Background()를 사용한다.
 	wal := h.cfg.WALStore
 	cpStore := h.cfg.CheckpointStore
 	fn := checkpointFn(func(lsn uint64) error {
@@ -384,10 +386,11 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 		if err != nil {
 			return fmt.Errorf("snapshot: %w", err)
 		}
-		if err := saveCheckpoint(ctx, cpStore, partitionID, lsn, snap); err != nil {
+		bgCtx := context.Background()
+		if err := saveCheckpoint(bgCtx, cpStore, partitionID, lsn, snap); err != nil {
 			return err
 		}
-		return wal.TrimBefore(ctx, partitionID, lsn)
+		return wal.TrimBefore(bgCtx, partitionID, lsn)
 	})
 
 	// 5. onWALError: WAL flush 실패 시 checkpoint 없이 actors 맵에서 제거

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # chaos.sh — actorbase longrun 테스트용 chaos 이벤트 주입기
 #
-# 사용법: chaos.sh <bin_dir> <pm_addr> <wal_dir> <ckpt_dir> <etcd_addr>
+# 사용법: chaos.sh <bin_dir> <pm_addr> <wal_dir> <ckpt_dir> <etcd_addr> [wal_backend] [redis_addr]
 #
 # 이벤트 스케줄 (longrun-test.md 기준):
 #   T+30s  split
@@ -25,6 +25,11 @@ PM_ADDR="${2:-localhost:8000}"
 WAL_DIR="${3:-/tmp/actorbase/wal}"
 CKPT_DIR="${4:-/tmp/actorbase/checkpoint}"
 ETCD_ADDR="${5:-localhost:2379}"
+WAL_BACKEND="${6:-fs}"
+REDIS_ADDR="${7:-localhost:6379}"
+CHECKPOINT_BACKEND="${8:-fs}"
+MINIO_ADDR="${9:-localhost:9000}"
+MINIO_BUCKET="${10:-actorbase-longrun}"
 
 ABCTL="$BIN_DIR/abctl"
 KV_SERVER="$BIN_DIR/kv_server"
@@ -170,13 +175,32 @@ start_ps() {
     echo "$holder" | while IFS= read -r line; do log "  $line"; done
   fi
 
+  local wal_args=()
+  if [[ "$WAL_BACKEND" == "redis" ]]; then
+    wal_args=(-wal-backend redis -redis-addr "$REDIS_ADDR")
+  else
+    wal_args=(-wal-dir "$WAL_DIR")
+  fi
+  local ckpt_args=()
+  if [[ "$CHECKPOINT_BACKEND" == "minio" ]]; then
+    ckpt_args=(
+      -checkpoint-backend s3
+      -s3-endpoint "http://$MINIO_ADDR"
+      -s3-bucket "$MINIO_BUCKET"
+      -s3-prefix checkpoint
+      -s3-region us-east-1
+    )
+  else
+    ckpt_args=(-checkpoint-dir "$CKPT_DIR")
+  fi
+
   log "Restarting $node_id at $addr"
   "$KV_SERVER" \
     -node-id "$node_id" \
     -addr "$addr" \
     -etcd "$ETCD_ADDR" \
-    -wal-dir "$WAL_DIR" \
-    -checkpoint-dir "$CKPT_DIR" \
+    "${wal_args[@]}" \
+    "${ckpt_args[@]}" \
     >> "/tmp/ab_${node_id//-/_}.log" 2>&1 &
   local pid=$!
   echo $pid > "$pid_file"

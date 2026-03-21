@@ -61,8 +61,9 @@ etcd (2379)
   ├── PM (8000)
   │
   ├── PS-1 (8001) ─┐
-  ├── PS-2 (8002)  ├── wal: /tmp/ab/wal (공유, 파티션별 서브디렉토리로 격리)
-  └── PS-3 (8003) ─┘   checkpoint: /tmp/ab/checkpoint (공유)
+  ├── PS-2 (8002)  ├── wal: /tmp/ab/wal (fs 백엔드, 공유 디렉토리)
+  └── PS-3 (8003) ─┘        또는 Redis Streams (redis 백엔드)
+                        checkpoint: /tmp/ab/checkpoint (공유)
 
 kv_longrun (부하 생성 + 정답지 기록)
 chaos.sh   (split / migrate / kill / graceful 이벤트 주입)
@@ -287,7 +288,12 @@ go build -o bin/kv_server   ./examples/kv_server
 go build -o bin/kv_longrun  ./examples/kv_longrun
 
 # 2. 실행 (etcd가 localhost:2379에서 실행 중이어야 함)
+
+# fs WAL 백엔드 (기본)
 bash test/longrun/run.sh
+
+# Redis WAL 백엔드 (Redis가 localhost:6379에서 실행 중이어야 함)
+WAL_BACKEND=redis REDIS_ADDR=localhost:6379 bash test/longrun/run.sh
 
 # 3. 결과 확인: PASS or FAIL + 불일치 항목 출력
 # 로그: /tmp/actorbase_runs/<YYYYMMDD_HHMMSS>/
@@ -298,27 +304,17 @@ bash test/longrun/run.sh
 
 ## 알려진 한계 및 주의사항
 
-### fs WAL의 failover 정합성
+### WAL 백엔드별 failover 정합성
 
-WAL 디렉토리를 모든 PS가 공유하므로(`-wal-dir /tmp/ab/wal`), SIGKILL로 PS를 종료해도
-다른 PS가 동일 경로에서 해당 파티션의 WAL을 읽어 replay할 수 있다.
+**fs 백엔드**: WAL 디렉토리를 모든 PS가 공유하므로(`-wal-dir /tmp/ab/wal`), SIGKILL로 PS를 종료해도
+다른 PS가 동일 경로에서 해당 파티션의 WAL을 읽어 replay할 수 있다. 따라서 SIGKILL 후 failover도 완전한 정합성을 보장한다.
 
-```
-SIGKILL PS-1 후 상황:
-  /tmp/ab/wal/{partition-id}/{lsn}  ← 파일이 디스크에 멀쩡히 존재
+단, **실제 장비 장애(하드웨어 고장, OS 크래시) 시에는 데이터 손실 가능성이 있다.**
+로컬 파일시스템 자체가 손상될 수 있어 WAL 파일이 유실된다.
 
-Failover 시 PS-2가 PreparePartition 처리:
-  1. CheckpointStore에서 마지막 checkpoint 로드  ← OK
-  2. WALStore.ReadFrom(lastCheckpointLSN+1)       ← 공유 WAL 디렉토리에서 읽음
-  3. /tmp/ab/wal/{partition-id}의 WAL replay     ← OK, 데이터 손실 없음
-```
-
-따라서 fs WAL + 공유 디렉토리 환경에서 SIGKILL 후 failover도 완전한 정합성을 보장한다.
-이것은 networked WAL (Redis Streams 등)과 동일한 시맨틱이다.
-
-**실제 장비 장애(하드웨어 고장, OS 크래시) 시에는 데이터 손실 가능성이 있다.**
-이 경우 로컬 파일 시스템 자체가 손상될 수 있어 WAL 파일이 유실된다.
-프로덕션에서는 networked WALStore를 사용하거나 공유 스토리지(NFS 등)를 사용해야 한다.
+**redis 백엔드**: Redis Streams에 WAL을 저장하므로 어느 PS에서도 동일 WAL에 접근한다.
+장비 장애 시에도 Redis가 살아있으면 WAL이 보존된다. Redis AOF/RDB 영속성을 활성화하면
+Redis 재시작에도 WAL이 유지된다. 프로덕션 권장 백엔드.
 
 ### Chaos 이벤트 타이밍
 
@@ -493,3 +489,31 @@ balance:
 **failover 경로 확인**: SIGKILL 시 OnNodeLeft → ThresholdPolicy.OnNodeLeft → ActionFailover → migrator.Failover 경로로 자동 복구. 데이터 손실 없음.
 
 **OnNodeJoined 경로 확인**: 노드 재기동 후 OnNodeJoined → ThresholdPolicy.OnNodeJoined → ActionMigrate → 새 노드로 파티션 이전. 자동 rebalance 동작 확인.
+
+---
+
+### Redis WAL 백엔드 검증 (2026-03-21)
+
+**변경 내용**: Redis Streams 기반 WALStore 구현 (`adapter/redis/WALStore`).
+
+**핵심 설계**:
+- Redis Streams에 uint64 LSN을 명시적 ID로 사용 (`XADD key {lsn} d {data}`)
+- `AppendBatch`: `INCRBY n` → 파이프라인 `XADD×n` (Lua 불필요, actor 멱등성 가정)
+- `ReadFrom`: 단일 `XRANGE` 명령
+- `TrimBefore`: 단일 `XTRIM MINID` 명령
+- 파티션당 2개 키: `{wal:{partitionID}}:lsn`, `{wal:{partitionID}}:stream`
+
+**버그 수정**: `internal/engine/host.go`의 `checkpointFn` 클로저가 활성화 요청 `ctx`를 캡처하는 문제 수정. 요청 완료 후 ctx 취소 → split 시 `TrimBefore` "context canceled" 에러 → `context.Background()` 사용으로 수정.
+
+**통합 테스트**: `WAL_BACKEND=redis bash test/integration/run.sh` → 89/89 PASS
+
+| 항목 | 값 |
+|---|---|
+| 환경 | macOS Darwin 25.3.0, Go 1.26, etcd v3.6.8, Redis 7.x |
+| 부하 duration | 8분 |
+| 검증 키 수 | 10,000개 |
+| 불일치 | **0건 (PASS)** |
+| chaos 이벤트 | split×4, migrate×3, SIGKILL PS-3×1, SIGKILL PS-2×1, SIGTERM PS-1×1, 재기동×3 |
+| 최종 파티션 수 | 5개 |
+
+**WAL replay 확인**: SIGKILL 후 Redis Streams에서 WAL을 읽어 replay. 파일시스템 공유 없이 데이터 손실 0건 확인.
