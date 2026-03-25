@@ -16,16 +16,19 @@ type Actor[Req, Resp any] interface {
 	// 복구 시 마지막 checkpoint 이후의 WAL entries를 순서대로 적용하는 데 사용한다.
 	Replay(entry []byte) error
 
-	// Snapshot은 현재 Actor 상태를 직렬화하여 반환한다. (checkpoint용)
-	Snapshot() ([]byte, error)
+	// Export는 Actor 상태를 직렬화하여 반환한다.
+	//
+	// splitKey가 ""이면 전체 상태를 직렬화한다 (checkpoint용, read-only).
+	// splitKey가 비어 있지 않으면 >= splitKey인 상태를 직렬화하고
+	// 자신의 상태에서 해당 데이터를 제거한다 (split용).
+	Export(splitKey string) ([]byte, error)
 
-	// Restore는 Snapshot 데이터로 Actor 상태를 복원한다.
-	Restore(data []byte) error
-
-	// Split은 splitKey 기준으로 상위 절반의 상태를 직렬화하여 반환하고,
-	// 자신의 상태에서 해당 데이터를 제거한다.
-	// engine이 split 실행 시 호출한다.
-	Split(splitKey string) (upperHalf []byte, err error)
+	// Import는 직렬화된 상태 데이터를 Actor에 적용한다.
+	//
+	// 빈 Actor에 호출하면 초기 복원 (checkpoint restore).
+	// 기존 데이터가 있는 Actor에 호출하면 상태 합침 (merge).
+	// 구현 측에서 두 경우를 구분할 필요 없이 "받은 데이터를 내 상태에 합치기"로 구현한다.
+	Import(data []byte) error
 }
 
 // ActorFactory는 파티션 ID마다 새 Actor 인스턴스를 생성하는 함수.

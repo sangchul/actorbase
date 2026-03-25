@@ -83,6 +83,28 @@ func (h *controlHandler) ExecuteMigrateOut(
 	return &pb.ExecuteMigrateOutResponse{}, nil
 }
 
+// ExecuteMerge는 PM의 merge 명령을 처리한다.
+// lower 파티션이 upper 파티션의 상태를 흡수한다.
+func (h *controlHandler) ExecuteMerge(
+	ctx context.Context,
+	req *pb.ExecuteMergeRequest,
+) (*pb.ExecuteMergeResponse, error) {
+	d, ok := h.dispatchers[req.ActorType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
+	}
+	slog.Info("ctrl: ExecuteMerge", "node", h.nodeID, "actor_type", req.ActorType,
+		"lower", req.LowerPartitionId, "upper", req.UpperPartitionId)
+	if err := d.Merge(ctx, req.LowerPartitionId, req.UpperPartitionId); err != nil {
+		slog.Error("ctrl: ExecuteMerge failed", "node", h.nodeID,
+			"lower", req.LowerPartitionId, "upper", req.UpperPartitionId, "err", err)
+		return nil, transport.ToGRPCStatus(err)
+	}
+	slog.Info("ctrl: ExecuteMerge done", "node", h.nodeID,
+		"lower", req.LowerPartitionId, "upper", req.UpperPartitionId)
+	return &pb.ExecuteMergeResponse{}, nil
+}
+
 // GetStats는 PM의 통계 조회 요청을 처리한다.
 func (h *controlHandler) GetStats(
 	_ context.Context,

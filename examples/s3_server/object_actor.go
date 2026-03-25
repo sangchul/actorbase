@@ -153,15 +153,10 @@ func (a *objectActor) Replay(entry []byte) error {
 	return nil
 }
 
-func (a *objectActor) Snapshot() ([]byte, error) {
-	return json.Marshal(a.objects)
-}
-
-func (a *objectActor) Restore(data []byte) error {
-	return json.Unmarshal(data, &a.objects)
-}
-
-func (a *objectActor) Split(splitKey string) ([]byte, error) {
+func (a *objectActor) Export(splitKey string) ([]byte, error) {
+	if splitKey == "" {
+		return json.Marshal(a.objects)
+	}
 	upper := make(map[string]objectMeta)
 	for k, v := range a.objects {
 		if k >= splitKey {
@@ -170,6 +165,17 @@ func (a *objectActor) Split(splitKey string) ([]byte, error) {
 		}
 	}
 	return json.Marshal(upper)
+}
+
+func (a *objectActor) Import(data []byte) error {
+	var incoming map[string]objectMeta
+	if err := json.Unmarshal(data, &incoming); err != nil {
+		return err
+	}
+	for k, v := range incoming {
+		a.objects[k] = v
+	}
+	return nil
 }
 
 func (a *objectActor) KeyCount() int64 { return int64(len(a.objects)) }

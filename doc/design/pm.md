@@ -40,7 +40,7 @@ NewServer:
   2. cfg.BalancePolicy == nil이면 NoopBalancePolicy로 대체
   3. etcd 클라이언트 생성
   4. NodeRegistry, MembershipWatcher, RoutingTableStore 생성
-  5. ConnPool, Splitter, Migrator 생성
+  5. ConnPool, Splitter, Migrator, Merger 생성
   6. gRPC 서버 생성 + PartitionManagerService 핸들러 등록
 ```
 
@@ -141,6 +141,7 @@ for action in actions:
   Split:    opMu.Lock → splitter.Split
   Migrate:  opMu.Lock → migrator.Migrate
   Failover: opMu.Lock → migrator.Failover
+  Merge:    opMu.Lock → merger.Merge (upper가 다른 노드이면 먼저 migrator.Migrate)
 ```
 
 ### bootstrap (내부)
@@ -158,6 +159,7 @@ for action in actions:
 | WatchRouting | 연결 즉시 현재 테이블 전송 후 변경 시마다 스트리밍 push |
 | RequestSplit | AutoPolicy 활성 시 `PERMISSION_DENIED` 거부. 아니면 opMu 잠금 후 splitter.Split |
 | RequestMigrate | AutoPolicy 활성 시 `PERMISSION_DENIED` 거부. 아니면 opMu 잠금 후 migrator.Migrate |
+| RequestMerge | AutoPolicy 활성 시 `PERMISSION_DENIED` 거부. 아니면 opMu 잠금 후 merger.Merge |
 | ListMembers | nodeRegistry.ListNodes() 조회 후 반환 |
 | GetClusterStats | 모든 PS에 GetStats RPC를 병렬 호출 (5초 timeout) 후 집계 |
 | ApplyPolicy | YAML 파싱 → cluster.SavePolicy → autoBalancer 재시작 |
@@ -173,7 +175,7 @@ for action in actions:
 **NoopBalancePolicy** (최상위 `policy/noop.go`): 모든 메서드가 nil 반환. `pm.Config.BalancePolicy`의 기본값.
 
 **ThresholdPolicy** (최상위 `policy/threshold.go`): YAML `abctl policy apply`로 활성화되는 임계값 기반 `provider.BalancePolicy` 구현체.
-- `Evaluate`: RPS/key count 임계값 초과 시 split, 노드 간 파티션 수/RPS 불균형 시 migrate 반환.
+- `Evaluate`: RPS/key count 임계값 초과 시 split, 인접 파티션 쌍의 합산 RPS/key count가 임계값 이하이면 merge (stable_rounds 연속 충족 필요), 노드 간 파티션 수/RPS 불균형 시 migrate 반환.
 - `OnNodeJoined`: 부하가 가장 많은 노드에서 파티션 하나를 새 노드로 migrate 반환.
 - `OnNodeLeft`: Reachable=false인 노드의 파티션에 ActionFailover 반환.
 

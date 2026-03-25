@@ -39,6 +39,11 @@ split:
   rps_threshold: 1000
   key_threshold: 10000
 
+merge:
+  rps_threshold: 100     # 인접 두 파티션의 합산 RPS < 이 값이면 merge 후보
+  key_threshold: 1000    # 인접 두 파티션의 합산 key count < 이 값이면 merge 후보
+  stable_rounds: 3       # N회 연속 조건 충족 시 merge 실행 (진동 방지)
+
 balance:
   max_partition_diff: 2     # 노드 간 파티션 수 허용 차이
   rps_imbalance_pct: 30     # 노드 간 RPS 차이 허용 %
@@ -152,15 +157,23 @@ type ThresholdConfig struct {
     CheckInterval time.Duration
     Cooldown      CooldownConfig
     Split         SplitConfig
+    Merge         MergeConfig
     Balance       BalanceConfig
 }
 type SplitConfig struct {
     RPSThreshold float64
     KeyThreshold int64
 }
+type MergeConfig struct {
+    RPSThreshold float64  // 인접 두 파티션의 합산 RPS 상한
+    KeyThreshold int64    // 인접 두 파티션의 합산 key count 상한
+    StableRounds int      // N회 연속 조건 충족 시 실행 (진동 방지)
+}
 ```
 
 `ThresholdPolicy`는 `provider.BalancePolicy`를 구현한다.
+
+- `evaluateMerge`: 동일 노드에 있는 인접 파티션 쌍을 순회하며 합산 RPS·key count가 임계값 이하인지 확인. `stableRoundsMap`에 쌍별 연속 충족 횟수를 추적하여 `StableRounds` 달성 시 `ActionMerge` 반환. 한 쌍이 한 번의 Evaluate에서 한 번만 반환된다.
 
 **`policy/relative.go` — RelativeConfig, RelativePolicy**
 
@@ -233,10 +246,12 @@ etcd 키 `/actorbase/policy`에 YAML raw string 저장/로드/삭제.
 3. global cooldown 확인 → 쿨다운 중이면 전체 skip
 4. pol.Evaluate(ctx, clusterStats) → []BalanceAction
 5. 액션 순서대로 실행:
-   - ActionSplit  → splitter.Split(ctx, actorType, partitionID, "" /*splitKey auto*/)
-                    split key는 PS가 SplitHinter 또는 midpoint로 결정
-   - ActionMigrate → migrator.Migrate(ctx, actorType, partitionID, targetNode)
+   - ActionSplit    → splitter.Split(ctx, actorType, partitionID, "" /*splitKey auto*/)
+                      split key는 PS가 SplitHinter 또는 midpoint로 결정
+   - ActionMigrate  → migrator.Migrate(ctx, actorType, partitionID, targetNode)
    - ActionFailover → migrator.Failover(ctx, partitionID, targetNode)
+   - ActionMerge    → (upper가 다른 노드이면 먼저 migrator.Migrate로 이전)
+                      → merger.Merge(ctx, actorType, lowerPartitionID, upperPartitionID)
 6. 작업 발생 시 cooldown 타이머 갱신 (global + partition)
 ```
 
@@ -276,7 +291,7 @@ abctl policy clear                 # ManualPolicy로 복귀
 | 파일 | 변경 내용 |
 |---|---|
 | `provider/actor.go` | Countable 인터페이스 추가; SplitHinter 인터페이스 추가 |
-| `provider/balance.go` | 신규: BalancePolicy 인터페이스 + 관련 타입 (NodeInfo, ClusterStats, BalanceAction 등); BalanceAction.SplitKey 제거 (split key는 PS가 결정) |
+| `provider/balance.go` | 신규: BalancePolicy 인터페이스 + 관련 타입; ActionMerge 추가; BalanceAction.MergeTarget 추가; BalanceAction.SplitKey 제거 (split key는 PS가 결정) |
 | `internal/engine/stats.go` | 신규: PartitionStats, rpsCounter (60s 슬라이딩 윈도우) |
 | `internal/engine/mailbox.go` | RPS 추적, KeyCount atomic 갱신, stats() 메서드; split 신호 수신 시 SplitHinter → midpoint fallback 체인 처리 |
 | `internal/engine/host.go` | GetStats() []PartitionStats 추가; Split 반환값 (string, error)로 변경 (실제 사용된 splitKey 반환); KeyRangeMidpoint 함수 추가 |
@@ -284,11 +299,11 @@ abctl policy clear                 # ManualPolicy로 복귀
 | `internal/cluster/policy.go` | 신규: etcd policy 저장/로드/삭제 |
 | `provider/balance.go` | 신규: BalancePolicy 인터페이스 + 관련 타입 |
 | `policy/policy.go` | 신규: ParsePolicy, RunnerConfig, CooldownConfig, BalanceConfig (threshold에서 공통 코드 분리) |
-| `policy/threshold.go` | 신규 (pm/policy에서 이동): ThresholdConfig, SplitConfig, ThresholdPolicy |
+| `policy/threshold.go` | 신규 (pm/policy에서 이동): ThresholdConfig, SplitConfig, MergeConfig, ThresholdPolicy (evaluateMerge 추가) |
 | `policy/relative.go` | 신규: RelativeConfig, RelativeSplit, RelativePolicy (클러스터 평균 RPS 대비 배수 기반 정책) |
 | `policy/noop.go` | 신규 (pm/policy에서 이동): NoopBalancePolicy |
 | `pm/policy/` | 삭제 (policy/, manual.go, auto.go 모두 제거) |
-| `pm/balancer.go` | balancerRunner: cfg를 *policy.RunnerConfig로, pol을 provider.BalancePolicy로 변경 |
+| `pm/balancer.go` | balancerRunner: cfg를 *policy.RunnerConfig로, pol을 provider.BalancePolicy로 변경; ActionMerge 처리 추가 (다른 노드이면 migrate 선행) |
 | `pm/config.go` | Policy → BalancePolicy provider.BalancePolicy |
 | `pm/server.go` | failoverNode 삭제, handleNodeJoined/handleNodeLeft/activeBalancePolicy/quickClusterStats/executeBalanceActions 추가, applyPolicy 시그니처 변경 |
 | `pm/client.go` | 신규: pm.Client — PM 관리 플레인 공개 클라이언트 |
@@ -301,4 +316,10 @@ abctl policy clear                 # ManualPolicy로 복귀
 | `examples/kv_server/main.go` | kvActor.KeyCount() 추가 |
 | `examples/s3_server/bucket_actor.go` | 신규 (main.go에서 분리): BucketRequest, BucketResponse, bucketActor (KeyCount 구현, SplitHinter 미구현 → midpoint split) |
 | `examples/s3_server/object_actor.go` | 신규 (main.go에서 분리): ObjectRequest, ObjectResponse, objectActor (KeyCount 구현, SplitHinter 구현 → hotspot 기반 split) |
-| `test/integration/run.sh` | 신규: 통합 시나리오 1~7 자동화 스크립트 (44개 assertion) |
+| `internal/rebalance/merger.go` | 신규: Merger — merge 조율 (검증, Draining, ExecuteMerge RPC, 라우팅 테이블 갱신) |
+| `pm/server.go` | executeBalanceActions에 ActionMerge 처리 추가; NewServer에서 Merger 생성 |
+| `pm/manager_handler.go` | RequestMerge 핸들러 추가 (AutoPolicy 활성 시 거부) |
+| `internal/transport/proto/actorbase.proto` | RequestMerge RPC, ExecuteMerge RPC, MergeRequest/Response, ExecuteMergeRequest/Response 추가 |
+| `ps/server.go` | actorDispatcher에 Merge 메서드 추가 |
+| `ps/control_handler.go` | ExecuteMerge 핸들러 추가 |
+| `test/integration/run.sh` | 시나리오 1~14 (시나리오 14: split→merge→데이터 정합성 검증→checkpoint 복구) |

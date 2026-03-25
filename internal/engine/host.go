@@ -169,7 +169,10 @@ func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey,
 	}
 
 	// 1. Actor goroutine 내에서 split 실행 (SplitHint 또는 midpoint 결정 포함)
-	usedKey, upperHalf, err := entry.mailbox.split(ctx, splitKey, keyRangeStart, keyRangeEnd)
+	if splitKey == "" {
+		splitKey = splitKeyAuto
+	}
+	usedKey, upperHalf, err := entry.mailbox.export(ctx, splitKey, keyRangeStart, keyRangeEnd)
 	if err != nil {
 		return "", fmt.Errorf("split actor: %w", err)
 	}
@@ -186,6 +189,46 @@ func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey,
 
 	// 4. 상위 파티션 활성화 (CheckpointStore에서 로드)
 	return usedKey, h.Activate(ctx, newPartitionID)
+}
+
+// Merge는 lowerPartitionID Actor가 upperPartitionID Actor의 상태를 흡수한다.
+// 두 파티션 모두 같은 Host에 있어야 한다.
+// merge 완료 후 upper 파티션은 evict되고 checkpoint/WAL이 삭제된다.
+func (h *ActorHost[Req, Resp]) Merge(ctx context.Context, lowerPartitionID, upperPartitionID string) error {
+	// 1. upper actor 활성화 → Export (전체 상태)
+	upperEntry, err := h.getOrActivate(ctx, upperPartitionID)
+	if err != nil {
+		return fmt.Errorf("activate upper partition: %w", err)
+	}
+	_, upperData, err := upperEntry.mailbox.export(ctx, "", "", "")
+	if err != nil {
+		return fmt.Errorf("snapshot upper partition: %w", err)
+	}
+
+	// 2. upper actor evict (checkpoint 없이 삭제)
+	h.mu.Lock()
+	delete(h.actors, upperPartitionID)
+	h.mu.Unlock()
+	upperEntry.mailbox.close()
+
+	// 3. upper checkpoint/WAL 삭제
+	if err := h.cfg.CheckpointStore.Delete(ctx, upperPartitionID); err != nil {
+		slog.Warn("merge: delete upper checkpoint failed", "partition", upperPartitionID, "err", err)
+	}
+	h.cfg.WALStore.TrimBefore(ctx, upperPartitionID, ^uint64(0))
+
+	// 4. lower actor 활성화 → Import(upperData) → checkpoint
+	lowerEntry, err := h.getOrActivate(ctx, lowerPartitionID)
+	if err != nil {
+		return fmt.Errorf("activate lower partition: %w", err)
+	}
+	if err := lowerEntry.mailbox.importData(ctx, upperData); err != nil {
+		return fmt.Errorf("merge actor: %w", err)
+	}
+	if err := lowerEntry.mailbox.checkpoint(ctx); err != nil {
+		return fmt.Errorf("checkpoint merged partition: %w", err)
+	}
+	return nil
 }
 
 // KeyRangeMidpoint는 [start, end) 키 범위의 중간값을 계산한다.
@@ -348,7 +391,7 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 	// 2. Actor 생성 및 복원
 	actor := h.cfg.Factory(partitionID)
 	if len(snapshotData) > 0 {
-		if err := actor.Restore(snapshotData); err != nil {
+		if err := actor.Import(snapshotData); err != nil {
 			slog.Error("activate: restore snapshot failed", "partition_id", partitionID, "err", err)
 			return fmt.Errorf("restore snapshot: %w", err)
 		}
@@ -382,7 +425,7 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 	wal := h.cfg.WALStore
 	cpStore := h.cfg.CheckpointStore
 	fn := checkpointFn(func(lsn uint64) error {
-		snap, err := actor.Snapshot()
+		snap, err := actor.Export("")
 		if err != nil {
 			return fmt.Errorf("snapshot: %w", err)
 		}

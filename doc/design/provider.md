@@ -33,16 +33,15 @@ type Actor[Req, Resp any] interface {
     // 복구 시 마지막 checkpoint 이후의 WAL entries를 순서대로 적용하는 데 사용한다.
     Replay(entry []byte) error
 
-    // Snapshot은 현재 Actor 상태를 직렬화하여 반환한다. (checkpoint용)
-    Snapshot() ([]byte, error)
+    // Export는 Actor 상태를 직렬화하여 반환한다.
+    // splitKey="" → 전체 상태 직렬화 (checkpoint용, read-only, 상태 변경 없음)
+    // splitKey!="" → splitKey 이상의 상태를 직렬화 + 자신에서 삭제 (split용)
+    Export(splitKey string) ([]byte, error)
 
-    // Restore는 Snapshot 데이터로 Actor 상태를 복원한다.
-    Restore(data []byte) error
-
-    // Split은 splitKey 기준으로 상위 절반의 상태를 직렬화하여 반환하고,
-    // 자신의 상태에서 해당 데이터를 제거한다.
-    // engine이 split 실행 시 호출한다.
-    Split(splitKey string) (upperHalf []byte, err error)
+    // Import는 직렬화된 상태 데이터를 Actor에 적용한다.
+    // 빈 actor → restore (checkpoint 복구), 기존 actor → merge (파티션 병합)
+    // 구현 측에서 빈/기존 구분 불필요 — 항상 "받은 데이터를 내 상태에 합치기".
+    Import(data []byte) error
 }
 
 // ActorFactory는 파티션 ID마다 새 Actor 인스턴스를 생성하는 함수.
@@ -105,6 +104,31 @@ func (a *BucketActor) Replay(entry []byte) error {
         a.objects[op.Key] = op.Meta
     case "delete":
         delete(a.objects, op.Key)
+    }
+    return nil
+}
+
+func (a *BucketActor) Export(splitKey string) ([]byte, error) {
+    if splitKey == "" {
+        return json.Marshal(a.objects) // 전체 상태 (checkpoint용)
+    }
+    upper := make(map[string]*ObjectMeta)
+    for k, v := range a.objects {
+        if k >= splitKey {
+            upper[k] = v
+            delete(a.objects, k)
+        }
+    }
+    return json.Marshal(upper) // splitKey 이상 추출 + 자신에서 삭제
+}
+
+func (a *BucketActor) Import(data []byte) error {
+    var incoming map[string]*ObjectMeta
+    if err := json.Unmarshal(data, &incoming); err != nil {
+        return err
+    }
+    for k, v := range incoming {
+        a.objects[k] = v // 항상 merge 모드 (빈 actor면 restore, 기존이면 merge)
     }
     return nil
 }
@@ -403,6 +427,7 @@ const (
     ActionSplit    BalanceActionType = iota
     ActionMigrate
     ActionFailover // source PS가 죽었을 때 사용
+    ActionMerge    // 인접한 두 파티션을 하나로 합침
 )
 
 type BalanceAction struct {
@@ -410,9 +435,11 @@ type BalanceAction struct {
     ActorType   string
     PartitionID string
     TargetNode  string  // ActionMigrate / ActionFailover 시 사용
+    MergeTarget string  // ActionMerge 전용 — 흡수할 상위 파티션 ID
 }
 // ActionSplit 시 split key는 Policy가 결정하지 않는다.
 // PS가 SplitHinter 또는 midpoint fallback으로 결정한다.
+// ActionMerge 시 PartitionID가 하위 파티션, MergeTarget이 상위 파티션.
 ```
 
 ### 기본 제공 구현체
@@ -469,7 +496,7 @@ var (
 | Actor 타입 파라미터 | 제네릭 `Actor[Req, Resp any]` | 요청/응답 타입을 컴파일 타임에 강제 |
 | Receive 반환값 | `(Resp, []byte, error)` | walEntry nil이면 read-only. engine이 WAL 기록 후 응답 전달. |
 | Replay 메서드 | `Replay([]byte) error` 추가 | WAL replay와 외부 요청 처리를 명확히 분리. |
-| Split 메서드 | `Split(splitKey string) ([]byte, error)` 추가 | Actor가 자신의 상태를 직접 분리. engine이 split 실행 시 호출. |
+| Export/Import 통합 | `Snapshot/Restore/Split/Merge` 4메서드 → `Export/Import` 2메서드 | Export: splitKey로 snapshot/split 구분. Import: 빈/기존 무관하게 merge 모드. 구현자 부담 감소. |
 | WAL/Checkpoint 분리 | 별도 인터페이스 | 성격이 달라 백엔드 선택지가 다름 (Redis Stream vs S3 등) |
 | WALStore.ReadFrom 반환 | `[]WALEntry` slice | 단순하게 시작. 대용량 WAL 시 iterator로 교체 검토. |
 | Metrics label 방식 | 가변 인자 `string` | 단순하게 시작. 타입 안전성은 추후 보완. |

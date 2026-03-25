@@ -30,6 +30,7 @@
 #  11. SDK HA Mode 자동 재발견 (etcd 모드, PM 장애 중 자동 재연결)
 #  12. Multi-actor-type 동시 운영 (kv + counter 파티션 공존)
 #  13. drainPartitions 타임아웃 (PM 없는 환경 → EvictAll → checkpoint 복원)
+#  14. 파티션 Merge (Split → Merge → 데이터 무결성 + checkpoint 복원)
 
 set -euo pipefail
 
@@ -915,6 +916,116 @@ scenario_13() {
 }
 should_run 13 || log "시나리오 13: SKIP"
 should_run 13 && scenario_13
+
+scenario_14() {
+  log ""
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log "시나리오 14: 파티션 Merge (Split → Merge → 데이터 무결성)"
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #
+  # 절차:
+  #   1. 현재 파티션 수 확인 (시나리오 3에서 split된 상태일 수 있음)
+  #   2. 데이터 삽입: lower 범위 + upper 범위 각각 데이터 삽입
+  #   3. split으로 파티션을 2개로 분리 (이미 2개면 재활용)
+  #   4. 두 파티션을 merge
+  #   5. merge 후 파티션 수 감소 확인
+  #   6. merge 후 모든 데이터 접근 가능 확인
+  #   7. Evict + 재활성화 후 데이터 유지 확인 (checkpoint 무결성)
+
+  # PS-1이 실행 중이 아니면 기동
+  if [[ -z "$PS1_PID" ]] || ! kill -0 "$PS1_PID" 2>/dev/null; then
+    start_ps1
+  fi
+
+  # 깨끗한 상태를 위해 새 데이터 삽입
+  kv_set "merge-a" "val-a" >/dev/null
+  kv_set "merge-b" "val-b" >/dev/null
+  kv_set "merge-x" "val-x" >/dev/null
+  kv_set "merge-z" "val-z" >/dev/null
+  sleep 1  # WAL flush 대기
+
+  # 현재 파티션 수 확인
+  local before_count
+  before_count=$(partition_count)
+  log "현재 파티션 수: $before_count"
+
+  # split으로 2개 이상 만들기 (이미 2개 이상이면 재활용)
+  if [[ "$before_count" -lt 2 ]]; then
+    local pid
+    pid=$(partition_id_by_index 1)
+    "$BIN_DIR/abctl" -pm "$PM_ADDR" split kv "$pid" "merge-m" >/dev/null 2>&1
+    sleep 1
+  fi
+
+  local split_count
+  split_count=$(partition_count)
+  log "split 후 파티션 수: $split_count"
+
+  # lower/upper 파티션 ID 파악 (같은 노드에 있어야 merge 가능)
+  # routing_entries: id\tstart\tend\tnode
+  # "merge-m" 이전이 lower, "merge-m" 이후가 upper
+  local lower_id upper_id
+  lower_id=$(routing_entries | awk -F'\t' '$3=="merge-m" || ($2=="(start)" && $3=="merge-m") {print $1}' | head -1)
+  upper_id=$(routing_entries | awk -F'\t' '$2=="merge-m" {print $1}' | head -1)
+
+  if [[ -z "$lower_id" || -z "$upper_id" ]]; then
+    # fallback: 첫 번째와 두 번째 파티션
+    lower_id=$(partition_id_by_index 1)
+    upper_id=$(partition_id_by_index 2)
+  fi
+
+  log "merge 대상: lower=$lower_id, upper=$upper_id"
+
+  # 두 파티션이 같은 노드에 있는지 확인. 다르면 migrate
+  local lower_node upper_node
+  lower_node=$(routing_entries | awk -F'\t' -v id="$lower_id" '$1==id {print $4}')
+  upper_node=$(routing_entries | awk -F'\t' -v id="$upper_id" '$1==id {print $4}')
+
+  if [[ "$lower_node" != "$upper_node" ]]; then
+    log "upper를 $lower_node으로 migrate..."
+    "$BIN_DIR/abctl" -pm "$PM_ADDR" migrate kv "$upper_id" "$lower_node" >/dev/null 2>&1
+    sleep 2
+  fi
+
+  # merge 실행
+  merge_out=$("$BIN_DIR/abctl" -pm "$PM_ADDR" merge kv "$lower_id" "$upper_id" 2>/dev/null)
+  assert_contains "merge 명령 성공" "merge successful" "$merge_out"
+
+  sleep 1
+
+  # merge 후 파티션 수 감소 확인
+  local after_count
+  after_count=$(partition_count)
+  assert_eq "merge 후 파티션 수 감소" "$((split_count - 1))" "$after_count"
+
+  # merge 후 모든 데이터 접근 가능
+  assert_eq "merge 후 merge-a 조회" "val-a" "$(kv_get merge-a)"
+  assert_eq "merge 후 merge-b 조회" "val-b" "$(kv_get merge-b)"
+  assert_eq "merge 후 merge-x 조회" "val-x" "$(kv_get merge-x)"
+  assert_eq "merge 후 merge-z 조회" "val-z" "$(kv_get merge-z)"
+
+  # 새 데이터 쓰기도 정상 동작하는지 확인
+  kv_set "merge-new" "after-merge" >/dev/null
+  assert_eq "merge 후 새 데이터 쓰기+읽기" "after-merge" "$(kv_get merge-new)"
+
+  # Evict + 재활성화 → checkpoint 복원 확인
+  # PS-1 재기동으로 checkpoint에서 복원
+  log "PS-1 재기동 (checkpoint 복원 검증)..."
+  [[ -n "$PS1_PID" ]] && { kill "$PS1_PID" 2>/dev/null || true; PS1_PID=""; }
+  sleep 3
+
+  "$BIN_DIR/kv_server" -node-id ps-1 -addr localhost:8001 -etcd "$ETCD_ADDR" \
+    "${WAL_ARGS[@]}" "${CKPT_ARGS[@]}" \
+    -actor-types kv,counter >"$LOG_DIR/ps1_after_merge.log" 2>&1 &
+  PS1_PID=$!
+  sleep 3
+
+  assert_eq "merge 후 재기동: merge-a 복원" "val-a" "$(kv_get merge-a)"
+  assert_eq "merge 후 재기동: merge-x 복원" "val-x" "$(kv_get merge-x)"
+  assert_eq "merge 후 재기동: merge-new 복원" "after-merge" "$(kv_get merge-new)"
+}
+should_run 14 || log "시나리오 14: SKIP"
+should_run 14 && scenario_14
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 결과 요약

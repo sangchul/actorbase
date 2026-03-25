@@ -33,6 +33,7 @@ type Server struct {
 	membership   cluster.MembershipWatcher
 	splitter     *rebalance.Splitter
 	migrator     *rebalance.Migrator
+	merger       *rebalance.Merger
 	connPool     *transport.ConnPool
 	grpcSrv      *grpc.Server
 
@@ -84,6 +85,7 @@ func NewServer(cfg Config) (*Server, error) {
 	connPool := transport.NewConnPool()
 	splitter := rebalance.NewSplitter(routingStore, connPool)
 	migrator := rebalance.NewMigrator(routingStore, nodeRegistry, connPool)
+	merger := rebalance.NewMerger(routingStore, connPool)
 
 	grpcSrv := transport.NewGRPCServer(transport.ServerConfig{
 		ListenAddr: cfg.ListenAddr,
@@ -98,6 +100,7 @@ func NewServer(cfg Config) (*Server, error) {
 		membership:   membership,
 		splitter:     splitter,
 		migrator:     migrator,
+		merger:       merger,
 		connPool:     connPool,
 		grpcSrv:      grpcSrv,
 		subscribers:  make(map[string]*subscriber),
@@ -129,7 +132,7 @@ func (s *Server) Start(ctx context.Context) error {
 			slog.Warn("pm: stored policy parse failed", "err", parseErr)
 		} else {
 			balancerCtx, cancel := context.WithCancel(ctx)
-			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
+			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
 			go b.start(balancerCtx)
 			s.policyMu.Lock()
 			s.activePolicy = pol
@@ -428,6 +431,20 @@ func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.B
 			} else {
 				slog.Info("pm: failover complete", "partition", action.PartitionID, "to", action.TargetNode)
 			}
+
+		case provider.ActionMerge:
+			slog.Info("pm: executing merge", "actor_type", action.ActorType,
+				"lower", action.PartitionID, "upper", action.MergeTarget)
+			s.opMu.Lock()
+			err := s.merger.Merge(ctx, action.ActorType, action.PartitionID, action.MergeTarget)
+			s.opMu.Unlock()
+			if err != nil {
+				slog.Error("pm: policy merge failed",
+					"lower", action.PartitionID, "upper", action.MergeTarget, "err", err)
+			} else {
+				slog.Info("pm: merge complete",
+					"lower", action.PartitionID, "upper", action.MergeTarget)
+			}
 		}
 	}
 }
@@ -505,7 +522,7 @@ func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.B
 	s.activePolicyYAML = yamlStr
 	balancerCtx, cancel := context.WithCancel(s.serverCtx)
 	s.balancerCancel = cancel
-	b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
+	b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
 	go b.start(balancerCtx)
 	s.policyMu.Unlock()
 	slog.Info("pm: AutoPolicy applied", "check_interval", runnerCfg.CheckInterval)

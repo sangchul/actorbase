@@ -217,6 +217,16 @@ func (c *PMClient) RequestMigrate(ctx context.Context, actorType, partitionID, t
 	return fromGRPCStatus(err)
 }
 
+// RequestMerge는 인접한 두 파티션의 merge를 PM에 요청한다.
+func (c *PMClient) RequestMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error {
+	_, err := c.client.RequestMerge(ctx, &pb.MergeRequest{
+		ActorType:        actorType,
+		LowerPartitionId: lowerPartitionID,
+		UpperPartitionId: upperPartitionID,
+	})
+	return fromGRPCStatus(err)
+}
+
 // MemberInfo는 PS 노드 정보를 담는다.
 type MemberInfo struct {
 	NodeID  string
@@ -367,6 +377,17 @@ type PartitionStats struct {
 	ActorType   string
 	KeyCount    int64
 	RPS         float64
+}
+
+// ExecuteMerge는 PS에게 두 파티션의 merge를 명령한다.
+// lower 파티션이 upper 파티션의 상태를 흡수한다.
+func (c *PSControlClient) ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error {
+	_, err := c.client.ExecuteMerge(ctx, &pb.ExecuteMergeRequest{
+		ActorType:        actorType,
+		LowerPartitionId: lowerPartitionID,
+		UpperPartitionId: upperPartitionID,
+	})
+	return fromGRPCStatus(err)
 }
 
 // GetStats는 PS에서 노드 전체 통계를 조회한다.

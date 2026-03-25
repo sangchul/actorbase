@@ -109,15 +109,10 @@ func (a *kvActor) Replay(entry []byte) error {
 	return nil
 }
 
-func (a *kvActor) Snapshot() ([]byte, error) {
-	return json.Marshal(a.data)
-}
-
-func (a *kvActor) Restore(data []byte) error {
-	return json.Unmarshal(data, &a.data)
-}
-
-func (a *kvActor) Split(splitKey string) ([]byte, error) {
+func (a *kvActor) Export(splitKey string) ([]byte, error) {
+	if splitKey == "" {
+		return json.Marshal(a.data)
+	}
 	upper := make(map[string][]byte)
 	for k, v := range a.data {
 		if k >= splitKey {
@@ -126,6 +121,17 @@ func (a *kvActor) Split(splitKey string) ([]byte, error) {
 		}
 	}
 	return json.Marshal(upper)
+}
+
+func (a *kvActor) Import(data []byte) error {
+	var incoming map[string][]byte
+	if err := json.Unmarshal(data, &incoming); err != nil {
+		return err
+	}
+	for k, v := range incoming {
+		a.data[k] = v
+	}
+	return nil
 }
 
 // KeyCount는 provider.Countable 구현. 현재 보유한 key 수를 반환한다.
@@ -204,15 +210,10 @@ func (a *counterActor) Replay(entry []byte) error {
 	return nil
 }
 
-func (a *counterActor) Snapshot() ([]byte, error) {
-	return json.Marshal(a.data)
-}
-
-func (a *counterActor) Restore(data []byte) error {
-	return json.Unmarshal(data, &a.data)
-}
-
-func (a *counterActor) Split(splitKey string) ([]byte, error) {
+func (a *counterActor) Export(splitKey string) ([]byte, error) {
+	if splitKey == "" {
+		return json.Marshal(a.data)
+	}
 	upper := make(map[string]int64)
 	for k, v := range a.data {
 		if k >= splitKey {
@@ -221,6 +222,17 @@ func (a *counterActor) Split(splitKey string) ([]byte, error) {
 		}
 	}
 	return json.Marshal(upper)
+}
+
+func (a *counterActor) Import(data []byte) error {
+	var incoming map[string]int64
+	if err := json.Unmarshal(data, &incoming); err != nil {
+		return err
+	}
+	for k, v := range incoming {
+		a.data[k] = v
+	}
+	return nil
 }
 
 // KeyCount는 provider.Countable 구현.

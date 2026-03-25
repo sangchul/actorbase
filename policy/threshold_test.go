@@ -262,3 +262,166 @@ func TestThresholdPolicy_OnNodeJoined_NoMigrateIfSinglePartition(t *testing.T) {
 		t.Errorf("should not migrate when source has only 1 partition, got %d actions", len(actions))
 	}
 }
+
+// ── Merge ─────────────────────────────────────────────────────────────────────
+
+func makePartInfoWithRange(id, actorType string, keyCount int64, rps float64, start, end string) provider.PartitionInfo {
+	return provider.PartitionInfo{
+		PartitionID:   id,
+		ActorType:     actorType,
+		KeyCount:      keyCount,
+		RPS:           rps,
+		KeyRangeStart: start,
+		KeyRangeEnd:   end,
+	}
+}
+
+var mergeCfg = &ThresholdConfig{
+	Split: SplitConfig{
+		RPSThreshold: 1000,
+		KeyThreshold: 10000,
+	},
+	Merge: MergeConfig{
+		RPSThreshold: 100,
+		KeyThreshold: 1000,
+		StableRounds: 3,
+	},
+	Balance: BalanceConfig{
+		MaxPartitionDiff: 2,
+		RPSImbalancePct:  30.0,
+	},
+}
+
+func TestThresholdPolicy_Evaluate_MergeAfterStableRounds(t *testing.T) {
+	p := NewThresholdPolicy(mergeCfg)
+	ctx := context.Background()
+
+	// 인접 파티션 쌍: p1 [a, m), p2 [m, "")
+	stats := makeClusterStats(
+		makeNodeStats("n1", true,
+			makePartInfoWithRange("p1", "kv", 100, 10, "a", "m"),
+			makePartInfoWithRange("p2", "kv", 100, 10, "m", ""),
+		),
+	)
+
+	// 1차, 2차: stable_rounds=3 미달 → merge 없음
+	for i := 0; i < 2; i++ {
+		actions := p.Evaluate(ctx, stats)
+		if len(actions) != 0 {
+			t.Fatalf("round %d: expected no merge action (stable_rounds not reached), got %d", i+1, len(actions))
+		}
+	}
+
+	// 3차: stable_rounds 달성 → merge 반환
+	actions := p.Evaluate(ctx, stats)
+	if len(actions) != 1 {
+		t.Fatalf("round 3: expected 1 merge action, got %d", len(actions))
+	}
+	if actions[0].Type != provider.ActionMerge {
+		t.Errorf("expected ActionMerge, got %v", actions[0].Type)
+	}
+	if actions[0].PartitionID != "p1" {
+		t.Errorf("expected lower=p1, got %s", actions[0].PartitionID)
+	}
+	if actions[0].MergeTarget != "p2" {
+		t.Errorf("expected upper=p2, got %s", actions[0].MergeTarget)
+	}
+}
+
+func TestThresholdPolicy_Evaluate_MergeStableCountResets(t *testing.T) {
+	p := NewThresholdPolicy(mergeCfg)
+	ctx := context.Background()
+
+	lowStats := makeClusterStats(
+		makeNodeStats("n1", true,
+			makePartInfoWithRange("p1", "kv", 100, 10, "a", "m"),
+			makePartInfoWithRange("p2", "kv", 100, 10, "m", ""),
+		),
+	)
+	highStats := makeClusterStats(
+		makeNodeStats("n1", true,
+			makePartInfoWithRange("p1", "kv", 100, 10, "a", "m"),
+			makePartInfoWithRange("p2", "kv", 100, 200, "m", ""), // 합산 210 > 100
+		),
+	)
+
+	// 2회 조건 충족
+	p.Evaluate(ctx, lowStats)
+	p.Evaluate(ctx, lowStats)
+	// 1회 조건 불충족 → 리셋
+	p.Evaluate(ctx, highStats)
+	// 다시 2회 조건 충족 → 아직 3회 연속 아님
+	p.Evaluate(ctx, lowStats)
+	p.Evaluate(ctx, lowStats)
+	actions := p.Evaluate(ctx, lowStats) // 이제 3회 연속
+
+	if len(actions) != 1 || actions[0].Type != provider.ActionMerge {
+		t.Fatalf("expected merge after reset + 3 stable rounds, got %+v", actions)
+	}
+}
+
+func TestThresholdPolicy_Evaluate_NoMergeAboveThreshold(t *testing.T) {
+	p := NewThresholdPolicy(mergeCfg)
+	ctx := context.Background()
+
+	// 합산 RPS=120 > threshold=100 → merge 안 됨
+	stats := makeClusterStats(
+		makeNodeStats("n1", true,
+			makePartInfoWithRange("p1", "kv", 100, 60, "a", "m"),
+			makePartInfoWithRange("p2", "kv", 100, 60, "m", ""),
+		),
+	)
+
+	for i := 0; i < 5; i++ {
+		actions := p.Evaluate(ctx, stats)
+		for _, a := range actions {
+			if a.Type == provider.ActionMerge {
+				t.Fatalf("round %d: unexpected merge when combined RPS > threshold", i)
+			}
+		}
+	}
+}
+
+func TestThresholdPolicy_Evaluate_NoMergeNonAdjacent(t *testing.T) {
+	p := NewThresholdPolicy(mergeCfg)
+	ctx := context.Background()
+
+	// 인접하지 않은 파티션: p1 [a, g), p2 [m, "") — gap 존재
+	stats := makeClusterStats(
+		makeNodeStats("n1", true,
+			makePartInfoWithRange("p1", "kv", 100, 10, "a", "g"),
+			makePartInfoWithRange("p2", "kv", 100, 10, "m", ""),
+		),
+	)
+
+	for i := 0; i < 5; i++ {
+		actions := p.Evaluate(ctx, stats)
+		for _, a := range actions {
+			if a.Type == provider.ActionMerge {
+				t.Fatalf("round %d: unexpected merge for non-adjacent partitions", i)
+			}
+		}
+	}
+}
+
+func TestThresholdPolicy_Evaluate_NoMergeConfigDisabled(t *testing.T) {
+	// merge config 없으면 merge 안 됨
+	p := NewThresholdPolicy(defaultCfg)
+	ctx := context.Background()
+
+	stats := makeClusterStats(
+		makeNodeStats("n1", true,
+			makePartInfoWithRange("p1", "kv", 10, 1, "a", "m"),
+			makePartInfoWithRange("p2", "kv", 10, 1, "m", ""),
+		),
+	)
+
+	for i := 0; i < 5; i++ {
+		actions := p.Evaluate(ctx, stats)
+		for _, a := range actions {
+			if a.Type == provider.ActionMerge {
+				t.Fatalf("round %d: unexpected merge when merge config is disabled", i)
+			}
+		}
+	}
+}

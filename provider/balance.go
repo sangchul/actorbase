@@ -66,6 +66,9 @@ const (
 	// ActionFailover는 장애 노드의 파티션을 복구한다.
 	// source PS가 죽었으므로 PreparePartition만 수행한다 (ExecuteMigrateOut 생략).
 	ActionFailover
+	// ActionMerge는 인접한 두 파티션을 하나로 합친다.
+	// PartitionID가 하위 파티션, MergeTarget이 상위 파티션.
+	ActionMerge
 )
 
 // BalanceAction은 PM이 실행할 rebalance 작업 하나.
@@ -74,6 +77,7 @@ type BalanceAction struct {
 	ActorType   string
 	PartitionID string
 	TargetNode  string // ActionMigrate / ActionFailover 전용
+	MergeTarget string // ActionMerge 전용 — 흡수할 상위 파티션 ID
 }
 
 // ── BalancePolicy 인터페이스 ───────────────────────────────────────────────────

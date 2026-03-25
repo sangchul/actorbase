@@ -3,6 +3,7 @@ package pm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ type balancerRunner struct {
 	pol          provider.BalancePolicy
 	splitter     *rebalance.Splitter
 	migrator     *rebalance.Migrator
+	merger       *rebalance.Merger
 	nodeRegistry cluster.NodeRegistry
 	routingStore cluster.RoutingTableStore
 	connPool     *transport.ConnPool
@@ -38,6 +40,7 @@ func newBalancerRunner(
 	pol provider.BalancePolicy,
 	splitter *rebalance.Splitter,
 	migrator *rebalance.Migrator,
+	merger *rebalance.Merger,
 	nodeRegistry cluster.NodeRegistry,
 	routingStore cluster.RoutingTableStore,
 	connPool *transport.ConnPool,
@@ -48,6 +51,7 @@ func newBalancerRunner(
 		pol:                 pol,
 		splitter:            splitter,
 		migrator:            migrator,
+		merger:              merger,
 		nodeRegistry:        nodeRegistry,
 		routingStore:        routingStore,
 		connPool:            connPool,
@@ -232,6 +236,21 @@ func (r *balancerRunner) executeActions(ctx context.Context, actions []provider.
 				continue
 			}
 			slog.Info("autoBalancer: failover done", "partition", action.PartitionID, "to", action.TargetNode)
+
+		case provider.ActionMerge:
+			slog.Info("autoBalancer: merge triggered",
+				"lower", action.PartitionID, "upper", action.MergeTarget, "actor_type", action.ActorType)
+			r.opMu.Lock()
+			err := r.ensureSameNodeAndMerge(ctx, action)
+			r.opMu.Unlock()
+			if err != nil {
+				slog.Error("autoBalancer: merge failed",
+					"lower", action.PartitionID, "upper", action.MergeTarget, "err", err)
+				continue
+			}
+			slog.Info("autoBalancer: merge done",
+				"lower", action.PartitionID, "upper", action.MergeTarget)
+			r.markAction(action.PartitionID)
 		}
 	}
 }
@@ -249,6 +268,36 @@ func (r *balancerRunner) isPartitionCooldown(partitionID string) bool {
 	defer r.mu.Unlock()
 	t, ok := r.partitionLastAction[partitionID]
 	return ok && time.Since(t) < r.cfg.Cooldown.Partition
+}
+
+// ensureSameNodeAndMerge는 lower와 upper가 같은 노드에 있는지 확인하고,
+// 다르면 upper를 lower 노드로 migrate한 후 merge를 실행한다.
+// 호출 전 opMu가 잠겨 있어야 한다.
+func (r *balancerRunner) ensureSameNodeAndMerge(ctx context.Context, action provider.BalanceAction) error {
+	rt, err := r.routingStore.Load(ctx)
+	if err != nil || rt == nil {
+		return fmt.Errorf("load routing table: %w", err)
+	}
+
+	lowerEntry, ok := rt.LookupByPartition(action.PartitionID)
+	if !ok {
+		return fmt.Errorf("lower partition %s not found", action.PartitionID)
+	}
+	upperEntry, ok := rt.LookupByPartition(action.MergeTarget)
+	if !ok {
+		return fmt.Errorf("upper partition %s not found", action.MergeTarget)
+	}
+
+	// 다른 노드에 있으면 upper를 lower 노드로 migrate
+	if lowerEntry.Node.ID != upperEntry.Node.ID {
+		slog.Info("autoBalancer: merge: migrating upper to lower's node",
+			"upper", action.MergeTarget, "from", upperEntry.Node.ID, "to", lowerEntry.Node.ID)
+		if err := r.migrator.Migrate(ctx, action.ActorType, action.MergeTarget, lowerEntry.Node.ID); err != nil {
+			return fmt.Errorf("migrate upper to same node: %w", err)
+		}
+	}
+
+	return r.merger.Merge(ctx, action.ActorType, action.PartitionID, action.MergeTarget)
 }
 
 // errDeadNode は buildClusterStats 내부에서 죽은 노드를 표시하는 센티넬 에러.

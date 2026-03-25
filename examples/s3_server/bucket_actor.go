@@ -98,15 +98,10 @@ func (a *bucketActor) Replay(entry []byte) error {
 	return nil
 }
 
-func (a *bucketActor) Snapshot() ([]byte, error) {
-	return json.Marshal(a.buckets)
-}
-
-func (a *bucketActor) Restore(data []byte) error {
-	return json.Unmarshal(data, &a.buckets)
-}
-
-func (a *bucketActor) Split(splitKey string) ([]byte, error) {
+func (a *bucketActor) Export(splitKey string) ([]byte, error) {
+	if splitKey == "" {
+		return json.Marshal(a.buckets)
+	}
 	upper := make(map[string]bucketMeta)
 	for k, v := range a.buckets {
 		if k >= splitKey {
@@ -115,6 +110,17 @@ func (a *bucketActor) Split(splitKey string) ([]byte, error) {
 		}
 	}
 	return json.Marshal(upper)
+}
+
+func (a *bucketActor) Import(data []byte) error {
+	var incoming map[string]bucketMeta
+	if err := json.Unmarshal(data, &incoming); err != nil {
+		return err
+	}
+	for k, v := range incoming {
+		a.buckets[k] = v
+	}
+	return nil
 }
 
 func (a *bucketActor) KeyCount() int64 { return int64(len(a.buckets)) }

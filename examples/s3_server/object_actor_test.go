@@ -99,11 +99,11 @@ func TestObjectActor_SnapshotRestore(t *testing.T) {
 	original.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "cat.jpg", Size: 100, ETag: "e1", StorageClass: "STANDARD"})
 	original.Receive(nil, ObjectRequest{Op: "put", Bucket: "videos", Key: "movie.mp4", Size: 99999, ETag: "e2", StorageClass: "GLACIER"})
 
-	snap, err := original.Snapshot()
+	snap, err := original.Export("")
 	require.NoError(t, err)
 
 	restored := newObject()
-	require.NoError(t, restored.Restore(snap))
+	require.NoError(t, restored.Import(snap))
 
 	for _, tc := range []struct{ bucket, key, storageClass string }{
 		{"photos", "cat.jpg", "STANDARD"},
@@ -124,11 +124,11 @@ func TestObjectActor_Split(t *testing.T) {
 	a.Receive(nil, ObjectRequest{Op: "put", Bucket: "beta", Key: "obj1", Size: 3, ETag: "e3"})
 	a.Receive(nil, ObjectRequest{Op: "put", Bucket: "gamma", Key: "obj1", Size: 4, ETag: "e4"})
 
-	upperData, err := a.Split("beta/")
+	upperData, err := a.Export("beta/")
 	require.NoError(t, err)
 
 	upper := newObject()
-	require.NoError(t, upper.Restore(upperData))
+	require.NoError(t, upper.Import(upperData))
 
 	// 상위 파티션: "beta/obj1", "gamma/obj1"
 	for _, tc := range []struct{ bucket, key string }{{"beta", "obj1"}, {"gamma", "obj1"}} {
@@ -223,11 +223,11 @@ func TestObjectActor_SplitHint(t *testing.T) {
 		}
 
 		hint := a2.SplitHint()
-		upperData, err := a2.Split(hint)
+		upperData, err := a2.Export(hint)
 		require.NoError(t, err)
 
 		upper := newObject()
-		require.NoError(t, upper.Restore(upperData))
+		require.NoError(t, upper.Import(upperData))
 
 		// hotspot("cat.jpg")과 그 이후 key("dog.jpg")는 상위 파티션으로 이동
 		for _, key := range []string{"cat.jpg", "dog.jpg"} {

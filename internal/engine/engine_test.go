@@ -70,21 +70,12 @@ func (a *kvActor) Replay(entry []byte) error {
 	return nil
 }
 
-func (a *kvActor) Snapshot() ([]byte, error) {
+func (a *kvActor) Export(splitKey string) ([]byte, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return json.Marshal(a.data)
-}
-
-func (a *kvActor) Restore(data []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return json.Unmarshal(data, &a.data)
-}
-
-func (a *kvActor) Split(splitKey string) ([]byte, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	if splitKey == "" {
+		return json.Marshal(a.data)
+	}
 	upper := make(map[string]string)
 	for k, v := range a.data {
 		if k >= splitKey {
@@ -93,6 +84,19 @@ func (a *kvActor) Split(splitKey string) ([]byte, error) {
 		}
 	}
 	return json.Marshal(upper)
+}
+
+func (a *kvActor) Import(data []byte) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var incoming map[string]string
+	if err := json.Unmarshal(data, &incoming); err != nil {
+		return err
+	}
+	for k, v := range incoming {
+		a.data[k] = v
+	}
+	return nil
 }
 
 // ── 테스트용 Store 구현 ─────────────────────────────────────────────────────
@@ -623,6 +627,66 @@ func TestActorHost_Split_MidpointFallback(t *testing.T) {
 	h.EvictAll(ctx) //nolint:errcheck
 }
 
+func TestActorHost_Merge(t *testing.T) {
+	wal := newMemWALStore()
+	cp := newMemCheckpointStore()
+	h := NewActorHost(Config[kvReq, kvResp]{
+		Factory:         newKVActor,
+		WALStore:        wal,
+		CheckpointStore: cp,
+		FlushSize:       16,
+		FlushInterval:   5 * time.Millisecond,
+		MailboxSize:     64,
+	})
+	ctx := context.Background()
+
+	// lower 파티션: a, b, c
+	for _, k := range []string{"a", "b", "c"} {
+		put(t, h, "lower", k, k+"-val")
+	}
+	// upper 파티션: x, y, z
+	for _, k := range []string{"x", "y", "z"} {
+		put(t, h, "upper", k, k+"-val")
+	}
+	time.Sleep(20 * time.Millisecond) // WAL flush 대기
+
+	// merge: lower가 upper를 흡수
+	if err := h.Merge(ctx, "lower", "upper"); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+
+	// lower에 upper의 데이터가 있어야 한다
+	for _, k := range []string{"a", "b", "c", "x", "y", "z"} {
+		if v := get(t, h, "lower", k); v != k+"-val" {
+			t.Errorf("lower[%s] = %q, want %s-val", k, v, k)
+		}
+	}
+
+	// upper는 evict되어 Send 시 빈 actor로 재생성 (기존 데이터 없음)
+	_, err := h.Send(ctx, "upper", kvReq{Op: "get", Key: "x"})
+	if err != provider.ErrNotFound {
+		t.Errorf("expected ErrNotFound for evicted upper, got %v", err)
+	}
+
+	h.EvictAll(ctx) //nolint:errcheck
+
+	// lower를 evict 후 재활성화 → checkpoint에서 복원되어야 한다
+	h2 := NewActorHost(Config[kvReq, kvResp]{
+		Factory:         newKVActor,
+		WALStore:        wal,
+		CheckpointStore: cp,
+		FlushSize:       16,
+		FlushInterval:   5 * time.Millisecond,
+		MailboxSize:     64,
+	})
+	for _, k := range []string{"a", "b", "c", "x", "y", "z"} {
+		if v := get(t, h2, "lower", k); v != k+"-val" {
+			t.Errorf("after restore: lower[%s] = %q, want %s-val", k, v, k)
+		}
+	}
+	h2.EvictAll(ctx) //nolint:errcheck
+}
+
 // ── panic actor ───────────────────────────────────────────────────────────────
 
 type panicActor struct{}
@@ -630,7 +694,6 @@ type panicActor struct{}
 func (a *panicActor) Receive(_ provider.Context, _ kvReq) (kvResp, []byte, error) {
 	panic("intentional panic")
 }
-func (a *panicActor) Replay(_ []byte) error          { return nil }
-func (a *panicActor) Snapshot() ([]byte, error)      { return nil, nil }
-func (a *panicActor) Restore(_ []byte) error         { return nil }
-func (a *panicActor) Split(_ string) ([]byte, error) { return nil, nil }
+func (a *panicActor) Replay(_ []byte) error              { return nil }
+func (a *panicActor) Export(_ string) ([]byte, error)    { return nil, nil }
+func (a *panicActor) Import(_ []byte) error              { return nil }

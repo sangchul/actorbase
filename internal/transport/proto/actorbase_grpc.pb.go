@@ -174,6 +174,7 @@ const (
 	PartitionManagerService_WatchRouting_FullMethodName    = "/actorbase.v1.PartitionManagerService/WatchRouting"
 	PartitionManagerService_RequestSplit_FullMethodName    = "/actorbase.v1.PartitionManagerService/RequestSplit"
 	PartitionManagerService_RequestMigrate_FullMethodName  = "/actorbase.v1.PartitionManagerService/RequestMigrate"
+	PartitionManagerService_RequestMerge_FullMethodName    = "/actorbase.v1.PartitionManagerService/RequestMerge"
 	PartitionManagerService_ListMembers_FullMethodName     = "/actorbase.v1.PartitionManagerService/ListMembers"
 	PartitionManagerService_GetClusterStats_FullMethodName = "/actorbase.v1.PartitionManagerService/GetClusterStats"
 	PartitionManagerService_ApplyPolicy_FullMethodName     = "/actorbase.v1.PartitionManagerService/ApplyPolicy"
@@ -194,6 +195,9 @@ type PartitionManagerServiceClient interface {
 	// RequestMigrate는 파티션 migration을 PM에 요청한다.
 	// actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
 	RequestMigrate(ctx context.Context, in *MigrateRequest, opts ...grpc.CallOption) (*MigrateResponse, error)
+	// RequestMerge는 인접한 두 파티션의 merge를 PM에 요청한다.
+	// lower 파티션이 upper 파티션의 상태를 흡수한다.
+	RequestMerge(ctx context.Context, in *MergeRequest, opts ...grpc.CallOption) (*MergeResponse, error)
 	// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
 	ListMembers(ctx context.Context, in *ListMembersRequest, opts ...grpc.CallOption) (*ListMembersResponse, error)
 	// GetClusterStats는 클러스터 전체(또는 특정 노드)의 통계를 반환한다.
@@ -248,6 +252,16 @@ func (c *partitionManagerServiceClient) RequestMigrate(ctx context.Context, in *
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MigrateResponse)
 	err := c.cc.Invoke(ctx, PartitionManagerService_RequestMigrate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) RequestMerge(ctx context.Context, in *MergeRequest, opts ...grpc.CallOption) (*MergeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MergeResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_RequestMerge_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -317,6 +331,9 @@ type PartitionManagerServiceServer interface {
 	// RequestMigrate는 파티션 migration을 PM에 요청한다.
 	// actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
 	RequestMigrate(context.Context, *MigrateRequest) (*MigrateResponse, error)
+	// RequestMerge는 인접한 두 파티션의 merge를 PM에 요청한다.
+	// lower 파티션이 upper 파티션의 상태를 흡수한다.
+	RequestMerge(context.Context, *MergeRequest) (*MergeResponse, error)
 	// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
 	ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error)
 	// GetClusterStats는 클러스터 전체(또는 특정 노드)의 통계를 반환한다.
@@ -346,6 +363,9 @@ func (UnimplementedPartitionManagerServiceServer) RequestSplit(context.Context, 
 }
 func (UnimplementedPartitionManagerServiceServer) RequestMigrate(context.Context, *MigrateRequest) (*MigrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestMigrate not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) RequestMerge(context.Context, *MergeRequest) (*MergeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestMerge not implemented")
 }
 func (UnimplementedPartitionManagerServiceServer) ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListMembers not implemented")
@@ -427,6 +447,24 @@ func _PartitionManagerService_RequestMigrate_Handler(srv interface{}, ctx contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PartitionManagerServiceServer).RequestMigrate(ctx, req.(*MigrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_RequestMerge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MergeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).RequestMerge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_RequestMerge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).RequestMerge(ctx, req.(*MergeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -537,6 +575,10 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _PartitionManagerService_RequestMigrate_Handler,
 		},
 		{
+			MethodName: "RequestMerge",
+			Handler:    _PartitionManagerService_RequestMerge_Handler,
+		},
+		{
 			MethodName: "ListMembers",
 			Handler:    _PartitionManagerService_ListMembers_Handler,
 		},
@@ -572,6 +614,7 @@ const (
 	PartitionControlService_ExecuteSplit_FullMethodName      = "/actorbase.v1.PartitionControlService/ExecuteSplit"
 	PartitionControlService_ExecuteMigrateOut_FullMethodName = "/actorbase.v1.PartitionControlService/ExecuteMigrateOut"
 	PartitionControlService_PreparePartition_FullMethodName  = "/actorbase.v1.PartitionControlService/PreparePartition"
+	PartitionControlService_ExecuteMerge_FullMethodName      = "/actorbase.v1.PartitionControlService/ExecuteMerge"
 )
 
 // PartitionControlServiceClient is the client API for PartitionControlService service.
@@ -586,6 +629,9 @@ type PartitionControlServiceClient interface {
 	ExecuteMigrateOut(ctx context.Context, in *ExecuteMigrateOutRequest, opts ...grpc.CallOption) (*ExecuteMigrateOutResponse, error)
 	// PreparePartition은 PM이 target PS에게 파티션을 CheckpointStore에서 로드하도록 명령한다.
 	PreparePartition(ctx context.Context, in *PreparePartitionRequest, opts ...grpc.CallOption) (*PreparePartitionResponse, error)
+	// ExecuteMerge는 PM이 PS에게 두 파티션의 merge를 명령한다.
+	// lower 파티션이 upper 파티션의 상태를 흡수한다. 두 파티션 모두 같은 PS에 있어야 한다.
+	ExecuteMerge(ctx context.Context, in *ExecuteMergeRequest, opts ...grpc.CallOption) (*ExecuteMergeResponse, error)
 }
 
 type partitionControlServiceClient struct {
@@ -636,6 +682,16 @@ func (c *partitionControlServiceClient) PreparePartition(ctx context.Context, in
 	return out, nil
 }
 
+func (c *partitionControlServiceClient) ExecuteMerge(ctx context.Context, in *ExecuteMergeRequest, opts ...grpc.CallOption) (*ExecuteMergeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExecuteMergeResponse)
+	err := c.cc.Invoke(ctx, PartitionControlService_ExecuteMerge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PartitionControlServiceServer is the server API for PartitionControlService service.
 // All implementations must embed UnimplementedPartitionControlServiceServer
 // for forward compatibility.
@@ -648,6 +704,9 @@ type PartitionControlServiceServer interface {
 	ExecuteMigrateOut(context.Context, *ExecuteMigrateOutRequest) (*ExecuteMigrateOutResponse, error)
 	// PreparePartition은 PM이 target PS에게 파티션을 CheckpointStore에서 로드하도록 명령한다.
 	PreparePartition(context.Context, *PreparePartitionRequest) (*PreparePartitionResponse, error)
+	// ExecuteMerge는 PM이 PS에게 두 파티션의 merge를 명령한다.
+	// lower 파티션이 upper 파티션의 상태를 흡수한다. 두 파티션 모두 같은 PS에 있어야 한다.
+	ExecuteMerge(context.Context, *ExecuteMergeRequest) (*ExecuteMergeResponse, error)
 	mustEmbedUnimplementedPartitionControlServiceServer()
 }
 
@@ -669,6 +728,9 @@ func (UnimplementedPartitionControlServiceServer) ExecuteMigrateOut(context.Cont
 }
 func (UnimplementedPartitionControlServiceServer) PreparePartition(context.Context, *PreparePartitionRequest) (*PreparePartitionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PreparePartition not implemented")
+}
+func (UnimplementedPartitionControlServiceServer) ExecuteMerge(context.Context, *ExecuteMergeRequest) (*ExecuteMergeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExecuteMerge not implemented")
 }
 func (UnimplementedPartitionControlServiceServer) mustEmbedUnimplementedPartitionControlServiceServer() {
 }
@@ -764,6 +826,24 @@ func _PartitionControlService_PreparePartition_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PartitionControlService_ExecuteMerge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExecuteMergeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionControlServiceServer).ExecuteMerge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionControlService_ExecuteMerge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionControlServiceServer).ExecuteMerge(ctx, req.(*ExecuteMergeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PartitionControlService_ServiceDesc is the grpc.ServiceDesc for PartitionControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -786,6 +866,10 @@ var PartitionControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PreparePartition",
 			Handler:    _PartitionControlService_PreparePartition_Handler,
+		},
+		{
+			MethodName: "ExecuteMerge",
+			Handler:    _PartitionControlService_ExecuteMerge_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

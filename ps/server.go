@@ -30,6 +30,7 @@ type actorDispatcher interface {
 	EvictAll(ctx context.Context) error
 	Activate(ctx context.Context, partitionID string) error
 	Split(ctx context.Context, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error)
+	Merge(ctx context.Context, lowerPartitionID, upperPartitionID string) error
 	StartSchedulers(ctx context.Context, idleTimeout, evictInterval, checkpointInterval time.Duration)
 	GetStats() []engine.PartitionStats
 	TypeID() string
@@ -81,6 +82,10 @@ func (d *typedDispatcher[Req, Resp]) Activate(ctx context.Context, partitionID s
 
 func (d *typedDispatcher[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error) {
 	return d.host.Split(ctx, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID)
+}
+
+func (d *typedDispatcher[Req, Resp]) Merge(ctx context.Context, lowerPartitionID, upperPartitionID string) error {
+	return d.host.Merge(ctx, lowerPartitionID, upperPartitionID)
 }
 
 func (d *typedDispatcher[Req, Resp]) StartSchedulers(

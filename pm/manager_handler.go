@@ -93,6 +93,25 @@ func (h *managerHandler) RequestMigrate(
 	return &pb.MigrateResponse{}, nil
 }
 
+// RequestMerge는 인접한 두 파티션의 merge를 요청한다.
+// AutoPolicy 활성 중에는 수동 명령을 거부한다.
+func (h *managerHandler) RequestMerge(
+	ctx context.Context,
+	req *pb.MergeRequest,
+) (*pb.MergeResponse, error) {
+	if h.server.isAutoActive() {
+		return nil, status.Error(codes.PermissionDenied,
+			"manual merge not allowed while AutoPolicy is active (use abctl policy clear to disable)")
+	}
+	h.server.opMu.Lock()
+	defer h.server.opMu.Unlock()
+
+	if err := h.server.merger.Merge(ctx, req.ActorType, req.LowerPartitionId, req.UpperPartitionId); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.MergeResponse{}, nil
+}
+
 // ApplyPolicy는 YAML 정책을 PM에 적용한다. AutoPolicy 활성화.
 func (h *managerHandler) ApplyPolicy(
 	ctx context.Context,

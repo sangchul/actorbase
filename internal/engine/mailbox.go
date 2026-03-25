@@ -26,18 +26,26 @@ type checkpointReq struct {
 	done chan<- error
 }
 
-// splitReq는 외부에서 mailbox에 split을 요청할 때 사용한다.
-type splitReq struct {
-	splitKey      string // ""이면 Actor가 SplitHinter 또는 midpoint로 결정
-	keyRangeStart string // midpoint fallback용
-	keyRangeEnd   string // midpoint fallback용
-	done          chan splitResult
+// exportReq는 외부에서 mailbox에 상태 내보내기를 요청할 때 사용한다.
+// splitKey=""이면 전체 상태(snapshot), 비어 있지 않으면 split.
+type exportReq struct {
+	splitKey      string // "" = snapshot, non-empty = split
+	keyRangeStart string // split 시 midpoint fallback용
+	keyRangeEnd   string // split 시 midpoint fallback용
+	done          chan exportResult
 }
 
-type splitResult struct {
-	splitKey  string // 실제 사용된 split key
-	upperHalf []byte
-	err       error
+type exportResult struct {
+	splitKey string // 실제 사용된 split key (snapshot이면 "")
+	data     []byte
+	err      error
+}
+
+// importReq는 외부에서 mailbox에 상태 읽어오기를 요청할 때 사용한다.
+// restore(빈 actor)와 merge(기존 actor) 모두 이 채널을 사용한다.
+type importReq struct {
+	data []byte
+	done chan<- error
 }
 
 // actorCtx는 provider.Context 구현체.
@@ -50,14 +58,15 @@ func (c actorCtx) PartitionID() string  { return c.partitionID }
 func (c actorCtx) Logger() *slog.Logger { return c.logger }
 
 // checkpointFn은 ActorHost가 mailbox에 주입하는 checkpoint 수행 함수.
-// mailbox goroutine 내에서 호출되므로 actor.Snapshot()이 thread-safe하게 실행된다.
+// mailbox goroutine 내에서 호출되므로 actor.Export("")이 thread-safe하게 실행된다.
 type checkpointFn func(lsn uint64) error
 
 // mailbox는 하나의 Actor에 대한 메시지 큐.
 // 단일 goroutine(run)이 메시지를 순차 처리하여 Actor의 단일 스레드 실행을 보장한다.
 type mailbox[Req, Resp any] struct {
-	inCh           chan envelope[Req, Resp]
-	splitCh        chan splitReq
+	inCh     chan envelope[Req, Resp]
+	exportCh chan exportReq
+	importCh chan importReq
 	submitCh       chan<- walPending // WALFlusher 수신 채널
 	walConfirmedCh chan uint64       // WALFlusher → mailbox goroutine LSN 피드백
 	// checkpointCh는 외부(ActorHost)가 checkpoint를 요청하는 채널.
@@ -93,7 +102,8 @@ func newMailbox[Req, Resp any](
 ) *mailbox[Req, Resp] {
 	m := &mailbox[Req, Resp]{
 		inCh:           make(chan envelope[Req, Resp], inSize),
-		splitCh:        make(chan splitReq, 1),
+		exportCh:       make(chan exportReq, 1),
+		importCh:       make(chan importReq, 1),
 		submitCh:       submitCh,
 		walConfirmedCh: make(chan uint64, inSize+1),
 		checkpointCh:   make(chan checkpointReq, 1),
@@ -151,13 +161,13 @@ func (m *mailbox[Req, Resp]) checkpoint(ctx context.Context) error {
 	}
 }
 
-// split은 mailbox에 split 요청을 보내고 결과를 기다린다.
-// splitKey가 ""이면 Actor의 SplitHint() 또는 midpoint(keyRangeStart, keyRangeEnd)를 사용한다.
-// 실제 사용된 splitKey와 상위 파티션 데이터를 반환한다.
-func (m *mailbox[Req, Resp]) split(ctx context.Context, splitKey, keyRangeStart, keyRangeEnd string) (string, []byte, error) {
-	done := make(chan splitResult, 1)
+// export는 mailbox goroutine 내에서 Actor.Export(splitKey)를 실행한다.
+// splitKey=""이면 전체 상태(snapshot), 비어 있지 않으면 split.
+// split 시 실제 사용된 splitKey와 데이터를 반환한다.
+func (m *mailbox[Req, Resp]) export(ctx context.Context, splitKey, keyRangeStart, keyRangeEnd string) (string, []byte, error) {
+	done := make(chan exportResult, 1)
 	select {
-	case m.splitCh <- splitReq{splitKey: splitKey, keyRangeStart: keyRangeStart, keyRangeEnd: keyRangeEnd, done: done}:
+	case m.exportCh <- exportReq{splitKey: splitKey, keyRangeStart: keyRangeStart, keyRangeEnd: keyRangeEnd, done: done}:
 	case <-m.doneCh:
 		return "", nil, provider.ErrPartitionNotOwned
 	case <-ctx.Done():
@@ -165,11 +175,32 @@ func (m *mailbox[Req, Resp]) split(ctx context.Context, splitKey, keyRangeStart,
 	}
 	select {
 	case res := <-done:
-		return res.splitKey, res.upperHalf, res.err
+		return res.splitKey, res.data, res.err
 	case <-m.doneCh:
 		return "", nil, provider.ErrPartitionNotOwned
 	case <-ctx.Done():
 		return "", nil, provider.ErrTimeout
+	}
+}
+
+// importData는 mailbox goroutine 내에서 Actor.Import(data)를 실행한다.
+// 빈 actor에 호출하면 restore, 기존 actor에 호출하면 merge.
+func (m *mailbox[Req, Resp]) importData(ctx context.Context, data []byte) error {
+	done := make(chan error, 1)
+	select {
+	case m.importCh <- importReq{data: data, done: done}:
+	case <-m.doneCh:
+		return provider.ErrPartitionNotOwned
+	case <-ctx.Done():
+		return provider.ErrTimeout
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-m.doneCh:
+		return provider.ErrPartitionNotOwned
+	case <-ctx.Done():
+		return provider.ErrTimeout
 	}
 }
 
@@ -205,12 +236,14 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 	}
 
 	for {
-		// drain 중이면 새 메시지/split 수신 중단
+		// drain 중이면 새 메시지/export/import 수신 중단
 		var inCh <-chan envelope[Req, Resp]
-		var splitCh <-chan splitReq
+		var exportCh <-chan exportReq
+		var importCh <-chan importReq
 		if !draining {
 			inCh = m.inCh
-			splitCh = m.splitCh
+			exportCh = m.exportCh
+			importCh = m.importCh
 		}
 
 		select {
@@ -245,19 +278,32 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 			}
 			m.lastMsg.Store(time.Now())
 
-		case req := <-splitCh:
-			// split key 결정: 제공된 key > SplitHinter > midpoint
+		case req := <-exportCh:
 			splitKey := req.splitKey
 			if splitKey == "" {
+				// snapshot 모드: 전체 상태 내보내기 (read-only)
+				data, err := safeExport(actor, actCtx, "")
+				req.done <- exportResult{data: data, err: err}
+			} else {
+				// split 모드: SplitHinter → midpoint fallback 체인
 				if hinter, ok := any(actor).(provider.SplitHinter); ok {
-					splitKey = hinter.SplitHint()
+					if hint := hinter.SplitHint(); hint != "" {
+						splitKey = hint
+					}
+				}
+				if splitKey == splitKeyAuto {
+					splitKey = KeyRangeMidpoint(req.keyRangeStart, req.keyRangeEnd)
+				}
+				data, err := safeExport(actor, actCtx, splitKey)
+				req.done <- exportResult{splitKey: splitKey, data: data, err: err}
+				if err == nil {
+					dirty = true // WAL 없이 actor 상태가 변경됨 → checkpoint skip 방지
 				}
 			}
-			if splitKey == "" {
-				splitKey = KeyRangeMidpoint(req.keyRangeStart, req.keyRangeEnd)
-			}
-			upperHalf, err := safeSplit(actor, actCtx, splitKey)
-			req.done <- splitResult{splitKey: splitKey, upperHalf: upperHalf, err: err}
+
+		case req := <-importCh:
+			err := safeImport(actor, actCtx, req.data)
+			req.done <- err
 			if err == nil {
 				dirty = true // WAL 없이 actor 상태가 변경됨 → checkpoint skip 방지
 			}
@@ -323,13 +369,29 @@ func safeReceive[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx
 	return actor.Receive(actCtx, req)
 }
 
-// safeSplit은 Actor.Split을 호출하고 panic을 ErrActorPanicked로 변환한다.
-func safeSplit[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx, splitKey string) (upperHalf []byte, err error) {
+// splitKeyAuto는 split 시 SplitHinter가 힌트를 반환하지 않았을 때
+// midpoint fallback을 트리거하기 위한 센티넬 값.
+// export() 호출부에서 splitKey를 이 값으로 설정해야 SplitHinter 체인이 동작한다.
+const splitKeyAuto = "\x00__auto__"
+
+// safeExport는 Actor.Export를 호출하고 panic을 ErrActorPanicked로 변환한다.
+func safeExport[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx, splitKey string) (data []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			actCtx.logger.Error("actor panicked in Split", "panic", r)
+			actCtx.logger.Error("actor panicked in Export", "panic", r, "splitKey", splitKey)
 			err = provider.ErrActorPanicked
 		}
 	}()
-	return actor.Split(splitKey)
+	return actor.Export(splitKey)
+}
+
+// safeImport는 Actor.Import를 호출하고 panic을 ErrActorPanicked로 변환한다.
+func safeImport[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx, data []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			actCtx.logger.Error("actor panicked in Import", "panic", r)
+			err = provider.ErrActorPanicked
+		}
+	}()
+	return actor.Import(data)
 }

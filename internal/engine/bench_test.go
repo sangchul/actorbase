@@ -37,10 +37,9 @@ func (a *nopActor) Receive(_ provider.Context, req kvReq) (kvResp, []byte, error
 	// nil walEntry → WAL 없이 즉시 응답 경로
 	return kvResp{Value: "ok"}, nil, nil
 }
-func (a *nopActor) Replay(_ []byte) error          { return nil }
-func (a *nopActor) Snapshot() ([]byte, error)      { return []byte("{}"), nil }
-func (a *nopActor) Restore(_ []byte) error         { return nil }
-func (a *nopActor) Split(_ string) ([]byte, error) { return []byte("{}"), nil }
+func (a *nopActor) Replay(_ []byte) error              { return nil }
+func (a *nopActor) Export(_ string) ([]byte, error)    { return []byte("{}"), nil }
+func (a *nopActor) Import(_ []byte) error              { return nil }
 
 // ── benchmark용 WAL Store ─────────────────────────────────────────────────────
 //

@@ -135,6 +135,12 @@ func (c *Client) RequestMigrate(ctx context.Context, actorType, partitionID, tar
 	return c.inner.RequestMigrate(ctx, actorType, partitionID, targetNodeID)
 }
 
+// RequestMerge는 인접한 두 파티션의 merge를 요청한다.
+// lower 파티션이 upper 파티션의 상태를 흡수한다.
+func (c *Client) RequestMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error {
+	return c.inner.RequestMerge(ctx, actorType, lowerPartitionID, upperPartitionID)
+}
+
 // ApplyPolicy는 YAML 정책을 PM에 적용하여 AutoPolicy를 활성화한다.
 func (c *Client) ApplyPolicy(ctx context.Context, yamlStr string) error {
 	return c.inner.ApplyPolicy(ctx, yamlStr)

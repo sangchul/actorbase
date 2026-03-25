@@ -59,6 +59,10 @@ service PartitionManagerService {
   // actor_type을 명시해야 하며, partitionID의 actor_type과 일치하지 않으면 에러.
   rpc RequestMigrate(MigrateRequest) returns (MigrateResponse);
 
+  // RequestMerge는 인접한 두 파티션의 merge를 PM에 요청한다.
+  // lower 파티션이 upper 파티션의 상태를 흡수한다.
+  rpc RequestMerge(MergeRequest) returns (MergeResponse);
+
   // ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
   rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
 
@@ -98,6 +102,14 @@ message MigrateRequest {
 
 message MigrateResponse {}
 
+message MergeRequest {
+  string actor_type          = 1;
+  string lower_partition_id  = 2;
+  string upper_partition_id  = 3;
+}
+
+message MergeResponse {}
+
 message ListMembersRequest {}
 
 message MemberInfo {
@@ -126,6 +138,10 @@ service PartitionControlService {
 
   // PreparePartition은 PM이 target PS에게 파티션을 CheckpointStore에서 로드하도록 명령한다.
   rpc PreparePartition(PreparePartitionRequest) returns (PreparePartitionResponse);
+
+  // ExecuteMerge는 PM이 PS에게 두 파티션의 merge를 명령한다.
+  // lower 파티션이 upper 파티션의 상태를 흡수한다. 두 파티션 모두 같은 PS에 있어야 한다.
+  rpc ExecuteMerge(ExecuteMergeRequest) returns (ExecuteMergeResponse);
 }
 
 message ExecuteSplitRequest {
@@ -158,6 +174,14 @@ message PreparePartitionRequest {
 }
 
 message PreparePartitionResponse {}
+
+message ExecuteMergeRequest {
+  string actor_type          = 1;
+  string lower_partition_id  = 2;
+  string upper_partition_id  = 3;
+}
+
+message ExecuteMergeResponse {}
 
 // ─────────────────────────────────────────────────────────
 // Shared Messages

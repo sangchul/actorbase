@@ -16,7 +16,7 @@ actorbase takes a different approach. **The application logic and the partition 
 
 The platform handles the hard distributed systems problems:
 - WAL and checkpointing for durability
-- Partition splitting and migration across nodes
+- Partition splitting, merging, and migration across nodes
 - Automatic failover when a node dies
 - Load-based rebalancing via a pluggable policy
 
@@ -38,7 +38,7 @@ PS  (Partition Server)  — runs Actor instances; your binary, your Actor
 SDK                     — client library: watches routing, routes requests, retries
 ```
 
-Each partition maps to a **key range** and lives on one PS node. When a partition gets too hot, it splits in two. When nodes are imbalanced, partitions migrate. When a node dies, partitions fail over — all automatically, or on demand via `abctl`.
+Each partition maps to a **key range** and lives on one PS node. When a partition gets too hot, it splits in two. When adjacent partitions are underloaded, they merge back into one. When nodes are imbalanced, partitions migrate. When a node dies, partitions fail over — all automatically, or on demand via `abctl`.
 
 **Key design decisions:**
 - Actor = single goroutine. No locks inside your actor code.
@@ -56,10 +56,11 @@ Each partition maps to a **key range** and lives on one PS node. When a partitio
 | **WAL group commit** | Write-ahead log with batched IO. Actor goroutine never waits on disk. |
 | **Checkpoint & replay** | Periodic snapshots + WAL replay. Full state recovery on restart or failover. |
 | **Partition split** | Hot partitions split into two. Split key decided by actor (`SplitHinter`) or midpoint fallback. |
+| **Partition merge** | Adjacent underloaded partitions merge back into one. Policy-driven with stable-rounds guard. |
 | **Migration** | Partitions move across nodes with zero data loss via shared checkpoint store. |
 | **Automatic failover** | PM detects dead nodes via etcd lease expiry and reroutes partitions automatically. |
 | **Graceful drain** | On SIGTERM, PS migrates its partitions before shutting down. |
-| **Auto balancer** | Pluggable `BalancePolicy` drives split/migrate decisions. Built-in: `ThresholdPolicy`, `RelativePolicy`. |
+| **Auto balancer** | Pluggable `BalancePolicy` drives split/migrate/merge decisions. Built-in: `ThresholdPolicy`, `RelativePolicy`. |
 | **Runtime policy** | Apply, inspect, or clear balance policy at runtime via `abctl policy apply`. |
 | **Multi actor type** | A single PS binary can host multiple actor types (e.g. `bucket` + `object`). |
 | **Range scan** | `Client.Scan()` fans out to all partitions covering `[startKey, endKey)` in parallel, with stale-routing detection and retry. Guarantees no missing keys. |
@@ -101,14 +102,15 @@ type Actor[Req, Resp any] interface {
     // Apply one WAL entry to actor state. Used during recovery.
     Replay(entry []byte) error
 
-    // Serialize full actor state for checkpointing.
-    Snapshot() ([]byte, error)
+    // Export serializes actor state.
+    // splitKey="" → full state (for checkpointing, read-only).
+    // splitKey!="" → state where key >= splitKey; removes that data from self (for split).
+    Export(splitKey string) ([]byte, error)
 
-    // Restore actor state from a Snapshot.
-    Restore(data []byte) error
-
-    // Split state at splitKey. Return the upper half; remove it from self.
-    Split(splitKey string) (upperHalf []byte, err error)
+    // Import applies serialized state data to the actor.
+    // On an empty actor → initial restore (checkpoint recovery).
+    // On an actor with existing data → merge state in (partition merge).
+    Import(data []byte) error
 }
 ```
 
@@ -146,7 +148,7 @@ type CheckpointStore interface {
 }
 ```
 
-`adapter/fs` ships a local-filesystem implementation of both. Useful for single-machine deployments and testing.
+Built-in adapters: `adapter/fs` (local filesystem), `adapter/redis` (Redis Streams WALStore), `adapter/s3` (S3-compatible CheckpointStore). `adapter/fs` is useful for single-machine deployments and testing.
 
 ### Optional: balance policy
 
@@ -170,6 +172,10 @@ cooldown:
 split:
   rps_threshold: 1000
   key_threshold: 10000
+merge:
+  rps_threshold: 100     # merge when combined RPS of two adjacent partitions < this
+  key_threshold: 1000    # merge when combined key count < this
+  stable_rounds: 3       # must stay below threshold for N consecutive rounds
 balance:
   max_partition_diff: 2
   rps_imbalance_pct: 30
@@ -235,21 +241,24 @@ ps/            — Partition Server assembly (multi-actor-type, gRPC handlers)
 pm/            — Partition Manager assembly (routing, balancer, failover)
 sdk/           — Client library
 internal/
-  engine/      — Actor lifecycle: mailbox, WAL group commit, checkpoint, split
+  engine/      — Actor lifecycle: mailbox, WAL group commit, checkpoint, split, merge
   cluster/     — etcd: node registry, routing table store, policy store
   transport/   — gRPC: proto, server/client factories, connection pool
-  rebalance/   — Split and migration orchestration
+  rebalance/   — Split, migration, and merge orchestration
 adapter/
   fs/          — Filesystem WALStore + CheckpointStore
   json/        — JSON Codec
+  redis/       — Redis Streams WALStore
+  s3/          — S3-compatible CheckpointStore (works with MinIO)
 examples/
   kv_server/   — Key-value PS: single actor type
   kv_client/   — CLI client
   kv_stress/   — Load generator
   kv_longrun/  — Long-running load + correctness verifier
   s3_server/   — S3 metadata PS: bucket + object actor types
+  s3_client/   — S3 metadata CLI client
 test/
-  integration/ — Automated integration scenarios 1–7 (~2.5 min)
+  integration/ — Automated integration scenarios 1–14
   longrun/     — 8-minute chaos test with correctness verification
 ```
 
@@ -278,22 +287,20 @@ With Redis Streams as WALStore and HDFS as CheckpointStore, actorbase and HBase 
 | Business logic | Lives inside the Actor (server-side) | Client-side or Coprocessor |
 | Data model | Arbitrary Go struct | Fixed: row × column family × version |
 | Split key | Decided by the Actor (`SplitHinter`) or midpoint | HMaster or midpoint |
-| Range scan | Not supported (future work) | Native |
-| Merge / compaction | Not supported | Minor/major compaction, region merge |
+| Range scan | `Client.Scan()` with multi-partition fan-out | Native |
+| Merge / compaction | Adjacent partition merge (policy-driven) | Minor/major compaction, region merge |
 | Proven scale | Unverified beyond millions of partitions | Billions of rows, hundreds of nodes |
 
 **When to choose actorbase over HBase**
 
-- Your workload is point-access (key-based), not range-scan-heavy
 - Business logic belongs inside the partition — e.g. session state, object metadata, game rooms
 - You want a simpler operational stack without HBase expertise
 - A moderate partition count (up to low millions) is sufficient
 
 **When HBase is still the right choice**
 
-- Range scan is required
 - You need billions of rows at proven production scale
-- Compaction and region merge are necessary for long-term storage efficiency
+- Heavy compaction workloads require HBase's multi-level compaction strategy
 - Your team relies on the Hadoop ecosystem (Phoenix, Spark, Hive)
 
 See [`doc/design/hbase-comparison.md`](doc/design/hbase-comparison.md) for a detailed analysis.

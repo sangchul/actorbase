@@ -90,11 +90,11 @@ func TestBucketActor_SnapshotRestore(t *testing.T) {
 	original.Receive(nil, BucketRequest{Op: "create", Name: "alpha", Region: "us-east-1"})
 	original.Receive(nil, BucketRequest{Op: "create", Name: "beta", Region: "eu-west-1"})
 
-	snap, err := original.Snapshot()
+	snap, err := original.Export("")
 	require.NoError(t, err)
 
 	restored := newBucket()
-	require.NoError(t, restored.Restore(snap))
+	require.NoError(t, restored.Import(snap))
 
 	for _, name := range []string{"alpha", "beta"} {
 		resp, _, _ := restored.Receive(nil, BucketRequest{Op: "get", Name: name})
@@ -112,11 +112,11 @@ func TestBucketActor_Split(t *testing.T) {
 	a.Receive(nil, BucketRequest{Op: "create", Name: "cherry", Region: "eu-west-1"})
 	a.Receive(nil, BucketRequest{Op: "create", Name: "date", Region: "eu-west-1"})
 
-	upperData, err := a.Split("cherry")
+	upperData, err := a.Export("cherry")
 	require.NoError(t, err)
 
 	upper := newBucket()
-	require.NoError(t, upper.Restore(upperData))
+	require.NoError(t, upper.Import(upperData))
 
 	// "cherry", "date" → 상위 파티션
 	for _, name := range []string{"cherry", "date"} {

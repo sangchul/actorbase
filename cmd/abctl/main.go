@@ -6,11 +6,12 @@
 //
 // 명령:
 //
-//	members                                            현재 PS 노드 목록 출력
-//	routing                                            현재 라우팅 테이블 출력
-//	split <actor-type> <partition-id> <split-key>      파티션 split 요청
-//	migrate <actor-type> <partition-id> <node-id>      파티션 migrate 요청
-//	stats [node-id]                                    클러스터(또는 특정 노드) 통계 출력
+//	members                                                            현재 PS 노드 목록 출력
+//	routing                                                            현재 라우팅 테이블 출력
+//	split <actor-type> <partition-id> <split-key>                      파티션 split 요청
+//	migrate <actor-type> <partition-id> <node-id>                      파티션 migrate 요청
+//	merge <actor-type> <lower-partition-id> <upper-partition-id>       인접 파티션 merge 요청
+//	stats [node-id]                                                    클러스터(또는 특정 노드) 통계 출력
 package main
 
 import (
@@ -79,6 +80,12 @@ func main() {
 			os.Exit(1)
 		}
 		cmdMigrate(cfg, flag.Arg(1), flag.Arg(2), flag.Arg(3))
+	case "merge":
+		if flag.NArg() < 4 {
+			fmt.Fprintln(os.Stderr, "usage: abctl merge <actor-type> <lower-partition-id> <upper-partition-id>")
+			os.Exit(1)
+		}
+		cmdMerge(cfg, flag.Arg(1), flag.Arg(2), flag.Arg(3))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", flag.Arg(0))
 		printUsage()
@@ -97,6 +104,7 @@ Commands:
   routing                                          Print current routing table
   split <actor-type> <partition-id> <split-key>    Split a partition at the given key
   migrate <actor-type> <partition-id> <node-id>    Migrate a partition to the target node
+  merge <actor-type> <lower-id> <upper-id>         Merge two adjacent partitions
   stats [node-id]                                  Show cluster stats (or specific node)
   policy apply <file>                              Apply policy YAML (activate AutoPolicy)
   policy get                                       Show current policy
@@ -194,6 +202,18 @@ func cmdMigrate(cfg *Config, actorType, partitionID, targetNodeID string) {
 		os.Exit(1)
 	}
 	fmt.Println("migrate successful")
+}
+
+func cmdMerge(cfg *Config, actorType, lowerPartitionID, upperPartitionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.RequestMerge(ctx, actorType, lowerPartitionID, upperPartitionID); err != nil {
+		fmt.Fprintf(os.Stderr, "merge failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("merge successful")
 }
 
 func cmdPolicyApply(cfg *Config, filePath string) {
