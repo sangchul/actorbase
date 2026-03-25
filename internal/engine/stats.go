@@ -5,19 +5,19 @@ import (
 	"time"
 )
 
-// PartitionStats는 파티션 하나의 통계.
+// PartitionStats holds statistics for a single partition.
 type PartitionStats struct {
 	PartitionID string
-	KeyCount    int64   // -1이면 actor가 Countable을 구현하지 않음
-	RPS         float64 // 최근 60초 슬라이딩 윈도우 평균
+	KeyCount    int64   // -1 if the actor does not implement Countable
+	RPS         float64 // average over a 60-second sliding window
 }
 
-// rpsCounter는 60초 슬라이딩 윈도우 기반 RPS 카운터.
-// 1초 단위 버킷 60개를 링 버퍼로 관리한다.
+// rpsCounter is an RPS counter based on a 60-second sliding window.
+// Manages 60 one-second buckets as a ring buffer.
 type rpsCounter struct {
 	mu      sync.Mutex
 	buckets [60]int64
-	ticks   [60]int64 // 버킷에 해당하는 unix second
+	ticks   [60]int64 // unix second corresponding to each bucket
 }
 
 func (r *rpsCounter) inc() {
@@ -32,7 +32,7 @@ func (r *rpsCounter) inc() {
 	r.mu.Unlock()
 }
 
-// rps는 최근 window초 평균 RPS를 반환한다.
+// rps returns the average RPS over the most recent window seconds.
 func (r *rpsCounter) rps(window int) float64 {
 	if window <= 0 || window > 60 {
 		window = 60

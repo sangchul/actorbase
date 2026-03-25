@@ -13,25 +13,25 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// WALStore는 Redis Streams 기반 WALStore 구현체.
+// WALStore is a Redis Streams-based WALStore implementation.
 //
-// 파티션당 2개 키를 사용한다:
+// Uses 2 keys per partition:
 //
-//	{wal:{partitionID}}:lsn    → String  (INCR 카운터, 현재까지 발급된 최대 LSN)
+//	{wal:{partitionID}}:lsn    → String  (INCR counter, maximum LSN issued so far)
 //	{wal:{partitionID}}:stream → Stream  (XADD {lsn} d {binary_data})
 //
-// LSN을 Stream ID의 ms 파트로 사용하므로 Redis ID = "N-0" 형태가 된다.
-// XRANGE/XTRIM에 정수 N을 그대로 전달하면 Redis가 N-0으로 해석한다.
+// The LSN is used as the ms part of the Stream ID, so the Redis ID has the form "N-0".
+// Passing integer N directly to XRANGE/XTRIM is interpreted by Redis as N-0.
 //
-// Redis Cluster 환경에서 두 키가 동일 슬롯에 배치되도록 해시태그를 사용한다.
+// Hash tags are used to ensure the two keys are placed in the same slot in a Redis Cluster environment.
 type WALStore struct {
 	client goredis.UniversalClient
 	prefix string
 }
 
-// NewWALStore는 Redis WALStore를 생성한다.
-// prefix는 키 네임스페이스로 사용된다. 비어있으면 "wal"이 기본값이다.
-// client는 단일 인스턴스, Sentinel, Cluster 모두 지원하는 UniversalClient를 전달한다.
+// NewWALStore creates a Redis WALStore.
+// prefix is used as the key namespace; defaults to "wal" if empty.
+// client accepts a UniversalClient that supports single instance, Sentinel, and Cluster modes.
 func NewWALStore(client goredis.UniversalClient, prefix string) *WALStore {
 	if prefix == "" {
 		prefix = "wal"
@@ -39,11 +39,11 @@ func NewWALStore(client goredis.UniversalClient, prefix string) *WALStore {
 	return &WALStore{client: client, prefix: prefix}
 }
 
-// AppendBatch는 파티션의 WAL에 여러 엔트리를 추가하고 각 LSN을 반환한다.
+// AppendBatch appends multiple entries to the partition's WAL and returns each LSN.
 //
-// 구현: INCR으로 LSN 범위를 예약한 뒤 파이프라인으로 XADD를 일괄 전송한다.
-// INCR과 XADD 사이에 연결이 끊기면 LSN 번호 일부가 낭비될 수 있으나 correctness에 무해하다.
-// (ReadFrom이 빈 LSN을 건너뜀. actor 연산이 멱등하면 partial write도 무해하다.)
+// Implementation: reserves an LSN range via INCR, then sends all XADDs in a pipeline.
+// If the connection is lost between INCR and XADD, some LSN numbers may be wasted, but this is harmless to correctness.
+// (ReadFrom skips empty LSNs. Partial writes are also harmless when actor operations are idempotent.)
 func (s *WALStore) AppendBatch(ctx context.Context, partitionID string, data [][]byte) ([]uint64, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -76,10 +76,10 @@ func (s *WALStore) AppendBatch(ctx context.Context, partitionID string, data [][
 	return lsns, nil
 }
 
-// ReadFrom은 fromLSN 이상의 모든 WAL 엔트리를 순서대로 반환한다.
+// ReadFrom returns all WAL entries with LSN >= fromLSN in order.
 //
-// 구현: XRANGE {stream} {fromLSN} + 단일 명령.
-// 파티션이 존재하지 않으면 nil을 반환한다 (에러 없음).
+// Implementation: single XRANGE {stream} {fromLSN} + command.
+// Returns nil if the partition does not exist (no error).
 func (s *WALStore) ReadFrom(ctx context.Context, partitionID string, fromLSN uint64) ([]provider.WALEntry, error) {
 	msgs, err := s.client.XRange(ctx, s.streamKey(partitionID), strconv.FormatUint(fromLSN, 10), "+").Result()
 	if err != nil {
@@ -107,10 +107,10 @@ func (s *WALStore) ReadFrom(ctx context.Context, partitionID string, fromLSN uin
 	return entries, nil
 }
 
-// TrimBefore는 lsn 미만의 오래된 WAL 엔트리를 삭제한다.
+// TrimBefore removes stale WAL entries with LSN less than lsn.
 //
-// 구현: XTRIM {stream} MINID {lsn} 단일 명령.
-// 파티션이 존재하지 않으면 no-op이다 (에러 없음).
+// Implementation: single XTRIM {stream} MINID {lsn} command.
+// No-op if the partition does not exist (no error).
 func (s *WALStore) TrimBefore(ctx context.Context, partitionID string, lsn uint64) error {
 	err := s.client.XTrimMinID(ctx, s.streamKey(partitionID), strconv.FormatUint(lsn, 10)).Err()
 	if err != nil && err != goredis.Nil {
@@ -127,7 +127,7 @@ func (s *WALStore) streamKey(partitionID string) string {
 	return "{" + s.prefix + ":" + partitionID + "}:stream"
 }
 
-// parseMsgID는 Redis Stream ID "N-0" 형태에서 N을 uint64로 파싱한다.
+// parseMsgID parses N as a uint64 from a Redis Stream ID in the form "N-0".
 func parseMsgID(id string) (uint64, error) {
 	ms, _, found := strings.Cut(id, "-")
 	if !found {

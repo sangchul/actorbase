@@ -71,7 +71,7 @@ func main() {
 	for {
 		select {
 		case <-timer.C:
-			fmt.Printf("\n완료: success=%d fail=%d\n", success, fail)
+			fmt.Printf("\ndone: success=%d fail=%d\n", success, fail)
 			return
 		case <-ticker.C:
 			key := fmt.Sprintf("key:%06d", i%1000)

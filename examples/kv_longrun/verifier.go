@@ -7,14 +7,14 @@ import (
 	"github.com/sangchul/actorbase/sdk"
 )
 
-// Mismatch는 정답지와 서버 상태가 일치하지 않는 항목이다.
+// Mismatch is an entry where the ledger and server state do not agree.
 type Mismatch struct {
 	Key      string
-	Expected *string // nil = 삭제되어야 함
-	Got      *string // nil = 서버에 존재하지 않음
+	Expected *string // nil = should have been deleted
+	Got      *string // nil = not found on server
 }
 
-// verify는 정답지의 모든 키를 서버에서 조회하여 불일치 목록을 반환한다.
+// verify queries all keys in the ledger from the server and returns a list of mismatches.
 func verify(ctx context.Context, client *sdk.Client[KVRequest, KVResponse], ledger *Ledger) ([]Mismatch, error) {
 	snap := ledger.Snapshot()
 	var mismatches []Mismatch
@@ -32,13 +32,13 @@ func verify(ctx context.Context, client *sdk.Client[KVRequest, KVResponse], ledg
 		}
 
 		if expected == nil {
-			// 삭제된 키인데 서버에 존재하면 불일치
+			// Key should have been deleted but exists on server — mismatch
 			if resp.Found {
 				got := string(resp.Value)
 				mismatches = append(mismatches, Mismatch{Key: key, Expected: nil, Got: &got})
 			}
 		} else {
-			// 존재해야 하는 키
+			// Key should exist on server
 			if !resp.Found {
 				mismatches = append(mismatches, Mismatch{Key: key, Expected: expected, Got: nil})
 			} else if string(resp.Value) != *expected {

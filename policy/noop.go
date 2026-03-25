@@ -6,8 +6,8 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// NoopBalancePolicy는 아무 작업도 수행하지 않는 BalancePolicy 구현체.
-// pm.Config.BalancePolicy를 nil로 두면 이 구현체가 사용된다.
+// NoopBalancePolicy is a BalancePolicy implementation that performs no operations.
+// This implementation is used when pm.Config.BalancePolicy is left as nil.
 type NoopBalancePolicy struct{}
 
 func (p *NoopBalancePolicy) Evaluate(_ context.Context, _ provider.ClusterStats) []provider.BalanceAction {

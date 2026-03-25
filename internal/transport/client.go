@@ -16,19 +16,19 @@ import (
 
 // ── ConnPool ─────────────────────────────────────────────────────────────────
 
-// ConnPool은 주소별 gRPC 커넥션을 캐싱한다.
-// SDK가 라우팅 테이블 갱신으로 새 PS 노드에 접속할 때 사용한다.
+// ConnPool caches gRPC connections by address.
+// Used by the SDK when connecting to new PS nodes after a routing table update.
 type ConnPool struct {
 	mu    sync.RWMutex
 	conns map[string]*grpc.ClientConn
 }
 
-// NewConnPool은 빈 ConnPool을 생성한다.
+// NewConnPool creates an empty ConnPool.
 func NewConnPool() *ConnPool {
 	return &ConnPool{conns: make(map[string]*grpc.ClientConn)}
 }
 
-// Get은 addr에 대한 커넥션을 반환한다. 없으면 새로 생성한다.
+// Get returns the connection for addr, creating one if it does not exist.
 func (p *ConnPool) Get(addr string) (*grpc.ClientConn, error) {
 	p.mu.RLock()
 	conn, ok := p.conns[addr]
@@ -51,7 +51,7 @@ func (p *ConnPool) Get(addr string) (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
-// Close는 모든 커넥션을 닫는다.
+// Close closes all connections.
 func (p *ConnPool) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -67,15 +67,15 @@ func (p *ConnPool) Close() error {
 
 // ── PSClient (SDK → PS, data plane) ─────────────────────────────────────────
 
-// PSClient는 Partition Server로 Actor 요청을 전송한다.
-// SDK가 사용한다.
+// PSClient sends Actor requests to a Partition Server.
+// Used by the SDK.
 type PSClient struct {
 	conn   *grpc.ClientConn
 	client pb.PartitionServiceClient
 	codec  provider.Codec
 }
 
-// NewPSClient는 PSClient를 생성한다.
+// NewPSClient creates a PSClient.
 func NewPSClient(conn *grpc.ClientConn, codec provider.Codec) *PSClient {
 	return &PSClient{
 		conn:   conn,
@@ -84,9 +84,9 @@ func NewPSClient(conn *grpc.ClientConn, codec provider.Codec) *PSClient {
 	}
 }
 
-// Send는 partitionID의 Actor에게 req를 전달하고 respPtr에 응답을 역직렬화한다.
-// payload 직렬화/역직렬화는 Codec이 담당한다.
-// gRPC status error는 provider error로 변환하여 반환한다.
+// Send delivers req to the Actor for partitionID and deserializes the response
+// into respPtr. Payload serialization/deserialization is handled by the Codec.
+// gRPC status errors are converted to provider errors before returning.
 func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req any, respPtr any) error { //nolint:unparam
 	payload, err := c.codec.Marshal(req)
 	if err != nil {
@@ -103,9 +103,10 @@ func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req 
 	return c.codec.Unmarshal(resp.Payload, respPtr)
 }
 
-// Scan은 partitionID의 Actor에게 scan 요청을 전달하고 respPtr에 응답을 역직렬화한다.
-// expectedStart/expectedEnd는 SDK가 알고 있는 파티션 key range다.
-// PS의 실제 range와 다르면 ErrPartitionMoved를 반환하여 stale 라우팅을 감지한다.
+// Scan delivers a scan request to the Actor for partitionID and deserializes
+// the response into respPtr. expectedStart/expectedEnd are the partition key
+// range known to the SDK. If they differ from the PS's actual range,
+// ErrPartitionMoved is returned to signal a stale routing entry.
 func (c *PSClient) Scan(ctx context.Context, actorType, partitionID string, req any, respPtr any, expectedStart, expectedEnd string) error {
 	payload, err := c.codec.Marshal(req)
 	if err != nil {
@@ -126,15 +127,15 @@ func (c *PSClient) Scan(ctx context.Context, actorType, partitionID string, req 
 
 // ── PMClient (SDK/abctl → PM, management plane) ──────────────────────────────
 
-// PMClient는 Partition Manager와 통신한다.
-// SDK: WatchRouting으로 라우팅 테이블 수신.
-// abctl: RequestSplit / RequestMigrate 호출.
+// PMClient communicates with the Partition Manager.
+// SDK: receives routing table updates via WatchRouting.
+// abctl: calls RequestSplit / RequestMigrate.
 type PMClient struct {
 	conn   *grpc.ClientConn
 	client pb.PartitionManagerServiceClient
 }
 
-// NewPMClient는 PMClient를 생성한다.
+// NewPMClient creates a PMClient.
 func NewPMClient(conn *grpc.ClientConn) *PMClient {
 	return &PMClient{
 		conn:   conn,
@@ -142,10 +143,10 @@ func NewPMClient(conn *grpc.ClientConn) *PMClient {
 	}
 }
 
-// WatchRouting은 라우팅 테이블 변경 채널을 반환한다.
-// 연결 직후 현재 테이블을 즉시 전달한다.
-// 스트림이 끊기면 자동으로 재연결 후 재구독한다.
-// ctx 취소 시 채널이 닫힌다.
+// WatchRouting returns a channel of routing table changes.
+// The current table is delivered immediately upon connection.
+// The stream reconnects automatically when interrupted.
+// The channel is closed when ctx is cancelled.
 func (c *PMClient) WatchRouting(ctx context.Context, clientID string) <-chan *domain.RoutingTable {
 	ch := make(chan *domain.RoutingTable, 8)
 	go c.watchRoutingLoop(ctx, clientID, ch)
@@ -194,7 +195,7 @@ func (c *PMClient) streamRouting(ctx context.Context, clientID string, ch chan *
 	}
 }
 
-// RequestSplit은 파티션 split을 PM에 요청한다.
+// RequestSplit requests a partition split from the PM.
 func (c *PMClient) RequestSplit(ctx context.Context, actorType, partitionID, splitKey string) (string, error) {
 	resp, err := c.client.RequestSplit(ctx, &pb.SplitRequest{
 		PartitionId: partitionID,
@@ -207,7 +208,7 @@ func (c *PMClient) RequestSplit(ctx context.Context, actorType, partitionID, spl
 	return resp.NewPartitionId, nil
 }
 
-// RequestMigrate는 파티션 migration을 PM에 요청한다.
+// RequestMigrate requests a partition migration from the PM.
 func (c *PMClient) RequestMigrate(ctx context.Context, actorType, partitionID, targetNodeID string) error {
 	_, err := c.client.RequestMigrate(ctx, &pb.MigrateRequest{
 		PartitionId:  partitionID,
@@ -217,7 +218,7 @@ func (c *PMClient) RequestMigrate(ctx context.Context, actorType, partitionID, t
 	return fromGRPCStatus(err)
 }
 
-// RequestMerge는 인접한 두 파티션의 merge를 PM에 요청한다.
+// RequestMerge requests a merge of two adjacent partitions from the PM.
 func (c *PMClient) RequestMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error {
 	_, err := c.client.RequestMerge(ctx, &pb.MergeRequest{
 		ActorType:        actorType,
@@ -227,14 +228,14 @@ func (c *PMClient) RequestMerge(ctx context.Context, actorType, lowerPartitionID
 	return fromGRPCStatus(err)
 }
 
-// MemberInfo는 PS 노드 정보를 담는다.
+// MemberInfo holds information about a PS node.
 type MemberInfo struct {
 	NodeID  string
 	Address string
 	Status  domain.NodeStatus
 }
 
-// ListMembers는 PM에서 현재 등록된 PS 노드 목록을 조회한다.
+// ListMembers retrieves the list of currently registered PS nodes from the PM.
 func (c *PMClient) ListMembers(ctx context.Context) ([]MemberInfo, error) {
 	resp, err := c.client.ListMembers(ctx, &pb.ListMembersRequest{})
 	if err != nil {
@@ -255,14 +256,14 @@ func (c *PMClient) ListMembers(ctx context.Context) ([]MemberInfo, error) {
 	return members, nil
 }
 
-// ApplyPolicy는 PM에 YAML 정책을 전송하여 AutoPolicy를 활성화한다.
+// ApplyPolicy sends a YAML policy to the PM to activate AutoPolicy.
 func (c *PMClient) ApplyPolicy(ctx context.Context, yamlStr string) error {
 	_, err := c.client.ApplyPolicy(ctx, &pb.ApplyPolicyRequest{PolicyYaml: yamlStr})
 	return fromGRPCStatus(err)
 }
 
-// GetPolicy는 PM에서 현재 적용 중인 정책 YAML을 조회한다.
-// active=false이면 ManualPolicy 상태.
+// GetPolicy retrieves the currently applied policy YAML from the PM.
+// active=false indicates that the PM is in ManualPolicy mode.
 func (c *PMClient) GetPolicy(ctx context.Context) (yamlStr string, active bool, err error) {
 	resp, rpcErr := c.client.GetPolicy(ctx, &pb.GetPolicyRequest{})
 	if rpcErr != nil {
@@ -271,14 +272,14 @@ func (c *PMClient) GetPolicy(ctx context.Context) (yamlStr string, active bool, 
 	return resp.PolicyYaml, resp.Active, nil
 }
 
-// ClearPolicy는 PM의 AutoPolicy를 제거하고 ManualPolicy로 전환한다.
+// ClearPolicy removes the AutoPolicy from the PM and switches to ManualPolicy.
 func (c *PMClient) ClearPolicy(ctx context.Context) error {
 	_, err := c.client.ClearPolicy(ctx, &pb.ClearPolicyRequest{})
 	return fromGRPCStatus(err)
 }
 
-// GetClusterStats는 PM에서 클러스터 전체(또는 특정 노드)의 통계를 조회한다.
-// nodeID가 빈 문자열이면 모든 노드를 반환한다.
+// GetClusterStats retrieves statistics for the entire cluster (or a specific
+// node) from the PM. An empty nodeID returns all nodes.
 func (c *PMClient) GetClusterStats(ctx context.Context, nodeID string) ([]NodeStats, error) {
 	resp, err := c.client.GetClusterStats(ctx, &pb.GetClusterStatsRequest{NodeId: nodeID})
 	if err != nil {
@@ -308,13 +309,13 @@ func (c *PMClient) GetClusterStats(ctx context.Context, nodeID string) ([]NodeSt
 
 // ── PSControlClient (PM → PS, control plane) ─────────────────────────────────
 
-// PSControlClient는 PM이 PS에게 split/migrate를 명령하는 데 사용한다.
+// PSControlClient is used by the PM to issue split/migrate commands to a PS.
 type PSControlClient struct {
 	conn   *grpc.ClientConn
 	client pb.PartitionControlServiceClient
 }
 
-// NewPSControlClient는 PSControlClient를 생성한다.
+// NewPSControlClient creates a PSControlClient.
 func NewPSControlClient(conn *grpc.ClientConn) *PSControlClient {
 	return &PSControlClient{
 		conn:   conn,
@@ -322,9 +323,9 @@ func NewPSControlClient(conn *grpc.ClientConn) *PSControlClient {
 	}
 }
 
-// ExecuteSplit은 PS에게 파티션 split을 명령한다.
-// splitKey가 ""이면 PS가 SplitHinter 또는 midpoint로 결정한다.
-// 실제 사용된 splitKey를 반환한다.
+// ExecuteSplit instructs the PS to split a partition.
+// If splitKey is "", the PS determines it via SplitHinter or midpoint.
+// Returns the splitKey that was actually used.
 func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error) {
 	resp, err := c.client.ExecuteSplit(ctx, &pb.ExecuteSplitRequest{
 		PartitionId:    partitionID,
@@ -340,7 +341,7 @@ func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partition
 	return resp.SplitKey, nil
 }
 
-// ExecuteMigrateOut은 PS에게 파티션을 대상 노드로 이동시키도록 명령한다.
+// ExecuteMigrateOut instructs the PS to move a partition to the target node.
 func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string) error {
 	_, err := c.client.ExecuteMigrateOut(ctx, &pb.ExecuteMigrateOutRequest{
 		PartitionId:   partitionID,
@@ -351,7 +352,7 @@ func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, actorType, part
 	return fromGRPCStatus(err)
 }
 
-// PreparePartition은 target PS에게 파티션을 CheckpointStore에서 로드하도록 명령한다.
+// PreparePartition instructs the target PS to load a partition from the CheckpointStore.
 func (c *PSControlClient) PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string) error {
 	_, err := c.client.PreparePartition(ctx, &pb.PreparePartitionRequest{
 		PartitionId:   partitionID,
@@ -362,7 +363,7 @@ func (c *PSControlClient) PreparePartition(ctx context.Context, actorType, parti
 	return fromGRPCStatus(err)
 }
 
-// NodeStats는 PS 노드 하나의 통계.
+// NodeStats holds statistics for a single PS node.
 type NodeStats struct {
 	NodeID         string
 	NodeAddr       string
@@ -371,7 +372,7 @@ type NodeStats struct {
 	Partitions     []PartitionStats
 }
 
-// PartitionStats는 파티션 하나의 통계.
+// PartitionStats holds statistics for a single partition.
 type PartitionStats struct {
 	PartitionID string
 	ActorType   string
@@ -379,8 +380,8 @@ type PartitionStats struct {
 	RPS         float64
 }
 
-// ExecuteMerge는 PS에게 두 파티션의 merge를 명령한다.
-// lower 파티션이 upper 파티션의 상태를 흡수한다.
+// ExecuteMerge instructs the PS to merge two partitions.
+// The lower partition absorbs the state of the upper partition.
 func (c *PSControlClient) ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error {
 	_, err := c.client.ExecuteMerge(ctx, &pb.ExecuteMergeRequest{
 		ActorType:        actorType,
@@ -390,12 +391,12 @@ func (c *PSControlClient) ExecuteMerge(ctx context.Context, actorType, lowerPart
 	return fromGRPCStatus(err)
 }
 
-// GetStats는 PS에서 노드 전체 통계를 조회한다.
+// GetStats retrieves overall node statistics from the PS.
 func (c *PSControlClient) GetStats(ctx context.Context) (*pb.GetStatsResponse, error) {
 	return c.client.GetStats(ctx, &pb.GetStatsRequest{})
 }
 
-// ── 변환 헬퍼 ────────────────────────────────────────────────────────────────
+// ── Conversion helpers ────────────────────────────────────────────────────────
 
 func protoToRoutingTable(proto *pb.RoutingTableProto) (*domain.RoutingTable, error) {
 	entries := make([]domain.RouteEntry, len(proto.Entries))
@@ -420,8 +421,8 @@ func protoToRoutingTable(proto *pb.RoutingTableProto) (*domain.RoutingTable, err
 	return domain.NewRoutingTable(proto.Version, entries)
 }
 
-// RoutingTableToProto는 domain.RoutingTable을 proto 메시지로 변환한다.
-// ps/, pm/의 핸들러에서 사용한다.
+// RoutingTableToProto converts a domain.RoutingTable to a proto message.
+// Used by handlers in ps/ and pm/.
 func RoutingTableToProto(rt *domain.RoutingTable) *pb.RoutingTableProto {
 	entries := rt.Entries()
 	protoEntries := make([]*pb.RouteEntryProto, len(entries))
@@ -446,6 +447,6 @@ func RoutingTableToProto(rt *domain.RoutingTable) *pb.RoutingTableProto {
 	}
 }
 
-// ToGRPCStatus는 provider error를 gRPC status error로 변환한다.
-// ps/, pm/ 핸들러에서 사용한다.
+// ToGRPCStatus converts a provider error to a gRPC status error.
+// Used by handlers in ps/ and pm/.
 var ToGRPCStatus = toGRPCStatus

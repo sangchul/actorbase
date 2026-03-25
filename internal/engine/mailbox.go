@@ -9,46 +9,46 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// envelope은 Actor에 전달할 메시지 하나.
+// envelope is a single message to be delivered to an Actor.
 type envelope[Req, Resp any] struct {
 	req     Req
 	replyCh chan<- result[Resp]
 }
 
-// result는 처리 완료 후 caller에게 전달되는 최종 결과.
+// result is the final outcome delivered back to the caller after processing.
 type result[Resp any] struct {
 	resp Resp
 	err  error
 }
 
-// checkpointReq는 외부에서 mailbox에 checkpoint를 요청할 때 사용한다.
+// checkpointReq is used to request a checkpoint from outside the mailbox.
 type checkpointReq struct {
 	done chan<- error
 }
 
-// exportReq는 외부에서 mailbox에 상태 내보내기를 요청할 때 사용한다.
-// splitKey=""이면 전체 상태(snapshot), 비어 있지 않으면 split.
+// exportReq is used to request a state export from outside the mailbox.
+// splitKey="" means a full snapshot (read-only); non-empty means a split.
 type exportReq struct {
 	splitKey      string // "" = snapshot, non-empty = split
-	keyRangeStart string // split 시 midpoint fallback용
-	keyRangeEnd   string // split 시 midpoint fallback용
+	keyRangeStart string // used for midpoint fallback during split
+	keyRangeEnd   string // used for midpoint fallback during split
 	done          chan exportResult
 }
 
 type exportResult struct {
-	splitKey string // 실제 사용된 split key (snapshot이면 "")
+	splitKey string // the splitKey actually used ("" for a snapshot)
 	data     []byte
 	err      error
 }
 
-// importReq는 외부에서 mailbox에 상태 읽어오기를 요청할 때 사용한다.
-// restore(빈 actor)와 merge(기존 actor) 모두 이 채널을 사용한다.
+// importReq is used to request a state import from outside the mailbox.
+// Used for both restore (empty actor) and merge (existing actor).
 type importReq struct {
 	data []byte
 	done chan<- error
 }
 
-// actorCtx는 provider.Context 구현체.
+// actorCtx is the implementation of provider.Context.
 type actorCtx struct {
 	partitionID string
 	logger      *slog.Logger
@@ -57,39 +57,39 @@ type actorCtx struct {
 func (c actorCtx) PartitionID() string  { return c.partitionID }
 func (c actorCtx) Logger() *slog.Logger { return c.logger }
 
-// checkpointFn은 ActorHost가 mailbox에 주입하는 checkpoint 수행 함수.
-// mailbox goroutine 내에서 호출되므로 actor.Export("")이 thread-safe하게 실행된다.
+// checkpointFn is the checkpoint function injected into the mailbox by ActorHost.
+// Since it is called from within the mailbox goroutine, actor.Export("") is executed thread-safely.
 type checkpointFn func(lsn uint64) error
 
-// mailbox는 하나의 Actor에 대한 메시지 큐.
-// 단일 goroutine(run)이 메시지를 순차 처리하여 Actor의 단일 스레드 실행을 보장한다.
+// mailbox is the message queue for a single Actor.
+// A single goroutine (run) processes messages sequentially, guaranteeing single-threaded Actor execution.
 type mailbox[Req, Resp any] struct {
 	inCh     chan envelope[Req, Resp]
 	exportCh chan exportReq
 	importCh chan importReq
-	submitCh       chan<- walPending // WALFlusher 수신 채널
-	walConfirmedCh chan uint64       // WALFlusher → mailbox goroutine LSN 피드백
-	// checkpointCh는 외부(ActorHost)가 checkpoint를 요청하는 채널.
-	// ActorHost.Checkpoint → mailbox.checkpoint() → checkpointCh로 전달.
-	// mailbox goroutine이 수신하면 drain 대기 후 Snapshot+WAL trim 수행.
-	// 완료 결과는 checkpointReq.done 채널로 반환된다.
+	submitCh       chan<- walPending // WALFlusher receive channel
+	walConfirmedCh chan uint64       // LSN feedback from WALFlusher to mailbox goroutine
+	// checkpointCh is the channel through which external callers (ActorHost) request a checkpoint.
+	// ActorHost.Checkpoint → mailbox.checkpoint() → sent to checkpointCh.
+	// When the mailbox goroutine receives it, it waits for drain then performs Snapshot + WAL trim.
+	// The result is returned via checkpointReq.done.
 	checkpointCh chan checkpointReq
 
 	checkpointFn checkpointFn
-	walThreshold int // 0이면 WAL 누적 기반 자동 checkpoint 비활성화
+	walThreshold int // 0 disables WAL-accumulation-based automatic checkpoint
 	onWALError   func()
 
-	lastMsg      atomic_time // EvictionScheduler 참조용
+	lastMsg      atomic_time // referenced by EvictionScheduler
 	confirmedLSN atomic_uint64
 
-	rps      rpsCounter   // RPS 슬라이딩 윈도우
-	keyCount atomic.Int64 // actor가 Countable이면 갱신됨. 아니면 -1 유지.
+	rps      rpsCounter   // RPS sliding window
+	keyCount atomic.Int64 // updated if actor implements Countable; otherwise stays -1.
 
-	doneCh chan struct{} // run() 종료 시 close
+	doneCh chan struct{} // closed when run() exits
 }
 
-// atomic_time / atomic_uint64: sync/atomic 타입을 별도 명명 없이 인라인으로 선언하기 위한 래퍼.
-// Go 1.19+ atomic.Value/atomic.Uint64를 직접 사용한다.
+// atomic_time / atomic_uint64: wrappers to use sync/atomic types inline without separate type declarations.
+// Uses atomic.Value/atomic.Uint64 directly (Go 1.19+).
 type atomic_time = atomicTime
 type atomic_uint64 = atomicUint64
 
@@ -112,12 +112,12 @@ func newMailbox[Req, Resp any](
 		onWALError:     onWALError,
 		doneCh:         make(chan struct{}),
 	}
-	m.keyCount.Store(-1) // Countable 미구현 시 기본값
+	m.keyCount.Store(-1) // default when Countable is not implemented
 	return m
 }
 
-// send는 req를 mailbox에 전달하고 결과를 기다린다.
-// ctx 만료 시 즉시 ErrTimeout을 반환한다.
+// send delivers req to the mailbox and waits for the result.
+// Returns ErrTimeout immediately if ctx expires.
 func (m *mailbox[Req, Resp]) send(ctx context.Context, req Req) (Resp, error) {
 	replyCh := make(chan result[Resp], 1)
 	select {
@@ -141,7 +141,7 @@ func (m *mailbox[Req, Resp]) send(ctx context.Context, req Req) (Resp, error) {
 	}
 }
 
-// checkpoint는 mailbox에 checkpoint 요청을 보내고 완료를 기다린다.
+// checkpoint sends a checkpoint request to the mailbox and waits for completion.
 func (m *mailbox[Req, Resp]) checkpoint(ctx context.Context) error {
 	done := make(chan error, 1)
 	select {
@@ -161,9 +161,9 @@ func (m *mailbox[Req, Resp]) checkpoint(ctx context.Context) error {
 	}
 }
 
-// export는 mailbox goroutine 내에서 Actor.Export(splitKey)를 실행한다.
-// splitKey=""이면 전체 상태(snapshot), 비어 있지 않으면 split.
-// split 시 실제 사용된 splitKey와 데이터를 반환한다.
+// export executes Actor.Export(splitKey) inside the mailbox goroutine.
+// splitKey="" means a full snapshot; non-empty means a split.
+// On split, returns the splitKey actually used along with the data.
 func (m *mailbox[Req, Resp]) export(ctx context.Context, splitKey, keyRangeStart, keyRangeEnd string) (string, []byte, error) {
 	done := make(chan exportResult, 1)
 	select {
@@ -183,8 +183,8 @@ func (m *mailbox[Req, Resp]) export(ctx context.Context, splitKey, keyRangeStart
 	}
 }
 
-// importData는 mailbox goroutine 내에서 Actor.Import(data)를 실행한다.
-// 빈 actor에 호출하면 restore, 기존 actor에 호출하면 merge.
+// importData executes Actor.Import(data) inside the mailbox goroutine.
+// Calling on an empty actor performs a restore; calling on an existing actor performs a merge.
 func (m *mailbox[Req, Resp]) importData(ctx context.Context, data []byte) error {
 	done := make(chan error, 1)
 	select {
@@ -204,29 +204,29 @@ func (m *mailbox[Req, Resp]) importData(ctx context.Context, data []byte) error 
 	}
 }
 
-// close는 inCh를 닫아 run goroutine을 종료시킨다.
+// close closes inCh to terminate the run goroutine.
 func (m *mailbox[Req, Resp]) close() {
 	close(m.inCh)
 }
 
-// stats는 mailbox의 현재 통계를 반환한다.
+// stats returns the current statistics of the mailbox.
 func (m *mailbox[Req, Resp]) stats() (keyCount int64, rps float64) {
 	return m.keyCount.Load(), m.rps.rps(60)
 }
 
-// run은 mailbox 이벤트 루프. 별도 goroutine으로 실행된다.
+// run is the mailbox event loop. Executed in a separate goroutine.
 //
-// 종료 조건: inCh가 close되어 ok=false를 수신하거나 WAL 오류 발생.
-// doneCh는 종료 시 항상 close된다.
+// Termination conditions: inCh is closed (ok=false) or a WAL error occurs.
+// doneCh is always closed on exit.
 func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCtx) {
 	defer close(m.doneCh)
 
-	pendingWAL := 0          // WALFlusher에 제출했지만 아직 미확인 write 수
-	walsSinceCheckpoint := 0 // 마지막 checkpoint 이후 확인된 WAL entry 수
-	dirty := false           // WAL 없이 상태가 변경된 경우 (e.g. split). checkpoint skip 방지용.
+	pendingWAL := 0          // number of writes submitted to WALFlusher but not yet confirmed
+	walsSinceCheckpoint := 0 // number of confirmed WAL entries since the last checkpoint
+	dirty := false           // state was changed without a WAL entry (e.g. split); prevents skipping checkpoint
 
-	draining := false          // true이면 inCh/splitCh 일시 중단 (checkpoint drain 대기)
-	var drainDone chan<- error // 현재 drain의 완료 채널. nil이면 자동 트리거.
+	draining := false          // when true, inCh/splitCh are paused (waiting for checkpoint drain)
+	var drainDone chan<- error // completion channel for the current drain; nil means auto-triggered
 
 	doCheckpoint := func(lsn uint64) error {
 		err := m.checkpointFn(lsn)
@@ -236,7 +236,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 	}
 
 	for {
-		// drain 중이면 새 메시지/export/import 수신 중단
+		// while draining, stop receiving new messages/exports/imports
 		var inCh <-chan envelope[Req, Resp]
 		var exportCh <-chan exportReq
 		var importCh <-chan importReq
@@ -249,7 +249,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 		select {
 		case env, ok := <-inCh:
 			if !ok {
-				return // close()로 종료
+				return // terminated via close()
 			}
 			resp, walEntry, err := safeReceive(actor, actCtx, env.req)
 			m.rps.inc()
@@ -260,7 +260,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 				continue
 			}
 
-			// write 연산: WALFlusher에 위임하고 즉시 다음 메시지 처리
+			// write operation: delegate to WALFlusher and immediately process next message
 			pendingWAL++
 			replyCh := env.replyCh
 			walConfirmedCh := m.walConfirmedCh
@@ -273,7 +273,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 					} else {
 						replyCh <- result[Resp]{resp: resp}
 					}
-					walConfirmedCh <- lsn // 오류 시 0 (에러 센티널)
+					walConfirmedCh <- lsn // 0 on error (error sentinel)
 				},
 			}
 			m.lastMsg.Store(time.Now())
@@ -281,11 +281,11 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 		case req := <-exportCh:
 			splitKey := req.splitKey
 			if splitKey == "" {
-				// snapshot 모드: 전체 상태 내보내기 (read-only)
+				// snapshot mode: export full state (read-only)
 				data, err := safeExport(actor, actCtx, "")
 				req.done <- exportResult{data: data, err: err}
 			} else {
-				// split 모드: SplitHinter → midpoint fallback 체인
+				// split mode: SplitHinter → midpoint fallback chain
 				if hinter, ok := any(actor).(provider.SplitHinter); ok {
 					if hint := hinter.SplitHint(); hint != "" {
 						splitKey = hint
@@ -297,7 +297,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 				data, err := safeExport(actor, actCtx, splitKey)
 				req.done <- exportResult{splitKey: splitKey, data: data, err: err}
 				if err == nil {
-					dirty = true // WAL 없이 actor 상태가 변경됨 → checkpoint skip 방지
+					dirty = true // actor state changed without WAL → prevent checkpoint skip
 				}
 			}
 
@@ -305,7 +305,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 			err := safeImport(actor, actCtx, req.data)
 			req.done <- err
 			if err == nil {
-				dirty = true // WAL 없이 actor 상태가 변경됨 → checkpoint skip 방지
+				dirty = true // actor state changed without WAL → prevent checkpoint skip
 			}
 
 		case lsn := <-m.walConfirmedCh:
@@ -315,7 +315,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 			}
 
 			if lsn == 0 {
-				// WAL flush 실패: 메모리 상태와 WAL 불일치 → Actor evict
+				// WAL flush failed: in-memory state and WAL are inconsistent → evict Actor
 				m.onWALError()
 				return
 			}
@@ -330,25 +330,25 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 				draining = false
 				drainDone = nil
 			} else if !draining && m.walThreshold > 0 && walsSinceCheckpoint >= m.walThreshold {
-				// WAL 누적 기반 자동 checkpoint 트리거
+				// WAL accumulation-based automatic checkpoint trigger
 				if pendingWAL == 0 {
 					doCheckpoint(m.confirmedLSN.Load()) //nolint:errcheck
 				} else {
 					draining = true
-					drainDone = nil // 완료 통보 불필요 (자동 트리거)
+					drainDone = nil // no completion notification needed (auto-triggered)
 				}
 			}
 
 		case req := <-m.checkpointCh:
 			if walsSinceCheckpoint == 0 && !dirty {
-				// 마지막 checkpoint 이후 변경 없음 → skip
+				// no changes since last checkpoint → skip
 				req.done <- nil
 				continue
 			}
 			if pendingWAL == 0 {
 				req.done <- doCheckpoint(m.confirmedLSN.Load())
 			} else if draining {
-				// 이미 drain 중: 외부 요청으로 격상 (완료 채널 연결)
+				// already draining: upgrade to external request (connect completion channel)
 				drainDone = req.done
 			} else {
 				draining = true
@@ -358,7 +358,7 @@ func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCt
 	}
 }
 
-// safeReceive는 Actor.Receive를 호출하고 panic을 ErrActorPanicked로 변환한다.
+// safeReceive calls Actor.Receive and converts any panic to ErrActorPanicked.
 func safeReceive[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx, req Req) (resp Resp, walEntry []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -369,12 +369,12 @@ func safeReceive[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx
 	return actor.Receive(actCtx, req)
 }
 
-// splitKeyAuto는 split 시 SplitHinter가 힌트를 반환하지 않았을 때
-// midpoint fallback을 트리거하기 위한 센티넬 값.
-// export() 호출부에서 splitKey를 이 값으로 설정해야 SplitHinter 체인이 동작한다.
+// splitKeyAuto is a sentinel value used to trigger the midpoint fallback
+// when SplitHinter does not return a hint during a split.
+// The caller of export() must set splitKey to this value for the SplitHinter chain to work.
 const splitKeyAuto = "\x00__auto__"
 
-// safeExport는 Actor.Export를 호출하고 panic을 ErrActorPanicked로 변환한다.
+// safeExport calls Actor.Export and converts any panic to ErrActorPanicked.
 func safeExport[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx, splitKey string) (data []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -385,7 +385,7 @@ func safeExport[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx,
 	return actor.Export(splitKey)
 }
 
-// safeImport는 Actor.Import를 호출하고 panic을 ErrActorPanicked로 변환한다.
+// safeImport calls Actor.Import and converts any panic to ErrActorPanicked.
 func safeImport[Req, Resp any](actor provider.Actor[Req, Resp], actCtx actorCtx, data []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {

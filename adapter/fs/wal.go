@@ -14,21 +14,21 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// WALStore는 파일시스템 기반 WALStore 구현체.
+// WALStore is a filesystem-based WALStore implementation.
 //
-// 디렉토리 구조:
+// Directory structure:
 //
 //	{baseDir}/{partitionID}/{lsn:020d}
 //
-// 각 WAL entry는 LSN을 파일 이름(20자리 0-padded)으로 사용하는 별도 파일로 저장된다.
-// os.ReadDir이 이름순으로 정렬하여 반환하므로 LSN 순서가 보장된다.
+// Each WAL entry is stored as a separate file using the LSN as the filename (20-digit zero-padded).
+// LSN ordering is guaranteed because os.ReadDir returns entries sorted by name.
 type WALStore struct {
 	baseDir string
 	mu      sync.RWMutex
 }
 
-// NewWALStore는 baseDir에 파일시스템 WALStore를 생성한다.
-// baseDir이 존재하지 않으면 생성한다.
+// NewWALStore creates a filesystem-based WALStore at baseDir.
+// Creates baseDir if it does not exist.
 func NewWALStore(baseDir string) (*WALStore, error) {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("fs.WALStore: create base dir: %w", err)
@@ -36,8 +36,8 @@ func NewWALStore(baseDir string) (*WALStore, error) {
 	return &WALStore{baseDir: baseDir}, nil
 }
 
-// AppendBatch는 파티션의 WAL에 여러 엔트리를 추가하고 각 LSN을 반환한다.
-// 하나의 락 획득으로 연속된 LSN을 할당하고 파일을 기록한다.
+// AppendBatch appends multiple entries to the partition's WAL and returns each LSN.
+// Assigns consecutive LSNs and writes all files under a single lock acquisition.
 func (s *WALStore) AppendBatch(_ context.Context, partitionID string, data [][]byte) ([]uint64, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -68,7 +68,7 @@ func (s *WALStore) AppendBatch(_ context.Context, partitionID string, data [][]b
 	return lsns, nil
 }
 
-// ReadFrom은 fromLSN 이상의 모든 WAL 엔트리를 순서대로 반환한다.
+// ReadFrom returns all WAL entries with LSN >= fromLSN in order.
 func (s *WALStore) ReadFrom(_ context.Context, partitionID string, fromLSN uint64) ([]provider.WALEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -89,7 +89,7 @@ func (s *WALStore) ReadFrom(_ context.Context, partitionID string, fromLSN uint6
 		}
 		lsn, err := nameToLSN(e.Name())
 		if err != nil {
-			continue // 관련 없는 파일 무시
+			continue // ignore unrelated files
 		}
 		if lsn < fromLSN {
 			continue
@@ -103,7 +103,7 @@ func (s *WALStore) ReadFrom(_ context.Context, partitionID string, fromLSN uint6
 	return result, nil
 }
 
-// TrimBefore는 lsn 미만의 오래된 WAL 엔트리를 삭제한다.
+// TrimBefore removes stale WAL entries with LSN less than lsn.
 func (s *WALStore) TrimBefore(_ context.Context, partitionID string, lsn uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,9 +134,9 @@ func (s *WALStore) TrimBefore(_ context.Context, partitionID string, lsn uint64)
 	return nil
 }
 
-// nextLSN은 dir에서 현재 최대 LSN을 찾아 +1을 반환한다.
-// 엔트리가 없으면 1을 반환한다.
-// 호출 전 반드시 write lock을 보유해야 한다.
+// nextLSN finds the current maximum LSN in dir and returns it incremented by 1.
+// Returns 1 if no entries exist.
+// The caller must hold the write lock before calling this function.
 func (s *WALStore) nextLSN(dir string) (uint64, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

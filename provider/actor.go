@@ -2,58 +2,59 @@ package provider
 
 import "log/slog"
 
-// Actor는 하나의 파티션(key range)을 담당하는 비즈니스 로직 단위.
-// 파티션당 하나의 인스턴스가 생성되며, 단일 스레드로 실행된다.
-// Req는 이 Actor가 수신하는 요청 타입, Resp는 응답 타입이다.
-// 사용자가 직접 구현한다.
+// Actor is the business logic unit responsible for a single partition (key range).
+// One instance is created per partition and runs on a single goroutine.
+// Req is the request type this Actor receives; Resp is the response type.
+// Implemented by the user.
 type Actor[Req, Resp any] interface {
-	// Receive는 요청을 처리하고 응답과 WAL 데이터를 반환한다.
-	// walEntry가 nil이면 read-only 연산이며 WAL에 기록하지 않는다.
-	// walEntry가 nil이 아니면 engine이 WALStore에 기록한 뒤 응답을 반환한다.
+	// Receive processes a request and returns a response along with a WAL entry.
+	// If walEntry is nil, the operation is read-only and nothing is written to the WAL.
+	// If walEntry is non-nil, the engine writes it to the WALStore before returning the response.
 	Receive(ctx Context, req Req) (resp Resp, walEntry []byte, err error)
 
-	// Replay는 WAL entry 하나를 Actor 상태에 적용한다.
-	// 복구 시 마지막 checkpoint 이후의 WAL entries를 순서대로 적용하는 데 사용한다.
+	// Replay applies a single WAL entry to the Actor's state.
+	// Used during recovery to replay WAL entries in order after the last checkpoint.
 	Replay(entry []byte) error
 
-	// Export는 Actor 상태를 직렬화하여 반환한다.
+	// Export serializes and returns the Actor's state.
 	//
-	// splitKey가 ""이면 전체 상태를 직렬화한다 (checkpoint용, read-only).
-	// splitKey가 비어 있지 않으면 >= splitKey인 상태를 직렬화하고
-	// 자신의 상태에서 해당 데이터를 제거한다 (split용).
+	// If splitKey is "", the entire state is serialized (for checkpointing, read-only).
+	// If splitKey is non-empty, state with keys >= splitKey is serialized and
+	// removed from the Actor's own state (for splitting).
 	Export(splitKey string) ([]byte, error)
 
-	// Import는 직렬화된 상태 데이터를 Actor에 적용한다.
+	// Import applies serialized state data to the Actor.
 	//
-	// 빈 Actor에 호출하면 초기 복원 (checkpoint restore).
-	// 기존 데이터가 있는 Actor에 호출하면 상태 합침 (merge).
-	// 구현 측에서 두 경우를 구분할 필요 없이 "받은 데이터를 내 상태에 합치기"로 구현한다.
+	// When called on an empty Actor, it restores from a checkpoint.
+	// When called on an Actor with existing data, it merges the state.
+	// Implementations do not need to distinguish between the two cases;
+	// simply merge the received data into the current state.
 	Import(data []byte) error
 }
 
-// ActorFactory는 파티션 ID마다 새 Actor 인스턴스를 생성하는 함수.
-// 사용자가 직접 구현한다.
+// ActorFactory is a function that creates a new Actor instance for each partition ID.
+// Implemented by the user.
 type ActorFactory[Req, Resp any] func(partitionID string) Actor[Req, Resp]
 
-// Countable은 Actor가 선택적으로 구현하는 통계 인터페이스.
-// 구현하면 engine이 key count를 stats에 포함한다. 구현하지 않으면 -1로 보고된다.
+// Countable is an optional interface an Actor can implement for reporting statistics.
+// If implemented, the engine includes the key count in stats. If not implemented, -1 is reported.
 type Countable interface {
 	KeyCount() int64
 }
 
-// SplitHinter는 Actor가 선택적으로 구현하는 split 위치 제안 인터페이스.
+// SplitHinter is an optional interface an Actor can implement to suggest a split position.
 //
-// 구현하지 않으면 engine이 partition key range의 midpoint를 사용한다 (기본 동작).
-// 구현하면 Actor가 내부 상태(hotspot 등)를 기반으로 split 위치를 직접 결정할 수 있다.
+// If not implemented, the engine uses the midpoint of the partition's key range (default behavior).
+// If implemented, the Actor can determine the split position based on its internal state (e.g., hotspots).
 //
-// 반환값이 ""이면 engine이 midpoint fallback을 사용한다.
-// SplitHint()는 mailbox goroutine 내에서 호출되므로 별도 동기화가 필요 없다.
+// Returning "" causes the engine to fall back to the midpoint.
+// SplitHint() is called from within the mailbox goroutine, so no additional synchronization is needed.
 type SplitHinter interface {
 	SplitHint() string
 }
 
-// Context는 Actor.Receive 호출 시 프레임워크가 주입하는 런타임 정보.
-// 사용자는 구현하지 않고 사용만 한다.
+// Context holds runtime information injected by the framework when Actor.Receive is called.
+// Used by the Actor implementation; not implemented by the user.
 type Context interface {
 	PartitionID() string
 	Logger() *slog.Logger

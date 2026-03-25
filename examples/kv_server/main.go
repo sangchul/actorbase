@@ -1,9 +1,9 @@
-// examples/kv_server는 actorbase Partition Server를 KV Actor로 실행하는 예시다.
+// examples/kv_server is an example of running an actorbase Partition Server with a KV Actor.
 //
-// ps 패키지가 제공하는 플랫폼 위에 사용자 정의 Actor(kvActor)를 올려서
-// 인메모리 key-value 저장소를 구동한다.
+// It mounts a user-defined Actor (kvActor) on top of the platform provided by the ps package
+// to run an in-memory key-value store.
 //
-// 실제 배포 시에는 이 파일을 참고하여 원하는 Actor 구현으로 교체한다.
+// For actual deployments, refer to this file and replace with your own Actor implementation.
 package main
 
 import (
@@ -32,38 +32,38 @@ import (
 	"github.com/sangchul/actorbase/ps"
 )
 
-// ── KV Actor 타입 정의 ────────────────────────────────────────────────────────
+// ── KV Actor type definitions ─────────────────────────────────────────────────
 
-// KVRequest는 KV Actor의 요청 타입이다.
+// KVRequest is the request type for the KV Actor.
 type KVRequest struct {
 	Op       string `json:"op"`        // "get", "set", "del", "scan"
-	Key      string `json:"key"`       // "get", "set", "del" 시 사용
-	Value    []byte `json:"value"`     // "set" 시에만 사용
-	StartKey string `json:"start_key"` // "scan" 시 사용 (포함)
-	EndKey   string `json:"end_key"`   // "scan" 시 사용 (미포함, ""=무한대)
+	Key      string `json:"key"`       // used for "get", "set", "del"
+	Value    []byte `json:"value"`     // used only for "set"
+	StartKey string `json:"start_key"` // used for "scan" (inclusive)
+	EndKey   string `json:"end_key"`   // used for "scan" (exclusive, ""=unbounded)
 }
 
-// KVItem은 scan 결과 항목이다.
+// KVItem is a single item in a scan result.
 type KVItem struct {
 	Key   string `json:"key"`
 	Value []byte `json:"value"`
 }
 
-// KVResponse는 KV Actor의 응답 타입이다.
+// KVResponse is the response type for the KV Actor.
 type KVResponse struct {
 	Value []byte   `json:"value"`
 	Found bool     `json:"found"`
-	Items []KVItem `json:"items"` // "scan" 결과
+	Items []KVItem `json:"items"` // "scan" results
 }
 
-// walOp는 WAL에 기록되는 변경 연산이다.
+// walOp is a mutation operation recorded in the WAL.
 type walOp struct {
 	Op    string `json:"op"`
 	Key   string `json:"key"`
 	Value []byte `json:"value"`
 }
 
-// kvActor는 파티션이 담당하는 키 범위의 데이터를 인메모리 map으로 관리한다.
+// kvActor manages the data for the key range owned by the partition using an in-memory map.
 type kvActor struct {
 	data map[string][]byte
 }
@@ -134,33 +134,33 @@ func (a *kvActor) Import(data []byte) error {
 	return nil
 }
 
-// KeyCount는 provider.Countable 구현. 현재 보유한 key 수를 반환한다.
+// KeyCount implements provider.Countable. Returns the number of keys currently held.
 func (a *kvActor) KeyCount() int64 {
 	return int64(len(a.data))
 }
 
-// ── Counter Actor 타입 정의 ───────────────────────────────────────────────────
+// ── Counter Actor type definitions ───────────────────────────────────────────
 
-// CounterRequest는 Counter Actor의 요청 타입이다.
+// CounterRequest is the request type for the Counter Actor.
 type CounterRequest struct {
 	Op  string `json:"op"`  // "inc", "dec", "get", "reset"
 	Key string `json:"key"`
-	By  int64  `json:"by"` // inc/dec 량 (0이면 1로 간주)
+	By  int64  `json:"by"` // amount to inc/dec (treated as 1 if 0)
 }
 
-// CounterResponse는 Counter Actor의 응답 타입이다.
+// CounterResponse is the response type for the Counter Actor.
 type CounterResponse struct {
 	Value int64 `json:"value"`
 }
 
-// counterWALOp는 WAL에 기록되는 counter 변경 연산이다.
+// counterWALOp is a counter mutation operation recorded in the WAL.
 type counterWALOp struct {
 	Op  string `json:"op"`
 	Key string `json:"key"`
 	By  int64  `json:"by"`
 }
 
-// counterActor는 파티션이 담당하는 키 범위의 카운터를 인메모리 map으로 관리한다.
+// counterActor manages the counters for the key range owned by the partition using an in-memory map.
 type counterActor struct {
 	data map[string]int64
 }
@@ -235,12 +235,12 @@ func (a *counterActor) Import(data []byte) error {
 	return nil
 }
 
-// KeyCount는 provider.Countable 구현.
+// KeyCount implements provider.Countable.
 func (a *counterActor) KeyCount() int64 {
 	return int64(len(a.data))
 }
 
-// ── main ───────────────────────────────────────────────────────────────────────
+// ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
 	nodeID := flag.String("node-id", "", "Unique node ID (default: hostname)")

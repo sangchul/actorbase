@@ -1,9 +1,9 @@
-// examples/s3_server는 actorbase Partition Server를 S3 메타데이터 서버로 실행하는 예시다.
+// examples/s3_server is an example of running an actorbase Partition Server as an S3 metadata server.
 //
-// bucketActor와 objectActor 두 가지 actor type을 단일 PS에 등록하여
-// S3의 bucket과 object 메타데이터를 actorbase 클러스터로 관리한다.
+// It registers two actor types — bucketActor and objectActor — on a single PS to manage
+// S3 bucket and object metadata using the actorbase cluster.
 //
-// 사용법:
+// Usage:
 //
 //	s3_server -node-id ps-1 -addr :8001 -etcd localhost:2379 \
 //	          -wal-dir /tmp/s3/wal -checkpoint-dir /tmp/s3/checkpoint

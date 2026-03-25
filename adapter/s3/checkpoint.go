@@ -12,19 +12,19 @@ import (
 	smithy "github.com/aws/smithy-go"
 )
 
-// CheckpointStore는 AWS S3(또는 S3-compatible) 기반 CheckpointStore 구현체.
+// CheckpointStore is a CheckpointStore implementation backed by AWS S3 (or an S3-compatible service).
 //
-// 오브젝트 키 구조:
+// Object key structure:
 //
-//	{prefix}/{partitionID}  (prefix="" 이면 {partitionID})
+//	{prefix}/{partitionID}  (if prefix="" then just {partitionID})
 type CheckpointStore struct {
 	client *s3.Client
 	bucket string
 	prefix string
 }
 
-// NewCheckpointStore는 S3 CheckpointStore를 생성한다.
-// prefix가 빈 문자열이면 partitionID가 그대로 오브젝트 키가 된다.
+// NewCheckpointStore creates an S3-backed CheckpointStore.
+// If prefix is an empty string, partitionID is used directly as the object key.
 func NewCheckpointStore(client *s3.Client, bucket, prefix string) *CheckpointStore {
 	return &CheckpointStore{
 		client: client,
@@ -33,7 +33,7 @@ func NewCheckpointStore(client *s3.Client, bucket, prefix string) *CheckpointSto
 	}
 }
 
-// Save는 파티션의 스냅샷을 S3에 저장한다. 기존 오브젝트가 있으면 덮어쓴다.
+// Save stores a snapshot of the partition to S3. Overwrites any existing object.
 func (s *CheckpointStore) Save(ctx context.Context, partitionID string, data []byte) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
@@ -47,8 +47,8 @@ func (s *CheckpointStore) Save(ctx context.Context, partitionID string, data []b
 	return nil
 }
 
-// Load는 파티션의 스냅샷을 S3에서 읽어 반환한다.
-// 오브젝트가 없으면 (nil, nil)을 반환한다.
+// Load reads and returns a snapshot of the partition from S3.
+// Returns (nil, nil) if the object does not exist.
 func (s *CheckpointStore) Load(ctx context.Context, partitionID string) ([]byte, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -69,7 +69,7 @@ func (s *CheckpointStore) Load(ctx context.Context, partitionID string) ([]byte,
 	return data, nil
 }
 
-// Delete는 파티션의 스냅샷을 S3에서 삭제한다. 오브젝트가 없으면 no-op.
+// Delete removes the snapshot for the partition from S3. No-op if the object does not exist.
 func (s *CheckpointStore) Delete(ctx context.Context, partitionID string) error {
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -88,8 +88,8 @@ func (s *CheckpointStore) objectKey(partitionID string) string {
 	return s.prefix + "/" + partitionID
 }
 
-// isNoSuchKey는 S3 "NoSuchKey" 오류 여부를 판별한다.
-// 타입 어설션 대신 코드 문자열 비교를 사용하여 S3-compatible 서비스와의 호환성을 높인다.
+// isNoSuchKey determines whether the error is an S3 "NoSuchKey" error.
+// Uses error code string comparison instead of type assertion for broader compatibility with S3-compatible services.
 func isNoSuchKey(err error) bool {
 	var apiErr smithy.APIError
 	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey"

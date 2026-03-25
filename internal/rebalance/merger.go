@@ -10,14 +10,14 @@ import (
 	"github.com/sangchul/actorbase/internal/transport"
 )
 
-// Merger는 인접한 두 파티션의 merge를 조율한다.
-// lower 파티션이 upper 파티션의 상태를 흡수한다.
+// Merger orchestrates the merge of two adjacent partitions.
+// The lower partition absorbs the state of the upper partition.
 type Merger struct {
 	routingStore cluster.RoutingTableStore
 	connPool     *transport.ConnPool
 }
 
-// NewMerger는 Merger를 생성한다.
+// NewMerger creates a Merger.
 func NewMerger(routingStore cluster.RoutingTableStore, connPool *transport.ConnPool) *Merger {
 	return &Merger{
 		routingStore: routingStore,
@@ -25,10 +25,11 @@ func NewMerger(routingStore cluster.RoutingTableStore, connPool *transport.ConnP
 	}
 }
 
-// Merge는 lowerPartitionID에 upperPartitionID를 흡수시킨다.
-// 두 파티션은 같은 actorType, 인접 KeyRange, 같은 노드에 있어야 한다.
+// Merge absorbs upperPartitionID into lowerPartitionID.
+// Both partitions must share the same actorType, have adjacent KeyRanges,
+// and reside on the same node.
 func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error {
-	// 1. 현재 라우팅 테이블 조회
+	// 1. Load the current routing table.
 	rt, err := m.routingStore.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("load routing table: %w", err)
@@ -37,7 +38,7 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 		return fmt.Errorf("routing table is empty")
 	}
 
-	// 2. 두 파티션 존재 검증
+	// 2. Validate that both partitions exist.
 	lowerEntry, ok := rt.LookupByPartition(lowerPartitionID)
 	if !ok {
 		return fmt.Errorf("lower partition %s not found in routing table", lowerPartitionID)
@@ -47,7 +48,7 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 		return fmt.Errorf("upper partition %s not found in routing table", upperPartitionID)
 	}
 
-	// 3. actor type 검증
+	// 3. Validate actor type.
 	if lowerEntry.Partition.ActorType != actorType {
 		return fmt.Errorf("actor type mismatch: lower partition %s has actor type %q, got %q",
 			lowerPartitionID, lowerEntry.Partition.ActorType, actorType)
@@ -57,19 +58,19 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 			upperPartitionID, upperEntry.Partition.ActorType, actorType)
 	}
 
-	// 4. 인접 KeyRange 검증: lower.End == upper.Start
+	// 4. Validate adjacency: lower.End == upper.Start.
 	if lowerEntry.Partition.KeyRange.End != upperEntry.Partition.KeyRange.Start {
 		return fmt.Errorf("partitions are not adjacent: lower.End=%q != upper.Start=%q",
 			lowerEntry.Partition.KeyRange.End, upperEntry.Partition.KeyRange.Start)
 	}
 
-	// 5. 같은 노드 검증
+	// 5. Validate that both partitions are on the same node.
 	if lowerEntry.Node.ID != upperEntry.Node.ID {
 		return fmt.Errorf("partitions are on different nodes: lower=%s, upper=%s",
 			lowerEntry.Node.ID, upperEntry.Node.ID)
 	}
 
-	// 6. 두 파티션 모두 Active 상태 검증
+	// 6. Validate that both partitions are in Active status.
 	if lowerEntry.PartitionStatus != domain.PartitionStatusActive {
 		return fmt.Errorf("lower partition %s is not active", lowerPartitionID)
 	}
@@ -82,7 +83,7 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 		"lower", lowerPartitionID, "upper", upperPartitionID,
 		"node", lowerEntry.Node.ID)
 
-	// 7. 두 파티션 Draining (라우팅 테이블 갱신 → SDK: ErrPartitionBusy)
+	// 7. Set both partitions to Draining in the routing table (SDK receives ErrPartitionBusy).
 	drainingRT, err := buildMergeDrainingTable(rt, lowerPartitionID, upperPartitionID)
 	if err != nil {
 		return fmt.Errorf("build draining routing table: %w", err)
@@ -91,7 +92,7 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 		return fmt.Errorf("save draining routing table: %w", err)
 	}
 
-	// 8. PS에 ExecuteMerge RPC
+	// 8. Send ExecuteMerge RPC to the PS.
 	conn, err := m.connPool.Get(lowerEntry.Node.Address)
 	if err != nil {
 		m.revertToActive(ctx, rt)
@@ -103,7 +104,7 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 		return fmt.Errorf("execute merge on PS: %w", err)
 	}
 
-	// 9. 라우팅 테이블 갱신: lower의 KeyRange.End = upper.KeyRange.End, upper 삭제
+	// 9. Update routing table: extend lower's KeyRange.End to upper's KeyRange.End and remove upper.
 	mergedRT, err := buildMergedTable(rt, lowerPartitionID, upperPartitionID, upperEntry.Partition.KeyRange.End)
 	if err != nil {
 		return fmt.Errorf("build merged routing table: %w", err)
@@ -119,14 +120,15 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 	return nil
 }
 
-// revertToActive는 merge 실패 시 라우팅 테이블을 이전 상태로 복구한다.
+// revertToActive restores the routing table to the previous state on merge failure.
 func (m *Merger) revertToActive(ctx context.Context, original *domain.RoutingTable) {
 	if err := m.routingStore.Save(ctx, original); err != nil {
 		slog.Error("failed to revert routing table after merge failure", "err", err)
 	}
 }
 
-// buildMergeDrainingTable은 두 파티션의 PartitionStatus를 Draining으로 변경한 새 RoutingTable을 반환한다.
+// buildMergeDrainingTable returns a new RoutingTable with both partitions'
+// PartitionStatus set to Draining.
 func buildMergeDrainingTable(rt *domain.RoutingTable, lowerID, upperID string) (*domain.RoutingTable, error) {
 	entries := rt.Entries()
 	for i, e := range entries {
@@ -137,13 +139,14 @@ func buildMergeDrainingTable(rt *domain.RoutingTable, lowerID, upperID string) (
 	return domain.NewRoutingTable(rt.Version()+1, entries)
 }
 
-// buildMergedTable은 lower 파티션의 KeyRange를 확장하고 upper 파티션을 삭제한 새 RoutingTable을 반환한다.
+// buildMergedTable returns a new RoutingTable with the lower partition's
+// KeyRange extended and the upper partition removed.
 func buildMergedTable(rt *domain.RoutingTable, lowerID, upperID, newEnd string) (*domain.RoutingTable, error) {
 	entries := rt.Entries()
 	result := make([]domain.RouteEntry, 0, len(entries)-1)
 	for _, e := range entries {
 		if e.Partition.ID == upperID {
-			continue // upper 파티션 삭제
+			continue // Remove the upper partition.
 		}
 		if e.Partition.ID == lowerID {
 			e.Partition.KeyRange.End = newEnd

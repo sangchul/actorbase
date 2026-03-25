@@ -40,7 +40,7 @@ func TestNewRoutingTable_RejectsDuplicatePartitionID(t *testing.T) {
 }
 
 func TestNewRoutingTable_RejectsOverlappingRanges(t *testing.T) {
-	// 동일 actorType 내 겹치는 범위는 에러
+	// overlapping ranges within the same actorType should return an error
 	entries := []RouteEntry{
 		makeEntry("p1", "a", "n", "n1", "n1:9000"),
 		makeEntry("p2", "m", "z", "n1", "n1:9000"),
@@ -52,7 +52,7 @@ func TestNewRoutingTable_RejectsOverlappingRanges(t *testing.T) {
 }
 
 func TestNewRoutingTable_AllowsOverlappingRangesDifferentActorTypes(t *testing.T) {
-	// 서로 다른 actorType 간 겹치는 범위는 허용
+	// overlapping ranges across different actorTypes are allowed
 	entries := []RouteEntry{
 		{
 			Partition: Partition{ID: "p1", ActorType: "bucket", KeyRange: KeyRange{Start: "a", End: "m"}},
@@ -105,7 +105,7 @@ func TestRoutingTable_Lookup(t *testing.T) {
 		}
 	}
 
-	// 다른 actorType으로 조회하면 찾지 못해야 함
+	// lookup with a different actorType should return false
 	_, found := rt.Lookup("other", "m")
 	if found {
 		t.Error("Lookup with unknown actorType should return false")
@@ -183,7 +183,7 @@ func TestRoutingTable_PartitionsInRange(t *testing.T) {
 			wantIDs: []string{"p2", "p3"},
 		},
 		{
-			name:    `[z,"") 상한 없음 → p4까지`,
+			name:    `[z,"") no upper bound → up to p4`,
 			start:   "z", end: "",
 			wantIDs: []string{"p4"},
 		},
@@ -193,12 +193,12 @@ func TestRoutingTable_PartitionsInRange(t *testing.T) {
 			wantIDs: []string{"p2"},
 		},
 		{
-			name:    "경계선 정확히 일치: [f,m) → p2",
+			name:    "exact boundary match: [f,m) → p2",
 			start:   "f", end: "m",
 			wantIDs: []string{"p2"},
 		},
 		{
-			name:    `전체 범위 [a,"") → 모든 파티션`,
+			name:    `full range [a,"") → all partitions`,
 			start:   "a", end: "",
 			wantIDs: []string{"p1", "p2", "p3", "p4"},
 		},
@@ -219,7 +219,7 @@ func TestRoutingTable_PartitionsInRange(t *testing.T) {
 		})
 	}
 
-	// 알 수 없는 actorType → nil
+	// unknown actorType → nil
 	got := rt.PartitionsInRange("other", "a", "z")
 	if got != nil {
 		t.Error("PartitionsInRange with unknown actorType should return nil")

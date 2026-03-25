@@ -23,8 +23,8 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// Server는 Partition Manager의 진입점.
-// 컴포넌트를 조립하고 gRPC 서버를 기동·관리한다.
+// Server is the entry point for the Partition Manager.
+// Assembles components and starts/manages the gRPC server.
 type Server struct {
 	cfg          Config
 	etcdCli      *clientv3.Client
@@ -37,34 +37,34 @@ type Server struct {
 	connPool     *transport.ConnPool
 	grpcSrv      *grpc.Server
 
-	// 현재 라우팅 테이블. WatchRouting 스트림 신규 연결 시 즉시 전달용.
+	// Current routing table. Delivered immediately when a new WatchRouting stream connects.
 	routing atomic.Pointer[domain.RoutingTable]
 
-	// WatchRouting 구독자 관리
+	// WatchRouting subscriber management.
 	subsMu      sync.RWMutex
 	subscribers map[string]*subscriber // clientID → subscriber
 
-	// split/migrate 직렬화. PM 단일 인스턴스이지만 동시 RPC 요청 방어.
+	// Serializes split/migrate operations. The PM is a single instance, but concurrent RPC requests must be guarded.
 	opMu sync.Mutex
 
-	// YAML 기반 policy 상태. nil이면 AutoPolicy 비활성.
+	// YAML-based policy state. nil means AutoPolicy is inactive.
 	policyMu         sync.RWMutex
-	activePolicy     provider.BalancePolicy // YAML로 적용된 policy 구현체
-	activeRunnerCfg  *policy.RunnerConfig   // balancerRunner 실행 파라미터
-	activePolicyYAML string                 // etcd 저장 원본 (GetPolicy 반환용)
-	balancerCancel   context.CancelFunc     // balancerRunner goroutine 취소용
+	activePolicy     provider.BalancePolicy // Policy implementation applied via YAML.
+	activeRunnerCfg  *policy.RunnerConfig   // Parameters for the balancerRunner.
+	activePolicyYAML string                 // Raw YAML stored in etcd (returned by GetPolicy).
+	balancerCancel   context.CancelFunc     // Cancels the balancerRunner goroutine.
 
-	// serverCtx는 Start()의 ctx를 저장해 applyPolicy에서 balancer lifetime에 사용한다.
+	// serverCtx stores the ctx from Start() and is used in applyPolicy for the balancer lifetime.
 	serverCtx context.Context
 }
 
-// subscriber는 WatchRouting 스트림 하나의 상태를 담는다.
+// subscriber holds the state for a single WatchRouting stream.
 type subscriber struct {
 	latest atomic.Pointer[domain.RoutingTable]
-	notify chan struct{} // 버퍼 크기 1. 새 라우팅 테이블 도착 신호.
+	notify chan struct{} // Buffered with size 1. Signals arrival of a new routing table.
 }
 
-// NewServer는 Config를 검증하고 컴포넌트를 조립한다.
+// NewServer validates the Config and assembles the components.
 func NewServer(cfg Config) (*Server, error) {
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
@@ -111,20 +111,20 @@ func NewServer(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// Start는 PM을 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
-// HA 모드에서는 etcd election을 통해 리더가 될 때까지 블로킹한다.
-// 리더가 된 PM만 gRPC 포트를 열고 실제 서비스를 시작한다.
+// Start starts the PM. Returns after graceful shutdown when ctx is cancelled.
+// In HA mode, blocks until this instance wins the etcd leader election.
+// Only the elected leader opens the gRPC port and starts serving.
 func (s *Server) Start(ctx context.Context) error {
 	s.serverCtx = ctx
 
-	// 1. etcd election — 리더가 될 때까지 블로킹 (standby는 여기서 대기)
+	// 1. etcd election — block until this instance becomes the leader (standbys wait here).
 	sess, err := cluster.CampaignLeader(ctx, s.etcdCli, s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("pm: leader election: %w", err)
 	}
 	defer sess.Close() //nolint:errcheck — resign on shutdown
 
-	// 2. etcd에서 YAML policy 복원
+	// 2. Restore YAML policy from etcd.
 	if yamlStr, err := cluster.LoadPolicy(ctx, s.etcdCli); err != nil {
 		slog.Warn("pm: load policy from etcd failed", "err", err)
 	} else if yamlStr != "" {
@@ -144,31 +144,31 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
-	// 3. 라우팅 테이블 초기값 설정
+	// 3. Load the initial routing table.
 	currentRT, err := s.routingStore.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("pm: load routing table: %w", err)
 	}
 	s.routing.Store(currentRT)
 
-	// 4. etcd watch → 구독자 broadcast
+	// 4. Watch etcd and broadcast updates to subscribers.
 	go s.watchRouting(ctx)
 
-	// 5. 노드 join/leave → BalancePolicy 호출
+	// 5. Watch node join/leave events and invoke BalancePolicy.
 	go s.watchMembership(ctx)
 
-	// 6. 빈 클러스터면 첫 PS 등록 대기 후 초기 테이블 생성
+	// 6. If the cluster is empty, wait for the first PS to register and create the initial routing table.
 	if currentRT == nil {
 		go s.bootstrap(ctx)
 	}
 
-	// 7. 웹 콘솔 HTTP 서버 시작 (설정된 경우)
+	// 7. Start the web console HTTP server if configured.
 	if s.cfg.HTTPAddr != "" {
 		consoleSrv := console.NewServer(s.cfg.HTTPAddr, s.cfg.ListenAddr)
 		go consoleSrv.Start(ctx)
 	}
 
-	// 8. gRPC 수신 시작
+	// 8. Start accepting gRPC connections.
 	lis, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("pm: listen %s: %w", s.cfg.ListenAddr, err)
@@ -212,7 +212,7 @@ func (s *Server) broadcast(rt *domain.RoutingTable) {
 	}
 }
 
-// watchMembership은 노드 join/leave 이벤트를 BalancePolicy에 전달하고 반환된 액션을 실행한다.
+// watchMembership delivers node join/leave events to BalancePolicy and executes the returned actions.
 func (s *Server) watchMembership(ctx context.Context) {
 	slog.Info("pm: membership watcher started")
 	ch := s.membership.Watch(ctx)
@@ -279,20 +279,20 @@ func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reaso
 	slog.Info("pm: handleNodeLeft: policy returned actions", "node", node.ID, "actions", len(actions))
 	s.executeBalanceActions(ctx, actions)
 
-	// Policy와 무관하게 항상 dead node의 잔여 파티션을 failover.
-	// policy가 이미 처리했으면 라우팅 테이블에 해당 파티션이 없으므로 자연히 no-op.
+	// Always failover remaining partitions of the dead node, regardless of policy.
+	// If the policy already handled them, they will no longer be in the routing table, making this a no-op.
 	s.failoverDeadNode(ctx, node.ID)
 }
 
-// failoverDeadNode는 Policy와 무관하게 dead node의 잔여 파티션을 active 노드로 failover한다.
-// graceful shutdown으로 미리 drain된 경우 라우팅 테이블에 해당 파티션이 없어 no-op가 된다.
+// failoverDeadNode failovers any remaining partitions of the dead node to active nodes, regardless of policy.
+// If the node was gracefully drained beforehand, no partitions remain in the routing table and this becomes a no-op.
 func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
 	rt, err := s.routingStore.Load(ctx)
 	if err != nil || rt == nil {
 		return
 	}
 
-	// dead node의 잔여 파티션 목록 (policy가 이미 처리했으면 비어 있음)
+	// List of remaining partitions on the dead node (empty if the policy already handled them).
 	var remaining []domain.RouteEntry
 	for _, entry := range rt.Entries() {
 		if entry.Node.ID == deadNodeID {
@@ -304,7 +304,7 @@ func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
 		return
 	}
 
-	// 가용 target 노드 조회
+	// Find available target nodes.
 	nodes, err := s.nodeRegistry.ListNodes(ctx)
 	if err != nil {
 		slog.Error("pm: failoverDeadNode: list nodes failed", "err", err)
@@ -339,8 +339,8 @@ func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
 	}
 }
 
-// activeBalancePolicy는 현재 활성 BalancePolicy를 반환한다.
-// YAML policy가 적용 중이면 그 구현체를, 아니면 cfg.BalancePolicy를 반환한다.
+// activeBalancePolicy returns the currently active BalancePolicy.
+// Returns the YAML-applied implementation if one is active, otherwise falls back to cfg.BalancePolicy.
 func (s *Server) activeBalancePolicy() provider.BalancePolicy {
 	s.policyMu.RLock()
 	pol := s.activePolicy
@@ -351,8 +351,8 @@ func (s *Server) activeBalancePolicy() provider.BalancePolicy {
 	return s.cfg.BalancePolicy
 }
 
-// quickClusterStats는 이벤트 핸들러용 경량 ClusterStats를 구성한다.
-// live 노드는 파티션 목록(라우팅 테이블 기반, RPS 없음), dead 노드도 라우팅 테이블 기반.
+// quickClusterStats builds a lightweight ClusterStats for event handlers.
+// Live nodes carry a partition list based on the routing table (no RPS); dead nodes are also routing-table-based.
 func (s *Server) quickClusterStats(ctx context.Context, nodes []domain.NodeInfo, rt *domain.RoutingTable, deadNodeID string) provider.ClusterStats {
 	_ = ctx
 	partitionsByNode := make(map[string][]provider.PartitionInfo)
@@ -371,7 +371,7 @@ func (s *Server) quickClusterStats(ctx context.Context, nodes []domain.NodeInfo,
 
 	nodeStats := make([]provider.NodeStats, 0, len(nodes)+1)
 
-	// live 노드
+	// Live nodes.
 	liveIDs := make(map[string]bool)
 	for _, n := range nodes {
 		liveIDs[n.ID] = true
@@ -383,7 +383,7 @@ func (s *Server) quickClusterStats(ctx context.Context, nodes []domain.NodeInfo,
 		nodeStats = append(nodeStats, ns)
 	}
 
-	// dead 노드가 nodes 목록에 없으면 (이미 etcd에서 제거된 경우) 별도 추가
+	// If the dead node is no longer in the nodes list (already removed from etcd), add it separately.
 	if deadNodeID != "" && !liveIDs[deadNodeID] {
 		nodeStats = append(nodeStats, provider.NodeStats{
 			Node:       provider.NodeInfo{ID: deadNodeID},
@@ -395,7 +395,7 @@ func (s *Server) quickClusterStats(ctx context.Context, nodes []domain.NodeInfo,
 	return provider.ClusterStats{Nodes: nodeStats}
 }
 
-// executeBalanceActions는 BalancePolicy가 반환한 액션을 실행한다.
+// executeBalanceActions executes the actions returned by BalancePolicy.
 func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.BalanceAction) {
 	for _, action := range actions {
 		switch action.Type {
@@ -500,15 +500,15 @@ func (s *Server) bootstrap(ctx context.Context) {
 	}
 }
 
-// isAutoActive는 YAML AutoPolicy가 활성화 상태인지 반환한다.
+// isAutoActive reports whether the YAML AutoPolicy is currently active.
 func (s *Server) isAutoActive() bool {
 	s.policyMu.RLock()
 	defer s.policyMu.RUnlock()
 	return s.activeRunnerCfg != nil
 }
 
-// applyPolicy는 YAML 기반 policy를 적용하고 balancerRunner를 재시작한다.
-// pol과 runnerCfg는 policy.ParsePolicy로부터 얻는다.
+// applyPolicy applies a YAML-based policy and restarts the balancerRunner.
+// pol and runnerCfg are obtained from policy.ParsePolicy.
 func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.BalancePolicy, runnerCfg *policy.RunnerConfig) error {
 	if err := cluster.SavePolicy(ctx, s.etcdCli, yamlStr); err != nil {
 		return err
@@ -529,7 +529,7 @@ func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.B
 	return nil
 }
 
-// clearPolicy는 YAML policy를 제거한다. 이후 cfg.BalancePolicy(코드 주입)로 복귀한다.
+// clearPolicy removes the YAML policy and reverts to cfg.BalancePolicy (the code-injected policy).
 func (s *Server) clearPolicy(ctx context.Context) error {
 	if err := cluster.ClearPolicy(ctx, s.etcdCli); err != nil {
 		return err

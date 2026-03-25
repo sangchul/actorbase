@@ -12,18 +12,19 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// ServerConfig는 gRPC 서버 공통 설정.
+// ServerConfig holds common gRPC server configuration.
 type ServerConfig struct {
 	ListenAddr string
 	Metrics    provider.Metrics
 }
 
-// NewGRPCServer는 공통 interceptor가 적용된 *grpc.Server를 반환한다.
+// NewGRPCServer returns a *grpc.Server with common interceptors applied.
 //
-// 적용 interceptor (unary + stream):
-//   - 패닉 recover: goroutine panic → INTERNAL status 변환
-//   - 요청 로깅:   slog로 method, duration, status 기록
-//   - 메트릭 수집: 요청 수, 에러 수, latency histogram (Metrics가 non-nil일 때)
+// Applied interceptors (unary + stream):
+//   - Panic recovery: goroutine panics are converted to INTERNAL status.
+//   - Request logging: method, duration, and status are recorded via slog.
+//   - Metrics collection: request count, error count, and latency histogram
+//     (only when Metrics is non-nil).
 func NewGRPCServer(cfg ServerConfig) *grpc.Server {
 	return grpc.NewServer(
 		grpc.ChainUnaryInterceptor(

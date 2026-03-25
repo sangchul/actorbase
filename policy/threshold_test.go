@@ -7,7 +7,7 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// ── 헬퍼 ─────────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func makeNodeStats(nodeID string, reachable bool, parts ...provider.PartitionInfo) provider.NodeStats {
 	return provider.NodeStats{
@@ -83,7 +83,7 @@ func TestThresholdPolicy_Evaluate_NoSplitBelowThreshold(t *testing.T) {
 	)
 
 	actions := p.Evaluate(context.Background(), stats)
-	// split 없음 → 노드 1개이므로 migrate도 없음
+	// no split → only one node so no migrate either
 	for _, a := range actions {
 		if a.Type == provider.ActionSplit {
 			t.Errorf("unexpected ActionSplit: %+v", a)
@@ -92,7 +92,7 @@ func TestThresholdPolicy_Evaluate_NoSplitBelowThreshold(t *testing.T) {
 }
 
 func TestThresholdPolicy_Evaluate_NoSplitForNonCountable(t *testing.T) {
-	// KeyCount=-1이면 key_threshold 비교 생략
+	// KeyCount=-1 means the key_threshold comparison is skipped
 	p := NewThresholdPolicy(defaultCfg)
 	stats := makeClusterStats(
 		makeNodeStats("n1", true, makePartInfo("p1", "kv", -1, 100)),
@@ -133,7 +133,7 @@ func TestThresholdPolicy_Evaluate_Migrate(t *testing.T) {
 func TestThresholdPolicy_Evaluate_NilWhenBalanced(t *testing.T) {
 	p := NewThresholdPolicy(defaultCfg)
 	// n1: 2 partitions, n2: 1 partition — diff=1 ≤ MaxPartitionDiff=2
-	// RPS도 균등하게 맞춰 rpsImbalance 트리거를 피한다
+	// RPS is also balanced to avoid triggering rpsImbalance
 	stats := makeClusterStats(
 		makeNodeStats("n1", true,
 			makePartInfo("p1", "kv", 100, 50),
@@ -152,7 +152,8 @@ func TestThresholdPolicy_Evaluate_NilWhenBalanced(t *testing.T) {
 
 func TestThresholdPolicy_Evaluate_SkipsUnreachableNode(t *testing.T) {
 	p := NewThresholdPolicy(defaultCfg)
-	// 도달 불가 노드의 파티션은 split 대상에서 제외
+	// partitions on an unreachable node are excluded from split candidates
+
 	stats := makeClusterStats(
 		makeNodeStats("n1", false, makePartInfo("p1", "kv", 99999, 99999)),
 	)
@@ -195,7 +196,7 @@ func TestThresholdPolicy_OnNodeLeft_Failover(t *testing.T) {
 func TestThresholdPolicy_OnNodeLeft_NoLiveNodes(t *testing.T) {
 	p := NewThresholdPolicy(defaultCfg)
 	deadNode := provider.NodeInfo{ID: "n1", Addr: "n1:9000"}
-	// n1만 존재하고 죽음 — 살아있는 대상 노드 없음
+	// only n1 exists and it is dead — no live target nodes
 	stats := makeClusterStats(
 		makeNodeStats("n1", false, makePartInfo("p1", "kv", -1, 0)),
 	)
@@ -208,10 +209,10 @@ func TestThresholdPolicy_OnNodeLeft_NoLiveNodes(t *testing.T) {
 
 func TestThresholdPolicy_OnNodeLeft_GracefulNoop(t *testing.T) {
 	p := NewThresholdPolicy(defaultCfg)
-	// Graceful shutdown: dead node에 파티션 없음 (drain 완료)
+	// Graceful shutdown: dead node has no partitions (drain completed)
 	node := provider.NodeInfo{ID: "n1", Addr: "n1:9000"}
 	stats := makeClusterStats(
-		makeNodeStats("n1", false), // 파티션 없음
+		makeNodeStats("n1", false), // no partitions
 		makeNodeStats("n2", true, makePartInfo("p1", "kv", -1, 0)),
 	)
 
@@ -234,7 +235,7 @@ func TestThresholdPolicy_OnNodeJoined_MigratesFromHeaviest(t *testing.T) {
 		makeNodeStats("n2", true,
 			makePartInfo("p3", "kv", -1, 0),
 		),
-		makeNodeStats("n3", true), // 새 노드 (비어 있음)
+		makeNodeStats("n3", true), // new node (empty)
 	)
 
 	actions := p.OnNodeJoined(context.Background(), newNode, stats)
@@ -254,7 +255,7 @@ func TestThresholdPolicy_OnNodeJoined_NoMigrateIfSinglePartition(t *testing.T) {
 	newNode := provider.NodeInfo{ID: "n2", Addr: "n2:9000"}
 	stats := makeClusterStats(
 		makeNodeStats("n1", true, makePartInfo("p1", "kv", -1, 0)), // maxCount=1 ≤ 1
-		makeNodeStats("n2", true), // 새 노드
+		makeNodeStats("n2", true), // new node
 	)
 
 	actions := p.OnNodeJoined(context.Background(), newNode, stats)
@@ -296,7 +297,7 @@ func TestThresholdPolicy_Evaluate_MergeAfterStableRounds(t *testing.T) {
 	p := NewThresholdPolicy(mergeCfg)
 	ctx := context.Background()
 
-	// 인접 파티션 쌍: p1 [a, m), p2 [m, "")
+	// adjacent partition pair: p1 [a, m), p2 [m, "")
 	stats := makeClusterStats(
 		makeNodeStats("n1", true,
 			makePartInfoWithRange("p1", "kv", 100, 10, "a", "m"),
@@ -304,7 +305,7 @@ func TestThresholdPolicy_Evaluate_MergeAfterStableRounds(t *testing.T) {
 		),
 	)
 
-	// 1차, 2차: stable_rounds=3 미달 → merge 없음
+	// rounds 1 and 2: stable_rounds=3 not yet reached → no merge
 	for i := 0; i < 2; i++ {
 		actions := p.Evaluate(ctx, stats)
 		if len(actions) != 0 {
@@ -312,7 +313,7 @@ func TestThresholdPolicy_Evaluate_MergeAfterStableRounds(t *testing.T) {
 		}
 	}
 
-	// 3차: stable_rounds 달성 → merge 반환
+	// round 3: stable_rounds reached → merge returned
 	actions := p.Evaluate(ctx, stats)
 	if len(actions) != 1 {
 		t.Fatalf("round 3: expected 1 merge action, got %d", len(actions))
@@ -341,19 +342,19 @@ func TestThresholdPolicy_Evaluate_MergeStableCountResets(t *testing.T) {
 	highStats := makeClusterStats(
 		makeNodeStats("n1", true,
 			makePartInfoWithRange("p1", "kv", 100, 10, "a", "m"),
-			makePartInfoWithRange("p2", "kv", 100, 200, "m", ""), // 합산 210 > 100
+			makePartInfoWithRange("p2", "kv", 100, 200, "m", ""), // combined 210 > 100
 		),
 	)
 
-	// 2회 조건 충족
+	// 2 rounds meeting the condition
 	p.Evaluate(ctx, lowStats)
 	p.Evaluate(ctx, lowStats)
-	// 1회 조건 불충족 → 리셋
+	// 1 round not meeting the condition → reset
 	p.Evaluate(ctx, highStats)
-	// 다시 2회 조건 충족 → 아직 3회 연속 아님
+	// 2 more rounds meeting the condition → not yet 3 consecutive
 	p.Evaluate(ctx, lowStats)
 	p.Evaluate(ctx, lowStats)
-	actions := p.Evaluate(ctx, lowStats) // 이제 3회 연속
+	actions := p.Evaluate(ctx, lowStats) // now 3 consecutive rounds
 
 	if len(actions) != 1 || actions[0].Type != provider.ActionMerge {
 		t.Fatalf("expected merge after reset + 3 stable rounds, got %+v", actions)
@@ -364,7 +365,7 @@ func TestThresholdPolicy_Evaluate_NoMergeAboveThreshold(t *testing.T) {
 	p := NewThresholdPolicy(mergeCfg)
 	ctx := context.Background()
 
-	// 합산 RPS=120 > threshold=100 → merge 안 됨
+	// combined RPS=120 > threshold=100 → no merge
 	stats := makeClusterStats(
 		makeNodeStats("n1", true,
 			makePartInfoWithRange("p1", "kv", 100, 60, "a", "m"),
@@ -386,7 +387,7 @@ func TestThresholdPolicy_Evaluate_NoMergeNonAdjacent(t *testing.T) {
 	p := NewThresholdPolicy(mergeCfg)
 	ctx := context.Background()
 
-	// 인접하지 않은 파티션: p1 [a, g), p2 [m, "") — gap 존재
+	// non-adjacent partitions: p1 [a, g), p2 [m, "") — gap exists
 	stats := makeClusterStats(
 		makeNodeStats("n1", true,
 			makePartInfoWithRange("p1", "kv", 100, 10, "a", "g"),
@@ -405,7 +406,7 @@ func TestThresholdPolicy_Evaluate_NoMergeNonAdjacent(t *testing.T) {
 }
 
 func TestThresholdPolicy_Evaluate_NoMergeConfigDisabled(t *testing.T) {
-	// merge config 없으면 merge 안 됨
+	// no merge config means merge is disabled
 	p := NewThresholdPolicy(defaultCfg)
 	ctx := context.Background()
 

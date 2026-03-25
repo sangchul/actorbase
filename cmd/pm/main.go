@@ -1,4 +1,4 @@
-// cmd/pm은 actorbase Partition Manager 실행 바이너리다.
+// cmd/pm is the actorbase Partition Manager binary.
 package main
 
 import (

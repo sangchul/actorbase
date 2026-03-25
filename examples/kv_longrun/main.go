@@ -1,16 +1,16 @@
-// examples/kv_longrun은 actorbase 클러스터를 대상으로 장기 부하 테스트와 일관성 검증을 수행한다.
+// examples/kv_longrun runs long-duration load tests and consistency verification against an actorbase cluster.
 //
-// 실행 모드:
-//   - 부하 모드 (기본): worker가 set/del/get을 반복하고, 성공한 연산을 ledger에 기록한다.
-//     ledger는 주기적으로 파일에 flush된다.
-//   - 검증 모드 (-verify): ledger를 불러와 서버의 모든 키를 조회하고 일치 여부를 확인한다.
+// Run modes:
+//   - Load mode (default): workers repeatedly perform set/del/get and record successful operations in the ledger.
+//     The ledger is periodically flushed to a file.
+//   - Verify mode (-verify): loads the ledger, queries all keys from the server, and checks for consistency.
 //
-// 사용 예:
+// Usage examples:
 //
-//	# 8분 부하 + 정답지 기록
+//	# 8-minute load test + ledger recording
 //	kv_longrun -pm localhost:8000 -duration 8m -workers 20
 //
-//	# 부하 종료 후 검증
+//	# Verify after load completes
 //	kv_longrun -pm localhost:8000 -verify
 package main
 
@@ -29,7 +29,7 @@ import (
 	"github.com/sangchul/actorbase/sdk"
 )
 
-// KVRequest / KVResponse는 kv_server와 동일하다.
+// KVRequest / KVResponse must match the types used by kv_server.
 type KVRequest struct {
 	Op    string `json:"op"`
 	Key   string `json:"key"`
@@ -92,10 +92,10 @@ func runLoad(
 ) {
 	ledger := NewLedger(ledgerPath)
 
-	// stopCh: worker가 새 요청을 시작하지 않도록 신호하는 채널.
-	// ctx와 분리하여 in-flight 요청이 ctx로 완전히 완료된 후 flush한다.
-	// 이렇게 하면 deadline 직전에 서버에서 커밋된 요청이 ctx 취소로 인해
-	// 클라이언트 측에서 실패 처리되어 ledger에 누락되는 race condition을 방지한다.
+	// stopCh: channel used to signal workers to stop starting new requests.
+	// Kept separate from ctx so that in-flight requests can complete fully via ctx before flushing.
+	// This prevents a race condition where a request committed by the server just before the deadline
+	// gets treated as a failure on the client side due to ctx cancellation, causing it to be missed in the ledger.
 	stopCh := make(chan struct{})
 
 	stats := &Stats{}
@@ -138,14 +138,14 @@ func runLoad(
 		"duration", duration,
 	)
 
-	// duration 또는 외부 인터럽트까지 대기
+	// Wait until duration elapses or an external interrupt is received
 	if duration > 0 {
 		select {
 		case <-time.After(duration):
 		case <-ctx.Done():
 		}
 	} else {
-		// duration=0: 인터럽트까지 무한 실행
+		// duration=0: run indefinitely until interrupted
 		for {
 			select {
 			case <-ctx.Done():
@@ -164,13 +164,13 @@ func runLoad(
 	}
 
 done:
-	// 새 요청 중단 신호 → worker들이 현재 진행 중인 요청만 완료 후 종료
+	// Signal workers to stop starting new requests; each worker finishes its current in-flight request before exiting
 	close(stopCh)
 
-	// 모든 worker의 in-flight 요청 완료 대기
+	// Wait for all workers' in-flight requests to complete
 	wg.Wait()
 
-	// 모든 worker가 ledger를 업데이트한 후 flush
+	// Flush after all workers have updated the ledger
 	if err := ledger.Flush(); err != nil {
 		slog.Error("final ledger flush failed", "err", err)
 	} else {

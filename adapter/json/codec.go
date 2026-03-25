@@ -3,10 +3,10 @@ package json
 
 import "encoding/json"
 
-// Codec은 encoding/json 기반 Codec 구현체.
+// Codec is a Codec implementation based on encoding/json.
 type Codec struct{}
 
-// New는 JSON Codec을 반환한다.
+// New returns a JSON Codec.
 func New() *Codec {
 	return &Codec{}
 }

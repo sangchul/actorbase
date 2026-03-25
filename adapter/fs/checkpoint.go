@@ -8,20 +8,20 @@ import (
 	"sync"
 )
 
-// CheckpointStore는 파일시스템 기반 CheckpointStore 구현체.
+// CheckpointStore is a filesystem-based CheckpointStore implementation.
 //
-// 파일 구조:
+// File structure:
 //
 //	{baseDir}/{partitionID}.snapshot
 //
-// 저장 시 temp 파일에 먼저 쓴 뒤 rename하여 atomic write를 보장한다.
+// Writes first to a temp file then renames it to guarantee atomic writes.
 type CheckpointStore struct {
 	baseDir string
 	mu      sync.RWMutex
 }
 
-// NewCheckpointStore는 baseDir에 파일시스템 CheckpointStore를 생성한다.
-// baseDir이 존재하지 않으면 생성한다.
+// NewCheckpointStore creates a filesystem-based CheckpointStore at baseDir.
+// Creates baseDir if it does not exist.
 func NewCheckpointStore(baseDir string) (*CheckpointStore, error) {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("fs.CheckpointStore: create base dir: %w", err)
@@ -29,8 +29,8 @@ func NewCheckpointStore(baseDir string) (*CheckpointStore, error) {
 	return &CheckpointStore{baseDir: baseDir}, nil
 }
 
-// Save는 파티션의 스냅샷을 저장한다. 기존 스냅샷이 있으면 덮어쓴다.
-// temp 파일에 먼저 쓴 뒤 rename하여 atomic write를 보장한다.
+// Save stores a snapshot of the partition. Overwrites any existing snapshot.
+// Writes first to a temp file then renames it to guarantee atomic writes.
 func (s *CheckpointStore) Save(_ context.Context, partitionID string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -48,8 +48,8 @@ func (s *CheckpointStore) Save(_ context.Context, partitionID string, data []byt
 	return nil
 }
 
-// Load는 파티션의 스냅샷을 읽어 반환한다.
-// 스냅샷이 없으면 (nil, nil)을 반환한다.
+// Load reads and returns a snapshot of the partition.
+// Returns (nil, nil) if no snapshot exists.
 func (s *CheckpointStore) Load(_ context.Context, partitionID string) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -64,7 +64,7 @@ func (s *CheckpointStore) Load(_ context.Context, partitionID string) ([]byte, e
 	return data, nil
 }
 
-// Delete는 파티션의 스냅샷을 삭제한다. 스냅샷이 없으면 no-op.
+// Delete removes the snapshot for the partition. No-op if no snapshot exists.
 func (s *CheckpointStore) Delete(_ context.Context, partitionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -6,9 +6,9 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// RelativeConfig는 relative 알고리즘 기반 자동 split/balance 정책 설정 (YAML 파싱용).
+// RelativeConfig holds the configuration for the relative algorithm-based automatic split/balance policy (for YAML parsing).
 //
-// 예시 YAML:
+// Example YAML:
 //
 //	algorithm: relative
 //	check_interval: 30s
@@ -26,13 +26,13 @@ type RelativeConfig struct {
 	Balance BalanceConfig `yaml:"balance"`
 }
 
-// RelativeSplit은 relative 알고리즘의 split 설정.
+// RelativeSplit holds the split configuration for the relative algorithm.
 type RelativeSplit struct {
-	RPSMultiplier float64 `yaml:"rps_multiplier"` // 평균 RPS 대비 배수 (예: 3.0)
-	MinAvgRPS     float64 `yaml:"min_avg_rps"`    // split 고려 최소 평균 RPS
+	RPSMultiplier float64 `yaml:"rps_multiplier"` // multiplier relative to average RPS (e.g., 3.0)
+	MinAvgRPS     float64 `yaml:"min_avg_rps"`    // minimum average RPS required to consider a split
 }
 
-// NewRelativePolicy는 RelativeConfig로부터 RelativePolicy를 생성한다.
+// NewRelativePolicy creates a RelativePolicy from a RelativeConfig.
 func NewRelativePolicy(cfg *RelativeConfig) *RelativePolicy {
 	return &RelativePolicy{
 		SplitRPSMultiplier: cfg.Split.RPSMultiplier,
@@ -41,35 +41,37 @@ func NewRelativePolicy(cfg *RelativeConfig) *RelativePolicy {
 	}
 }
 
-// RelativePolicy는 클러스터 평균 대비 상대적 기준으로 split/migrate를 판단하는 BalancePolicy 구현체.
+// RelativePolicy is a BalancePolicy implementation that evaluates split/migrate decisions
+// based on relative thresholds compared to the cluster average.
 //
-// ThresholdPolicy가 절대 임계값(rps > 1000)을 사용하는 것과 달리,
-// RelativePolicy는 클러스터 전체 파티션의 평균 RPS 대비 배수로 split을 판단한다.
+// Unlike ThresholdPolicy which uses absolute thresholds (rps > 1000),
+// RelativePolicy determines splits by comparing a partition's RPS to a multiple of
+// the average RPS across all partitions in the cluster.
 //
-// 예) SplitRPSMultiplier=3.0, 평균 RPS=200 → 600 초과 파티션만 split.
-// 트래픽이 낮을 땐 자동으로 기준이 낮아지고, 높을 땐 올라간다.
-// MinAvgRPS로 트래픽이 너무 낮을 때 불필요한 split을 방지한다.
+// Example: SplitRPSMultiplier=3.0, average RPS=200 → only split partitions exceeding 600.
+// The threshold automatically lowers during low traffic and rises during high traffic.
+// MinAvgRPS prevents unnecessary splits when traffic is too low.
 type RelativePolicy struct {
-	// SplitRPSMultiplier는 split 기준 배수.
-	// 파티션 RPS가 (클러스터 평균 파티션 RPS × 배수)를 초과하면 split한다.
-	// 예) 3.0 → 평균의 3배 초과 시 split.
+	// SplitRPSMultiplier is the multiplier used as the split threshold.
+	// A partition is split when its RPS exceeds (cluster average partition RPS × multiplier).
+	// Example: 3.0 → split when a partition exceeds 3x the average.
 	SplitRPSMultiplier float64
 
-	// MinAvgRPS는 split을 고려하기 위한 최소 평균 RPS.
-	// 클러스터 평균 파티션 RPS가 이 값 미만이면 split하지 않는다.
-	// 트래픽이 극히 낮을 때 노이즈로 인한 split을 방지한다.
+	// MinAvgRPS is the minimum average RPS required to consider a split.
+	// No split occurs when the cluster average partition RPS is below this value.
+	// Prevents noise-triggered splits when traffic is extremely low.
 	MinAvgRPS float64
 
-	// Balance는 노드 간 파티션 이동 기준.
-	// ThresholdPolicy와 동일한 설정 구조를 사용한다.
+	// Balance defines the criteria for moving partitions between nodes.
+	// Uses the same configuration structure as ThresholdPolicy.
 	Balance BalanceConfig
 }
 
-// Evaluate는 클러스터 평균 대비 상대적 기준으로 split/migrate 액션을 반환한다.
+// Evaluate returns split/migrate actions based on relative thresholds compared to the cluster average.
 func (p *RelativePolicy) Evaluate(_ context.Context, stats provider.ClusterStats) []provider.BalanceAction {
-	// ── split 판단 ──────────────────────────────────────────────────────────────
+	// ── split evaluation ──────────────────────────────────────────────────────────────
 
-	// 전체 파티션의 평균 RPS 계산
+	// calculate average RPS across all partitions
 	var totalRPS float64
 	var partitionCount int
 	for _, ns := range stats.Nodes {
@@ -85,7 +87,7 @@ func (p *RelativePolicy) Evaluate(_ context.Context, stats provider.ClusterStats
 	if partitionCount > 0 {
 		avgRPS := totalRPS / float64(partitionCount)
 
-		// split 대상 탐색. split key는 PS가 결정한다 (SplitHinter 또는 midpoint).
+		// search for split candidates. the split key is determined by the PS (via SplitHinter or midpoint).
 		if avgRPS >= p.MinAvgRPS && p.SplitRPSMultiplier > 0 {
 			threshold := avgRPS * p.SplitRPSMultiplier
 			for _, ns := range stats.Nodes {
@@ -106,7 +108,7 @@ func (p *RelativePolicy) Evaluate(_ context.Context, stats provider.ClusterStats
 		}
 	}
 
-	// ── balance 판단 (ThresholdPolicy와 동일) ───────────────────────────────────
+	// ── balance evaluation (same logic as ThresholdPolicy) ───────────────────────────────────
 
 	type summary struct {
 		nodeID         string
@@ -168,7 +170,7 @@ func (p *RelativePolicy) Evaluate(_ context.Context, stats provider.ClusterStats
 	return nil
 }
 
-// OnNodeJoined는 새 노드 합류 시 파티션이 가장 많은 노드에서 하나를 이전한다.
+// OnNodeJoined migrates one partition from the node with the most partitions when a new node joins.
 func (p *RelativePolicy) OnNodeJoined(_ context.Context, newNode provider.NodeInfo, stats provider.ClusterStats) []provider.BalanceAction {
 	var maxCount int
 	var migratable *provider.PartitionInfo
@@ -194,7 +196,7 @@ func (p *RelativePolicy) OnNodeJoined(_ context.Context, newNode provider.NodeIn
 	}}
 }
 
-// OnNodeLeft는 노드 이탈 시 dead node의 파티션을 가장 여유로운 노드로 failover한다.
+// OnNodeLeft fails over the departed node's partitions to the least loaded node.
 func (p *RelativePolicy) OnNodeLeft(_ context.Context, node provider.NodeInfo, _ provider.NodeLeaveReason, stats provider.ClusterStats) []provider.BalanceAction {
 	var deadPartitions []provider.PartitionInfo
 	for _, ns := range stats.Nodes {

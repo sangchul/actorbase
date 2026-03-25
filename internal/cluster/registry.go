@@ -13,29 +13,30 @@ import (
 
 const nodeKeyPrefix = "/actorbase/nodes/"
 
-// NodeRegistry는 클러스터 노드 등록/해제/조회를 담당하는 인터페이스.
-// ps/: Register, Deregister 사용.
-// pm/: ListNodes 사용.
+// NodeRegistry is the interface responsible for registering, deregistering,
+// and listing cluster nodes.
+// ps/: uses Register and Deregister.
+// pm/: uses ListNodes.
 type NodeRegistry interface {
-	// Register는 node를 클러스터에 등록하고, ctx가 취소될 때까지 등록 상태를 유지한다.
-	// ctx 취소 시 반환한다. (lease는 TTL 후 자동 만료)
-	// graceful shutdown 시에는 Deregister를 별도로 호출한다.
+	// Register registers node in the cluster and maintains the registration
+	// until ctx is cancelled. Returns when ctx is cancelled (the lease expires
+	// after its TTL). Call Deregister separately for graceful shutdown.
 	Register(ctx context.Context, node domain.NodeInfo) error
 
-	// Deregister는 nodeID를 즉시 클러스터에서 제거한다.
-	// graceful shutdown 시 TTL 만료를 기다리지 않고 즉시 제거한다.
+	// Deregister immediately removes nodeID from the cluster without waiting
+	// for TTL expiry. Used during graceful shutdown.
 	Deregister(ctx context.Context, nodeID string) error
 
-	// ListNodes는 현재 등록된 (살아있는) 모든 노드를 반환한다.
+	// ListNodes returns all currently registered (alive) nodes.
 	ListNodes(ctx context.Context) ([]domain.NodeInfo, error)
 }
 
-// NewNodeRegistry는 etcd 기반 NodeRegistry를 생성한다.
+// NewNodeRegistry creates an etcd-based NodeRegistry.
 func NewNodeRegistry(client *clientv3.Client, ttl time.Duration) NodeRegistry {
 	return &etcdNodeRegistry{client: client, ttl: ttl}
 }
 
-// etcdNodeRegistry는 NodeRegistry의 etcd 구현체.
+// etcdNodeRegistry is the etcd implementation of NodeRegistry.
 type etcdNodeRegistry struct {
 	client *clientv3.Client
 	ttl    time.Duration
@@ -70,7 +71,7 @@ func (r *etcdNodeRegistry) Register(ctx context.Context, node domain.NodeInfo) e
 		return fmt.Errorf("keepalive: %w", err)
 	}
 
-	// keepalive 응답 소비 (소비하지 않으면 채널이 블로킹됨)
+	// Drain keepalive responses (the channel blocks if not consumed).
 	go func() {
 		for range keepAliveCh {
 		}
@@ -119,7 +120,7 @@ func (r *etcdNodeRegistry) ListNodes(ctx context.Context) ([]domain.NodeInfo, er
 	return nodes, nil
 }
 
-// nodeInfoDTO는 etcd에 JSON으로 저장되는 NodeInfo 직렬화 DTO.
+// nodeInfoDTO is the serialization DTO for NodeInfo stored as JSON in etcd.
 type nodeInfoDTO struct {
 	ID      string `json:"id"`
 	Address string `json:"address"`

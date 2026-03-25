@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// atomicTime은 time.Time에 대한 atomic 래퍼.
+// atomicTime is an atomic wrapper for time.Time.
 type atomicTime struct {
 	v atomic.Value
 }
@@ -22,7 +22,7 @@ func (a *atomicTime) Load() time.Time {
 	return v.(time.Time)
 }
 
-// atomicUint64은 uint64에 대한 atomic 래퍼.
+// atomicUint64 is an atomic wrapper for uint64.
 type atomicUint64 struct {
 	v atomic.Uint64
 }

@@ -5,14 +5,14 @@ import (
 	"time"
 )
 
-// EvictionScheduler는 idle Actor를 주기적으로 evict한다.
+// EvictionScheduler periodically evicts idle Actors.
 type EvictionScheduler[Req, Resp any] struct {
 	host        *ActorHost[Req, Resp]
 	idleTimeout time.Duration
 	interval    time.Duration
 }
 
-// NewEvictionScheduler는 EvictionScheduler를 생성한다.
+// NewEvictionScheduler creates an EvictionScheduler.
 func NewEvictionScheduler[Req, Resp any](
 	host *ActorHost[Req, Resp],
 	idleTimeout time.Duration,
@@ -25,7 +25,7 @@ func NewEvictionScheduler[Req, Resp any](
 	}
 }
 
-// Start는 eviction 루프를 시작한다. ctx 취소 시 종료.
+// Start begins the eviction loop. Exits when ctx is cancelled.
 func (s *EvictionScheduler[Req, Resp]) Start(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -36,7 +36,7 @@ func (s *EvictionScheduler[Req, Resp]) Start(ctx context.Context) {
 			idleSince := time.Now().Add(-s.idleTimeout)
 			for _, id := range s.host.IdleActors(idleSince) {
 				if err := s.host.Evict(ctx, id); err != nil {
-					// eviction 실패는 다음 주기에 재시도
+					// eviction failure will be retried on the next cycle
 					_ = err
 				}
 			}
@@ -46,14 +46,14 @@ func (s *EvictionScheduler[Req, Resp]) Start(ctx context.Context) {
 	}
 }
 
-// CheckpointScheduler는 활성 Actor를 주기적으로 checkpoint한다.
-// WAL 누적 기반 자동 checkpoint의 보완 역할.
+// CheckpointScheduler periodically checkpoints active Actors.
+// Serves as a supplement to WAL-accumulation-based automatic checkpointing.
 type CheckpointScheduler[Req, Resp any] struct {
 	host     *ActorHost[Req, Resp]
 	interval time.Duration
 }
 
-// NewCheckpointScheduler는 CheckpointScheduler를 생성한다.
+// NewCheckpointScheduler creates a CheckpointScheduler.
 func NewCheckpointScheduler[Req, Resp any](
 	host *ActorHost[Req, Resp],
 	interval time.Duration,
@@ -64,7 +64,7 @@ func NewCheckpointScheduler[Req, Resp any](
 	}
 }
 
-// Start는 checkpoint 루프를 시작한다. ctx 취소 시 종료.
+// Start begins the checkpoint loop. Exits when ctx is cancelled.
 func (s *CheckpointScheduler[Req, Resp]) Start(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()

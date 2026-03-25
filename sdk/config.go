@@ -13,25 +13,25 @@ const (
 	defaultRetryInterval = 100 * time.Millisecond
 )
 
-// Config는 Client 생성에 필요한 설정을 담는다.
+// Config holds the settings required to create a Client.
 type Config[Req, Resp any] struct {
-	// ─── 필수 (사용자 제공) ───────────────────────────────────────
+	// ─── Required (provided by the user) ───────────────────────────────────────
 
-	// PMAddr: 단일 PM 모드. EtcdEndpoints가 없을 때 필수.
+	// PMAddr: single PM mode. Required when EtcdEndpoints is not set.
 	PMAddr string
-	// EtcdEndpoints: HA 모드. 설정 시 etcd에서 리더 PM 주소를 자동 조회한다.
-	// PM 장애 시 자동으로 새 리더를 재발견하여 연결을 복구한다.
-	// PMAddr와 EtcdEndpoints 중 하나만 설정하면 된다.
+	// EtcdEndpoints: HA mode. When set, the leader PM address is automatically resolved from etcd.
+	// On PM failure, automatically rediscovers the new leader and restores the connection.
+	// Either PMAddr or EtcdEndpoints must be set, not both.
 	EtcdEndpoints []string
 
-	TypeID string         // 이 Client가 대상으로 하는 actor type 식별자
-	Codec  provider.Codec // PS와 동일한 구현체를 주입해야 한다
+	TypeID string         // identifier for the actor type this Client targets
+	Codec  provider.Codec // must be the same implementation injected into the PS
 
-	// ─── 선택 (기본값 있음) ───────────────────────────────────────
+	// ─── Optional (have defaults) ───────────────────────────────────────
 
-	ClientID      string        // 디버깅·로깅용 식별자. 기본값: hostname
-	MaxRetries    int           // 재시도 최대 횟수. 기본값: 3
-	RetryInterval time.Duration // 재시도 전 대기 시간. 기본값: 100ms
+	ClientID      string        // identifier for debugging and logging. default: hostname
+	MaxRetries    int           // maximum number of retries. default: 3
+	RetryInterval time.Duration // wait time before each retry. default: 100ms
 }
 
 func (c *Config[Req, Resp]) setDefaults() {
@@ -63,7 +63,7 @@ func (c *Config[Req, Resp]) validate() error {
 	return nil
 }
 
-// haMode는 etcd 기반 HA 모드인지 반환한다.
+// haMode returns whether the client is in etcd-based HA mode.
 func (c *Config[Req, Resp]) haMode() bool {
 	return len(c.EtcdEndpoints) > 0
 }

@@ -6,16 +6,16 @@ import (
 	"sync"
 )
 
-// Ledger는 KV 정답지다.
-// 서버 응답이 성공한 연산만 기록하여 실제 서버 상태와 일치한다.
-// nil 값은 해당 키가 삭제되었음을 의미한다.
+// Ledger is the ground-truth record for KV state.
+// It records only operations that received a successful server response, matching actual server state.
+// A nil value means the key has been deleted.
 type Ledger struct {
 	mu   sync.RWMutex
 	data map[string]*string // nil = deleted
 	path string
 }
 
-// NewLedger는 빈 정답지를 생성한다.
+// NewLedger creates an empty ledger.
 func NewLedger(path string) *Ledger {
 	return &Ledger{
 		data: make(map[string]*string),
@@ -23,7 +23,7 @@ func NewLedger(path string) *Ledger {
 	}
 }
 
-// LoadLedger는 파일에서 정답지를 불러온다.
+// LoadLedger loads a ledger from a file.
 func LoadLedger(path string) (*Ledger, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -39,7 +39,7 @@ func LoadLedger(path string) (*Ledger, error) {
 	return l, nil
 }
 
-// Set은 키-값을 정답지에 기록한다.
+// Set records a key-value pair in the ledger.
 func (l *Ledger) Set(key, value string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -47,14 +47,14 @@ func (l *Ledger) Set(key, value string) {
 	l.data[key] = &v
 }
 
-// Del은 키를 삭제 상태로 표시한다.
+// Del marks a key as deleted in the ledger.
 func (l *Ledger) Del(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.data[key] = nil
 }
 
-// Snapshot은 현재 정답지의 복사본을 반환한다.
+// Snapshot returns a copy of the current ledger state.
 func (l *Ledger) Snapshot() map[string]*string {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
@@ -65,7 +65,7 @@ func (l *Ledger) Snapshot() map[string]*string {
 	return snap
 }
 
-// Flush는 정답지를 파일에 저장한다.
+// Flush saves the ledger to a file.
 func (l *Ledger) Flush() error {
 	l.mu.RLock()
 	b, err := json.Marshal(l.data)

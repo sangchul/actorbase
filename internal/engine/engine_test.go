@@ -11,7 +11,7 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// ── 테스트용 Actor 구현 ─────────────────────────────────────────────────────
+// ── Actor implementation for tests ─────────────────────────────────────────
 
 type kvReq struct {
 	Op    string // "get" | "put" | "delete"
@@ -99,7 +99,7 @@ func (a *kvActor) Import(data []byte) error {
 	return nil
 }
 
-// ── 테스트용 Store 구현 ─────────────────────────────────────────────────────
+// ── Store implementation for tests ─────────────────────────────────────────
 
 type memWALStore struct {
 	mu      sync.Mutex
@@ -181,7 +181,7 @@ func (s *memCheckpointStore) Delete(_ context.Context, partitionID string) error
 	return nil
 }
 
-// ── 헬퍼 ────────────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 func newTestHost(t *testing.T) *ActorHost[kvReq, kvResp] {
 	t.Helper()
@@ -213,7 +213,7 @@ func get(t *testing.T, h *ActorHost[kvReq, kvResp], partID, key string) string {
 	return resp.Value
 }
 
-// ── 테스트 ───────────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────────────────────────────────────────────
 
 func TestActorHost_Send_BasicPutGet(t *testing.T) {
 	h := newTestHost(t)
@@ -245,7 +245,7 @@ func TestActorHost_Send_ConcurrentRequests(t *testing.T) {
 	}
 	wg.Wait()
 
-	// 모든 키가 존재하는지 확인
+	// verify all keys exist
 	for i := range n {
 		key := fmt.Sprintf("key-%d", i)
 		want := fmt.Sprintf("val-%d", i)
@@ -270,16 +270,16 @@ func TestActorHost_Checkpoint_RestoresState(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 첫 번째 ActorHost: 데이터 쓰고 checkpoint
+	// first ActorHost: write data and checkpoint
 	h1 := NewActorHost[kvReq, kvResp](cfg)
 	put(t, h1, "p1", "foo", "bar")
-	time.Sleep(20 * time.Millisecond) // WAL flush 대기
+	time.Sleep(20 * time.Millisecond) // wait for WAL flush
 	if err := h1.Checkpoint(ctx, "p1"); err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 	h1.EvictAll(ctx) //nolint:errcheck
 
-	// 두 번째 ActorHost: checkpoint에서 복원
+	// second ActorHost: restore from checkpoint
 	h2 := NewActorHost[kvReq, kvResp](cfg)
 	if v := get(t, h2, "p1", "foo"); v != "bar" {
 		t.Errorf("after restore: got %q, want bar", v)
@@ -307,13 +307,13 @@ func TestActorHost_Evict_CheckpointsBeforeRemoval(t *testing.T) {
 		t.Fatalf("Evict: %v", err)
 	}
 
-	// evict 후 CheckpointStore에 데이터가 저장되어 있어야 한다
+	// after evict, checkpoint data should be present in the CheckpointStore
 	raw, _ := cp.Load(ctx, "p1")
 	if len(raw) < 8 {
 		t.Fatal("expected checkpoint data after evict")
 	}
 
-	// 새 호스트로 복원 확인
+	// verify restoration on a new host
 	h2 := NewActorHost[kvReq, kvResp](cfg)
 	if v := get(t, h2, "p1", "k"); v != "v" {
 		t.Errorf("after evict+restore: got %q, want v", v)
@@ -334,19 +334,18 @@ func TestActorHost_WALReplay_OnActivation(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 쓰기 후 WAL은 있지만 checkpoint는 없는 상태로 evict
+	// write data so WAL exists, then evict without retaining the checkpoint
 	h1 := NewActorHost[kvReq, kvResp](cfg)
 	put(t, h1, "p1", "key", "value")
-	time.Sleep(20 * time.Millisecond) // WAL flush 대기
+	time.Sleep(20 * time.Millisecond) // wait for WAL flush
 
-	// checkpoint 없이 Evict → WALStore에는 남아 있음
-	// (실제로 Evict는 checkpoint를 하므로 이 테스트는 WAL replay 자체를 검증하기 위해
-	//  CheckpointStore 없이 WAL만 있는 경우를 수동으로 구성한다)
+	// Evict saves a checkpoint; to test WAL-only replay we manually clear
+	// the checkpoint after eviction, leaving only the WAL entries.
 	h1.EvictAll(ctx) //nolint:errcheck
 
-	// WAL만 있고 checkpoint는 없는 상태 시뮬레이션:
-	// cp를 비우고 WAL은 유지
-	delete(cp.data, "p1") // checkpoint 제거
+	// simulate state where only WAL exists and checkpoint has been removed:
+	// clear the checkpoint store while keeping the WAL intact
+	delete(cp.data, "p1") // remove checkpoint
 
 	h2 := NewActorHost[kvReq, kvResp](cfg)
 	if v := get(t, h2, "p1", "key"); v != "value" {
@@ -369,18 +368,18 @@ func TestActorHost_Split(t *testing.T) {
 	ctx := context.Background()
 	h := NewActorHost[kvReq, kvResp](cfg)
 
-	// "a", "b", "c", "d" 삽입
+	// insert "a", "b", "c", "d"
 	for _, k := range []string{"a", "b", "c", "d"} {
 		put(t, h, "p1", k, k+"-val")
 	}
 	time.Sleep(20 * time.Millisecond)
 
-	// "c" 기준으로 split: p1=[a,b], p2=[c,d]
+	// split at "c": p1=[a,b], p2=[c,d]
 	if _, err := h.Split(ctx, "p1", "c", "", "", "p2"); err != nil {
 		t.Fatalf("Split: %v", err)
 	}
 
-	// 하위 파티션 검증
+	// verify lower partition
 	if v := get(t, h, "p1", "a"); v != "a-val" {
 		t.Errorf("p1[a] = %q, want a-val", v)
 	}
@@ -388,7 +387,7 @@ func TestActorHost_Split(t *testing.T) {
 		t.Errorf("p1[b] = %q, want b-val", v)
 	}
 
-	// 상위 파티션 검증
+	// verify upper partition
 	if v := get(t, h, "p2", "c"); v != "c-val" {
 		t.Errorf("p2[c] = %q, want c-val", v)
 	}
@@ -450,7 +449,7 @@ func TestActorHost_PanicActor_ReturnsErrActorPanicked(t *testing.T) {
 	}
 }
 
-// ── Countable actor ──────────────────────────────────────────────────────────
+// ── Countable actor ───────────────────────────────────────────────────────────
 
 type countableKVActor struct {
 	kvActor
@@ -475,16 +474,16 @@ type splitHinterKVActor struct {
 
 func (a *splitHinterKVActor) SplitHint() string { return a.hint }
 
-// ── GetStats 테스트 ───────────────────────────────────────────────────────────
+// ── GetStats tests ────────────────────────────────────────────────────────────
 
 func TestActorHost_GetStats_NonCountable(t *testing.T) {
-	// kvActor는 Countable을 구현하지 않으므로 KeyCount == -1
+	// kvActor does not implement Countable, so KeyCount should be -1
 	h := newTestHost(t)
 	ctx := context.Background()
 
 	put(t, h, "p1", "k1", "v1")
 	put(t, h, "p1", "k2", "v2")
-	time.Sleep(20 * time.Millisecond) // WAL flush 대기
+	time.Sleep(20 * time.Millisecond) // wait for WAL flush
 
 	stats := h.GetStats()
 	if len(stats) != 1 {
@@ -508,7 +507,7 @@ func TestActorHost_GetStats_Countable(t *testing.T) {
 
 	put(t, h, "p1", "k1", "v1")
 	put(t, h, "p1", "k2", "v2")
-	time.Sleep(20 * time.Millisecond) // WAL flush + keyCount 갱신 대기
+	time.Sleep(20 * time.Millisecond) // wait for WAL flush and KeyCount update
 
 	stats := h.GetStats()
 	if len(stats) != 1 {
@@ -546,7 +545,7 @@ func TestActorHost_GetStats_EvictedActorNotReported(t *testing.T) {
 	h.EvictAll(ctx) //nolint:errcheck
 }
 
-// ── Split auto key 테스트 ─────────────────────────────────────────────────────
+// ── Split auto key tests ──────────────────────────────────────────────────────
 
 func TestActorHost_Split_WithSplitHinter(t *testing.T) {
 	hintKey := "c"
@@ -568,7 +567,7 @@ func TestActorHost_Split_WithSplitHinter(t *testing.T) {
 	}
 	time.Sleep(20 * time.Millisecond)
 
-	// splitKey="" → SplitHinter.SplitHint() = "c"
+	// splitKey="" → delegates to SplitHinter.SplitHint() = "c"
 	usedKey, err := h.Split(ctx, "p1", "", "a", "z", "p2")
 	if err != nil {
 		t.Fatalf("Split: %v", err)
@@ -594,7 +593,7 @@ func TestActorHost_Split_WithSplitHinter(t *testing.T) {
 }
 
 func TestActorHost_Split_MidpointFallback(t *testing.T) {
-	// splitKey="" + SplitHinter 없음 → KeyRangeMidpoint("a","z") = "m"
+	// splitKey="" with no SplitHinter → falls back to KeyRangeMidpoint("a","z") = "m"
 	h := newTestHost(t)
 	ctx := context.Background()
 
@@ -640,29 +639,29 @@ func TestActorHost_Merge(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	// lower 파티션: a, b, c
+	// lower partition: a, b, c
 	for _, k := range []string{"a", "b", "c"} {
 		put(t, h, "lower", k, k+"-val")
 	}
-	// upper 파티션: x, y, z
+	// upper partition: x, y, z
 	for _, k := range []string{"x", "y", "z"} {
 		put(t, h, "upper", k, k+"-val")
 	}
-	time.Sleep(20 * time.Millisecond) // WAL flush 대기
+	time.Sleep(20 * time.Millisecond) // wait for WAL flush
 
-	// merge: lower가 upper를 흡수
+	// merge: lower absorbs upper
 	if err := h.Merge(ctx, "lower", "upper"); err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
 
-	// lower에 upper의 데이터가 있어야 한다
+	// lower should now contain upper's data
 	for _, k := range []string{"a", "b", "c", "x", "y", "z"} {
 		if v := get(t, h, "lower", k); v != k+"-val" {
 			t.Errorf("lower[%s] = %q, want %s-val", k, v, k)
 		}
 	}
 
-	// upper는 evict되어 Send 시 빈 actor로 재생성 (기존 데이터 없음)
+	// upper has been evicted; sending to it creates a fresh empty actor with no prior data
 	_, err := h.Send(ctx, "upper", kvReq{Op: "get", Key: "x"})
 	if err != provider.ErrNotFound {
 		t.Errorf("expected ErrNotFound for evicted upper, got %v", err)
@@ -670,7 +669,7 @@ func TestActorHost_Merge(t *testing.T) {
 
 	h.EvictAll(ctx) //nolint:errcheck
 
-	// lower를 evict 후 재활성화 → checkpoint에서 복원되어야 한다
+	// after lower is evicted and reactivated, it should be restored from the checkpoint
 	h2 := NewActorHost(Config[kvReq, kvResp]{
 		Factory:         newKVActor,
 		WALStore:        wal,
@@ -687,7 +686,7 @@ func TestActorHost_Merge(t *testing.T) {
 	h2.EvictAll(ctx) //nolint:errcheck
 }
 
-// ── panic actor ───────────────────────────────────────────────────────────────
+// ── Panic actor ───────────────────────────────────────────────────────────────
 
 type panicActor struct{}
 

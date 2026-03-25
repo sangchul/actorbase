@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newBucket은 테스트용 빈 bucketActor를 생성한다.
+// newBucket creates an empty bucketActor for testing.
 func newBucket() *bucketActor {
 	return &bucketActor{buckets: make(map[string]bucketMeta)}
 }
@@ -64,7 +64,7 @@ func TestBucketActor_UnknownOp(t *testing.T) {
 }
 
 func TestBucketActor_WALReplay(t *testing.T) {
-	// WAL replay는 장애 복구의 핵심: 기록된 WAL을 순서대로 적용하면 원본 상태가 재현된다.
+	// WAL replay is the core of crash recovery: applying recorded WAL entries in order reproduces the original state.
 	a := newBucket()
 	_, walAlpha, _ := a.Receive(nil, BucketRequest{Op: "create", Name: "alpha", Region: "us-east-1"})
 	_, walBeta, _ := a.Receive(nil, BucketRequest{Op: "create", Name: "beta", Region: "eu-west-1"})
@@ -76,7 +76,7 @@ func TestBucketActor_WALReplay(t *testing.T) {
 		require.NoError(t, restored.Replay(entry))
 	}
 
-	// alpha, gamma는 존재하고 beta는 없어야 한다
+	// alpha and gamma should exist; beta should not
 	for name, shouldExist := range map[string]bool{"alpha": true, "beta": false, "gamma": true} {
 		resp, _, _ := restored.Receive(nil, BucketRequest{Op: "get", Name: name})
 		require.Equal(t, shouldExist, resp.Found, "bucket %q", name)
@@ -84,8 +84,8 @@ func TestBucketActor_WALReplay(t *testing.T) {
 }
 
 func TestBucketActor_SnapshotRestore(t *testing.T) {
-	// Snapshot/Restore는 checkpoint 기반 빠른 복구를 가능하게 한다.
-	// 전체 WAL replay 없이 최신 상태에서 바로 시작할 수 있다.
+	// Snapshot/Restore enables fast checkpoint-based recovery.
+	// The actor can start from the latest state without replaying the full WAL.
 	original := newBucket()
 	original.Receive(nil, BucketRequest{Op: "create", Name: "alpha", Region: "us-east-1"})
 	original.Receive(nil, BucketRequest{Op: "create", Name: "beta", Region: "eu-west-1"})
@@ -104,8 +104,8 @@ func TestBucketActor_SnapshotRestore(t *testing.T) {
 }
 
 func TestBucketActor_Split(t *testing.T) {
-	// Split은 트래픽/key 수 초과 시 파티션을 둘로 나누는 핵심 기능.
-	// splitKey 기준으로 상위 절반은 새 파티션(upper)으로, 하위 절반은 현재 파티션에 남는다.
+	// Split is the core operation for dividing a partition when traffic or key count exceeds the threshold.
+	// Keys >= splitKey are exported to the new upper partition; the rest remain in the current partition.
 	a := newBucket()
 	a.Receive(nil, BucketRequest{Op: "create", Name: "apple", Region: "us-east-1"})
 	a.Receive(nil, BucketRequest{Op: "create", Name: "banana", Region: "us-east-1"})
@@ -118,17 +118,17 @@ func TestBucketActor_Split(t *testing.T) {
 	upper := newBucket()
 	require.NoError(t, upper.Import(upperData))
 
-	// "cherry", "date" → 상위 파티션
+	// "cherry", "date" → upper partition
 	for _, name := range []string{"cherry", "date"} {
 		resp, _, _ := upper.Receive(nil, BucketRequest{Op: "get", Name: name})
 		require.True(t, resp.Found, "bucket %q should be in upper partition", name)
 	}
-	// "apple", "banana" → 하위 파티션(현재 actor)에 남아야 한다
+	// "apple", "banana" → remain in the lower partition (current actor)
 	for _, name := range []string{"apple", "banana"} {
 		resp, _, _ := a.Receive(nil, BucketRequest{Op: "get", Name: name})
 		require.True(t, resp.Found, "bucket %q should remain in lower partition", name)
 	}
-	// split 후 중복 없음
+	// no duplicates after split
 	for _, name := range []string{"cherry", "date"} {
 		resp, _, _ := a.Receive(nil, BucketRequest{Op: "get", Name: name})
 		require.False(t, resp.Found, "bucket %q should have been moved to upper partition", name)
@@ -148,8 +148,8 @@ func TestBucketActor_KeyCount(t *testing.T) {
 }
 
 func TestBucketActor_WALEntryFormat(t *testing.T) {
-	// WAL 항목의 직렬화 형식이 올바른지 확인한다.
-	// Replay가 다른 인스턴스에서도 동일하게 동작하려면 형식이 안정적이어야 한다.
+	// Verifies that the WAL entry serialization format is correct.
+	// The format must be stable so that Replay produces identical results across instances.
 	a := newBucket()
 	_, walEntry, _ := a.Receive(nil, BucketRequest{Op: "create", Name: "photos", Region: "us-east-1"})
 
@@ -162,8 +162,8 @@ func TestBucketActor_WALEntryFormat(t *testing.T) {
 }
 
 func TestBucketActor_CreatedAtPreservedOnReplay(t *testing.T) {
-	// Replay 시 CreatedAt이 원본 시각으로 복원되어야 한다.
-	// 새로운 time.Now()가 아닌 WAL에 기록된 시각을 사용해야 한다.
+	// On Replay, CreatedAt must be restored to the original timestamp.
+	// The WAL-recorded time must be used, not a new time.Now().
 	a := newBucket()
 	_, walEntry, _ := a.Receive(nil, BucketRequest{Op: "create", Name: "photos", Region: "us-east-1"})
 	originalTime := a.buckets["photos"].CreatedAt

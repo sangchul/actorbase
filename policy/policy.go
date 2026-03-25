@@ -9,31 +9,31 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// ── 공통 설정 타입 ─────────────────────────────────────────────────────────────
+// ── Common configuration types ─────────────────────────────────────────────────────────────
 
-// RunnerConfig는 balancerRunner 실행에 필요한 파라미터.
-// 알고리즘에 독립적인 실행 주기와 cooldown 설정을 담는다.
+// RunnerConfig holds parameters required to run a balancerRunner.
+// It carries execution interval and cooldown settings that are independent of the algorithm.
 type RunnerConfig struct {
 	CheckInterval time.Duration
 	Cooldown      CooldownConfig
 }
 
-// CooldownConfig는 split/migrate 후 대기 시간 설정.
+// CooldownConfig holds wait time settings after a split or migrate operation.
 type CooldownConfig struct {
-	Global    time.Duration `yaml:"global"`    // 전체 클러스터 대기
-	Partition time.Duration `yaml:"partition"` // 파티션별 대기
+	Global    time.Duration `yaml:"global"`    // cluster-wide wait time
+	Partition time.Duration `yaml:"partition"` // per-partition wait time
 }
 
-// BalanceConfig는 노드 간 파티션 이동 기준. 여러 알고리즘이 공유한다.
+// BalanceConfig defines the criteria for moving partitions between nodes. It is shared across multiple algorithms.
 type BalanceConfig struct {
-	MaxPartitionDiff int     `yaml:"max_partition_diff"` // 노드 간 파티션 수 허용 차이
-	RPSImbalancePct  float64 `yaml:"rps_imbalance_pct"`  // 노드 간 RPS 차이 허용 %
+	MaxPartitionDiff int     `yaml:"max_partition_diff"` // allowed difference in partition count between nodes
+	RPSImbalancePct  float64 `yaml:"rps_imbalance_pct"`  // allowed RPS difference between nodes in percent
 }
 
 // ── ParsePolicy ────────────────────────────────────────────────────────────────
 
-// ParsePolicy는 YAML 바이트를 파싱해 BalancePolicy와 RunnerConfig를 반환한다.
-// algorithm 필드 값으로 구현체를 선택한다. 새 알고리즘은 이 함수에만 case를 추가하면 된다.
+// ParsePolicy parses YAML bytes and returns a BalancePolicy and RunnerConfig.
+// It selects the implementation based on the algorithm field value. To add a new algorithm, only add a case to this function.
 func ParsePolicy(data []byte) (provider.BalancePolicy, *RunnerConfig, error) {
 	var header struct {
 		Algorithm     string         `yaml:"algorithm"`
@@ -69,9 +69,9 @@ func ParsePolicy(data []byte) (provider.BalancePolicy, *RunnerConfig, error) {
 	}
 }
 
-// ── 공유 헬퍼 ─────────────────────────────────────────────────────────────────
+// ── Shared helpers ─────────────────────────────────────────────────────────────────
 
-// pickLeastLoaded는 excludeNodeID를 제외한 Reachable 노드 중 파티션이 가장 적은 노드 ID를 반환한다.
+// pickLeastLoaded returns the node ID with the fewest partitions among reachable nodes, excluding excludeNodeID.
 func pickLeastLoaded(stats provider.ClusterStats, excludeNodeID string) string {
 	best := ""
 	bestCount := -1

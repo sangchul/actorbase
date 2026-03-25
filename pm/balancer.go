@@ -17,8 +17,8 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// balancerRunner은 check_interval마다 policy.Evaluate를 호출하고 액션을 실행한다.
-// 분배 판단 로직은 provider.BalancePolicy 구현체가 담당한다.
+// balancerRunner calls policy.Evaluate on every check_interval and executes the returned actions.
+// The load-balancing decision logic is delegated to the provider.BalancePolicy implementation.
 type balancerRunner struct {
 	cfg          *policy.RunnerConfig
 	pol          provider.BalancePolicy
@@ -60,7 +60,7 @@ func newBalancerRunner(
 	}
 }
 
-// start는 check_interval마다 runOnce를 실행하는 루프. ctx 취소 시 종료.
+// start runs a loop that calls runOnce on every check_interval. Exits when ctx is cancelled.
 func (r *balancerRunner) start(ctx context.Context) {
 	slog.Info("autoBalancer: started", "check_interval", r.cfg.CheckInterval)
 	ticker := time.NewTicker(r.cfg.CheckInterval)
@@ -86,7 +86,7 @@ func (r *balancerRunner) runOnce(ctx context.Context) {
 		return
 	}
 
-	// global cooldown 확인
+	// Check global cooldown.
 	r.mu.Lock()
 	cooldown := time.Since(r.globalLastAction) < r.cfg.Cooldown.Global
 	r.mu.Unlock()
@@ -99,8 +99,8 @@ func (r *balancerRunner) runOnce(ctx context.Context) {
 	r.executeActions(ctx, actions)
 }
 
-// buildClusterStats는 ClusterStats를 구성한다.
-// deadNodeID가 비어 있지 않으면 해당 노드는 GetStats 없이 라우팅 테이블 기반으로 채운다.
+// buildClusterStats constructs ClusterStats.
+// If deadNodeID is non-empty, that node is populated from the routing table without calling GetStats.
 func (r *balancerRunner) buildClusterStats(ctx context.Context, nodes []domain.NodeInfo, rt *domain.RoutingTable, deadNodeID string) provider.ClusterStats {
 	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -132,7 +132,7 @@ func (r *balancerRunner) buildClusterStats(ctx context.Context, nodes []domain.N
 	}
 	wg.Wait()
 
-	// 라우팅 테이블에서 파티션→노드 매핑 구성
+	// Build partition → node mapping from the routing table.
 	partitionsByNode := make(map[string][]provider.PartitionInfo)
 	if rt != nil {
 		for _, entry := range rt.Entries() {
@@ -156,7 +156,7 @@ func (r *balancerRunner) buildClusterStats(ctx context.Context, nodes []domain.N
 			},
 		}
 		if res.err != nil {
-			// 죽은 노드 또는 연결 불가: 라우팅 테이블 기반 파티션 목록 사용
+			// Dead node or unreachable: use the routing-table-based partition list.
 			ns.Reachable = false
 			ns.Partitions = partitionsByNode[res.nodeInfo.ID]
 		} else if res.resp != nil {
@@ -174,14 +174,14 @@ func (r *balancerRunner) buildClusterStats(ctx context.Context, nodes []domain.N
 					KeyCount:    p.KeyCount,
 					RPS:         float64(p.Rps),
 				}
-				// 라우팅 테이블에서 key range 보완
+				// Supplement key range from the routing table.
 				if rt, ok := rtIndex[p.PartitionId]; ok {
 					pi.KeyRangeStart = rt.KeyRangeStart
 					pi.KeyRangeEnd = rt.KeyRangeEnd
 				}
 				ns.Partitions = append(ns.Partitions, pi)
 			}
-			// 쿨다운 중인 파티션 필터링
+			// Filter out partitions that are in cooldown.
 			filtered := ns.Partitions[:0]
 			for _, pi := range ns.Partitions {
 				if !r.isPartitionCooldown(pi.PartitionID) {
@@ -195,7 +195,7 @@ func (r *balancerRunner) buildClusterStats(ctx context.Context, nodes []domain.N
 	return provider.ClusterStats{Nodes: nodeStats}
 }
 
-// executeActions는 policy가 반환한 액션 목록을 순서대로 실행한다.
+// executeActions executes the list of actions returned by the policy in order.
 func (r *balancerRunner) executeActions(ctx context.Context, actions []provider.BalanceAction) {
 	for _, action := range actions {
 		switch action.Type {
@@ -270,9 +270,9 @@ func (r *balancerRunner) isPartitionCooldown(partitionID string) bool {
 	return ok && time.Since(t) < r.cfg.Cooldown.Partition
 }
 
-// ensureSameNodeAndMerge는 lower와 upper가 같은 노드에 있는지 확인하고,
-// 다르면 upper를 lower 노드로 migrate한 후 merge를 실행한다.
-// 호출 전 opMu가 잠겨 있어야 한다.
+// ensureSameNodeAndMerge checks whether lower and upper are on the same node;
+// if not, migrates upper to the lower's node before executing the merge.
+// opMu must be held by the caller.
 func (r *balancerRunner) ensureSameNodeAndMerge(ctx context.Context, action provider.BalanceAction) error {
 	rt, err := r.routingStore.Load(ctx)
 	if err != nil || rt == nil {
@@ -288,7 +288,7 @@ func (r *balancerRunner) ensureSameNodeAndMerge(ctx context.Context, action prov
 		return fmt.Errorf("upper partition %s not found", action.MergeTarget)
 	}
 
-	// 다른 노드에 있으면 upper를 lower 노드로 migrate
+	// If they are on different nodes, migrate upper to the lower's node.
 	if lowerEntry.Node.ID != upperEntry.Node.ID {
 		slog.Info("autoBalancer: merge: migrating upper to lower's node",
 			"upper", action.MergeTarget, "from", upperEntry.Node.ID, "to", lowerEntry.Node.ID)
@@ -300,5 +300,5 @@ func (r *balancerRunner) ensureSameNodeAndMerge(ctx context.Context, action prov
 	return r.merger.Merge(ctx, action.ActorType, action.PartitionID, action.MergeTarget)
 }
 
-// errDeadNode は buildClusterStats 내부에서 죽은 노드를 표시하는 센티넬 에러.
+// errDeadNode is a sentinel error used inside buildClusterStats to mark a dead node.
 var errDeadNode = errors.New("dead node")

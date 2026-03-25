@@ -17,30 +17,30 @@ const (
 	defaultShutdownTimeout        = 30 * time.Second
 )
 
-// BaseConfig는 PS 인스턴스 전체에 공유되는 설정.
+// BaseConfig holds settings shared across the entire PS instance.
 type BaseConfig struct {
-	// ─── 필수 (사용자 제공) ───────────────────────────────────────
+	// ─── Required (provided by the user) ─────────────────────────
 
 	NodeID        string
-	Addr          string   // gRPC 수신 주소 ("host:port"). etcd에 등록되어 다른 노드가 접속에 사용.
-	EtcdEndpoints []string // etcd 엔드포인트 목록
+	Addr          string   // gRPC listen address ("host:port"). Registered in etcd so other nodes can connect.
+	EtcdEndpoints []string // List of etcd endpoints.
 
-	// ─── 선택 (기본값 있음) ───────────────────────────────────────
+	// ─── Optional (have defaults) ────────────────────────────────
 
-	Metrics provider.Metrics // nil이면 메트릭 수집 생략
+	Metrics provider.Metrics // If nil, metrics collection is skipped.
 
-	EtcdLeaseTTL time.Duration // 노드 lease TTL. 기본값: 10초
+	EtcdLeaseTTL time.Duration // Node lease TTL. Default: 10s.
 
-	// EvictionScheduler 설정 (모든 actor type 공유)
-	IdleTimeout   time.Duration // Actor가 이 시간 동안 메시지 없으면 evict. 기본값: 5분
-	EvictInterval time.Duration // eviction 검사 주기. 기본값: 1분
+	// EvictionScheduler settings (shared across all actor types)
+	IdleTimeout   time.Duration // Evict an actor if it receives no messages for this duration. Default: 5m.
+	EvictInterval time.Duration // Interval between eviction checks. Default: 1m.
 
-	// CheckpointScheduler 설정 (모든 actor type 공유)
-	CheckpointInterval time.Duration // 주기적 checkpoint 간격. 기본값: 1분
+	// CheckpointScheduler settings (shared across all actor types)
+	CheckpointInterval time.Duration // Interval for periodic checkpoints. Default: 1m.
 
-	// graceful shutdown 설정
-	DrainTimeout    time.Duration // 파티션 선이전 최대 대기 시간. 기본값: 60초
-	ShutdownTimeout time.Duration // EvictAll 최대 대기 시간. 기본값: 30초
+	// Graceful shutdown settings
+	DrainTimeout    time.Duration // Maximum time to wait for partition pre-migration. Default: 60s.
+	ShutdownTimeout time.Duration // Maximum time to wait for EvictAll. Default: 30s.
 }
 
 func (c *BaseConfig) setDefaults() {
@@ -77,23 +77,23 @@ func (c *BaseConfig) validate() error {
 	return nil
 }
 
-// TypeConfig는 특정 actor type의 설정.
-// TypeID로 구분되며, 동일 PS에 여러 actor type을 등록할 수 있다.
+// TypeConfig holds the configuration for a specific actor type.
+// Identified by TypeID; multiple actor types can be registered on the same PS.
 type TypeConfig[Req, Resp any] struct {
-	// ─── 필수 (사용자 제공) ───────────────────────────────────────
+	// ─── Required (provided by the user) ─────────────────────────
 
-	TypeID          string                           // actor type 식별자. 라우팅 테이블과 일치해야 한다.
-	Factory         provider.ActorFactory[Req, Resp] // Actor 인스턴스 생성 함수
-	Codec           provider.Codec                   // SDK와 동일한 Codec 구현체를 주입
-	WALStore        provider.WALStore                // WAL 저장소
-	CheckpointStore provider.CheckpointStore         // Checkpoint 저장소
+	TypeID          string                           // Actor type identifier. Must match the routing table.
+	Factory         provider.ActorFactory[Req, Resp] // Function that creates Actor instances.
+	Codec           provider.Codec                   // Inject the same Codec implementation used by the SDK.
+	WALStore        provider.WALStore                // WAL storage backend.
+	CheckpointStore provider.CheckpointStore         // Checkpoint storage backend.
 
-	// ─── 선택 (기본값 있음) ───────────────────────────────────────
+	// ─── Optional (have defaults) ────────────────────────────────
 
-	MailboxSize            int           // 기본값: engine 기본값 사용
-	FlushSize              int           // WAL 배치 최대 크기. 기본값: engine 기본값 사용
-	FlushInterval          time.Duration // WAL 배치 최대 대기 시간. 기본값: engine 기본값 사용
-	CheckpointWALThreshold int           // 이 수만큼 WAL entry가 쌓이면 자동 checkpoint. 기본값: 100
+	MailboxSize            int           // Default: uses the engine default.
+	FlushSize              int           // Maximum WAL batch size. Default: uses the engine default.
+	FlushInterval          time.Duration // Maximum wait time for a WAL batch. Default: uses the engine default.
+	CheckpointWALThreshold int           // Trigger an automatic checkpoint after this many WAL entries. Default: 100.
 }
 
 func (c *TypeConfig[Req, Resp]) validate() error {

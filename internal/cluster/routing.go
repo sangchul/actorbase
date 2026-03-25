@@ -13,29 +13,30 @@ import (
 
 const routingKey = "/actorbase/routing"
 
-// RoutingTableStore는 라우팅 테이블 저장/조회/감시를 담당하는 인터페이스.
-// PM: Save로 라우팅 테이블 갱신.
-// PS: Watch로 변경 감지.
+// RoutingTableStore is the interface for saving, loading, and watching the
+// routing table.
+// PM: calls Save to update the routing table.
+// PS: calls Watch to detect changes.
 type RoutingTableStore interface {
-	// Save는 라우팅 테이블을 저장소에 저장한다.
+	// Save persists the routing table to the store.
 	Save(ctx context.Context, rt *domain.RoutingTable) error
 
-	// Load는 현재 라우팅 테이블을 조회한다.
-	// 데이터가 없으면 (nil, nil)을 반환한다.
+	// Load retrieves the current routing table.
+	// Returns (nil, nil) if no data is present.
 	Load(ctx context.Context) (*domain.RoutingTable, error)
 
-	// Watch는 라우팅 테이블이 변경될 때마다 새 테이블을 전달하는 채널을 반환한다.
-	// Watch 시작 시 현재 테이블을 즉시 한 번 전달한다. (초기 상태 동기화)
-	// ctx 취소 시 채널이 닫힌다.
+	// Watch returns a channel that delivers a new table on each change.
+	// The current table is delivered once immediately on start for initial
+	// state synchronization. The channel is closed when ctx is cancelled.
 	Watch(ctx context.Context) <-chan *domain.RoutingTable
 }
 
-// NewRoutingTableStore는 etcd 기반 RoutingTableStore를 생성한다.
+// NewRoutingTableStore creates an etcd-based RoutingTableStore.
 func NewRoutingTableStore(client *clientv3.Client) RoutingTableStore {
 	return &etcdRoutingTableStore{client: client}
 }
 
-// etcdRoutingTableStore는 RoutingTableStore의 etcd 구현체.
+// etcdRoutingTableStore is the etcd implementation of RoutingTableStore.
 type etcdRoutingTableStore struct {
 	client *clientv3.Client
 }
@@ -71,15 +72,16 @@ func (s *etcdRoutingTableStore) Watch(ctx context.Context) <-chan *domain.Routin
 func (s *etcdRoutingTableStore) watchLoop(ctx context.Context, ch chan *domain.RoutingTable) {
 	defer close(ch)
 
-	// 시작 시 현재 테이블을 즉시 전달 (초기 동기화).
-	// 빈 클러스터(테이블 없음)인 경우 nil을 전달하여 Watch 호출자가 준비 완료를 감지할 수 있도록 한다.
+	// Deliver the current table immediately on start (initial sync).
+	// For an empty cluster (no table), nil is delivered so that the Watch
+	// caller can detect that the initial load is complete.
 	current, err := s.Load(ctx)
 	if err != nil {
 		slog.Error("routing: initial load failed", "err", err)
 		return
 	}
 	select {
-	case ch <- current: // nil이어도 전달
+	case ch <- current: // deliver even if nil
 	case <-ctx.Done():
 		return
 	}
@@ -92,7 +94,7 @@ func (s *etcdRoutingTableStore) watchLoop(ctx context.Context, ch chan *domain.R
 				if ctx.Err() != nil {
 					return
 				}
-				// 재연결: 현재 테이블 재전달
+				// Reconnected: re-deliver the current table.
 				rt, err := s.Load(ctx)
 				if err != nil {
 					slog.Error("routing: reload after reconnect failed", "err", err)
@@ -133,9 +135,9 @@ func (s *etcdRoutingTableStore) watchLoop(ctx context.Context, ch chan *domain.R
 	}
 }
 
-// ── 직렬화 ──────────────────────────────────────────────────────────────────
+// ── Serialization ────────────────────────────────────────────────────────────
 
-// routingTableDTO는 etcd JSON 직렬화 DTO.
+// routingTableDTO is the JSON serialization DTO stored in etcd.
 type routingTableDTO struct {
 	Version int64           `json:"version"`
 	Entries []routeEntryDTO `json:"entries"`

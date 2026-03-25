@@ -7,17 +7,17 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// walPending은 WAL flush 대기 중인 항목 하나.
-// mailbox goroutine이 생성하고 WALFlusher가 소비한다.
+// walPending is a single item waiting to be WAL-flushed.
+// Created by the mailbox goroutine and consumed by WALFlusher.
 type walPending struct {
 	partitionID string
 	entry       []byte
-	// reply는 flush 완료 후 호출된다.
-	// 성공 시 lsn > 0, 실패 시 lsn == 0 (에러 센티널).
+	// reply is called after the flush completes.
+	// On success, lsn > 0; on failure, lsn == 0 (error sentinel).
 	reply func(lsn uint64, err error)
 }
 
-// walFlusher는 여러 Actor의 WAL entry를 모아 배치로 WALStore에 기록한다.
+// walFlusher batches WAL entries from multiple Actors and writes them to WALStore.
 type walFlusher struct {
 	walStore      provider.WALStore
 	submitCh      chan walPending
@@ -34,7 +34,7 @@ func newWALFlusher(walStore provider.WALStore, flushSize int, flushInterval time
 	}
 }
 
-// start는 flush 루프를 시작한다. ctx 취소 시 남은 항목을 모두 flush하고 종료한다.
+// start begins the flush loop. On ctx cancellation, flushes all remaining items then exits.
 func (f *walFlusher) start(ctx context.Context) {
 	ticker := time.NewTicker(f.flushInterval)
 	defer ticker.Stop()
@@ -46,10 +46,10 @@ func (f *walFlusher) start(ctx context.Context) {
 			return
 		}
 
-		// partitionID별로 그룹화: 순서를 보존하기 위해 첫 등장 순서로 정렬된 슬라이스 사용
+		// group by partitionID; use a slice ordered by first appearance to preserve order
 		type group struct {
 			data    [][]byte
-			indices []int // pending 슬라이스에서의 원래 위치
+			indices []int // original positions in the pending slice
 		}
 		order := make([]string, 0, len(pending))
 		groups := make(map[string]*group, len(pending))
@@ -89,7 +89,7 @@ func (f *walFlusher) start(ctx context.Context) {
 		case <-ticker.C:
 			flush()
 		case <-ctx.Done():
-			// 남은 항목 모두 처리 후 종료
+			// drain all remaining items before exiting
 		drain:
 			for {
 				select {

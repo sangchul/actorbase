@@ -10,14 +10,14 @@ import (
 	"github.com/sangchul/actorbase/internal/transport"
 )
 
-// Migrator는 파티션 migration을 조율한다.
+// Migrator orchestrates partition migrations.
 type Migrator struct {
 	routingStore cluster.RoutingTableStore
 	nodeRegistry cluster.NodeRegistry
 	connPool     *transport.ConnPool
 }
 
-// NewMigrator는 Migrator를 생성한다.
+// NewMigrator creates a Migrator.
 func NewMigrator(
 	routingStore cluster.RoutingTableStore,
 	nodeRegistry cluster.NodeRegistry,
@@ -30,10 +30,11 @@ func NewMigrator(
 	}
 }
 
-// Migrate는 partitionID를 targetNodeID로 이동시킨다.
-// actorType은 partitionID의 실제 actor type과 일치해야 한다. 불일치 시 에러를 반환한다.
+// Migrate moves partitionID to targetNodeID.
+// actorType must match the actual actor type of partitionID; an error is
+// returned on mismatch.
 func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNodeID string) error {
-	// 1. 라우팅 테이블 조회 및 검증
+	// 1. Load and validate the routing table.
 	rt, err := m.routingStore.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("load routing table: %w", err)
@@ -57,7 +58,7 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		return fmt.Errorf("partition %s is already on node %s", partitionID, targetNodeID)
 	}
 
-	// 2. target 노드 검증
+	// 2. Validate the target node.
 	nodes, err := m.nodeRegistry.ListNodes(ctx)
 	if err != nil {
 		return fmt.Errorf("list nodes: %w", err)
@@ -70,7 +71,7 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		return fmt.Errorf("target node %s is not active", targetNodeID)
 	}
 
-	// 3. 라우팅 테이블에서 파티션을 Draining으로 갱신 → etcd 저장
+	// 3. Update the partition to Draining in the routing table and persist to etcd.
 	drainingRT, err := buildDrainingTable(rt, partitionID)
 	if err != nil {
 		return fmt.Errorf("build draining routing table: %w", err)
@@ -79,10 +80,10 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		return fmt.Errorf("save draining routing table: %w", err)
 	}
 
-	// 4. Source PS에 ExecuteMigrateOut 명령
+	// 4. Send ExecuteMigrateOut to the source PS.
 	sourceConn, err := m.connPool.Get(entry.Node.Address)
 	if err != nil {
-		// 실패 시 라우팅 테이블 복구
+		// Revert the routing table on failure.
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
 	}
@@ -92,10 +93,10 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		return fmt.Errorf("execute migrate out: %w", err)
 	}
 
-	// 5. Target PS에 PreparePartition 명령 (재시도 포함)
+	// 5. Send PreparePartition to the target PS (with retry).
 	targetConn, err := m.connPool.Get(targetNode.Address)
 	if err != nil {
-		// source는 이미 evict됨 → 복구 불가. 라우팅만 source로 되돌림.
+		// Source has already been evicted — cannot recover. Revert routing to source only.
 		slog.Error("connect to target PS failed after migrate out", "target", targetNode.Address, "err", err)
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
@@ -108,7 +109,7 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		return fmt.Errorf("prepare partition on target PS: %w", err)
 	}
 
-	// 6. 라우팅 테이블 갱신: 파티션 → targetNode (Active)
+	// 6. Update the routing table: move the partition to targetNode (Active).
 	finalRT, err := buildMigratedTable(rt, partitionID, targetNode)
 	if err != nil {
 		return fmt.Errorf("build migrated routing table: %w", err)
@@ -120,15 +121,16 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 	return nil
 }
 
-// revertToActive는 migration 실패 시 라우팅 테이블을 이전 Active 상태로 복구한다.
-// 복구 실패는 로그만 남기고 무시한다.
+// revertToActive restores the routing table to the previous Active state on
+// migration failure. Restoration errors are only logged and otherwise ignored.
 func (m *Migrator) revertToActive(ctx context.Context, original *domain.RoutingTable) {
 	if err := m.routingStore.Save(ctx, original); err != nil {
 		slog.Error("failed to revert routing table", "err", err)
 	}
 }
 
-// buildDrainingTable은 partitionID의 PartitionStatus를 Draining으로 변경한 새 RoutingTable을 반환한다.
+// buildDrainingTable returns a new RoutingTable with the PartitionStatus of
+// partitionID set to Draining.
 func buildDrainingTable(rt *domain.RoutingTable, partitionID string) (*domain.RoutingTable, error) {
 	entries := rt.Entries()
 	for i, e := range entries {
@@ -140,7 +142,8 @@ func buildDrainingTable(rt *domain.RoutingTable, partitionID string) (*domain.Ro
 	return domain.NewRoutingTable(rt.Version()+1, entries)
 }
 
-// buildMigratedTable은 partitionID의 노드를 targetNode(Active)로 변경한 새 RoutingTable을 반환한다.
+// buildMigratedTable returns a new RoutingTable with partitionID's node
+// updated to targetNode and its status set to Active.
 func buildMigratedTable(rt *domain.RoutingTable, partitionID string, targetNode domain.NodeInfo) (*domain.RoutingTable, error) {
 	entries := rt.Entries()
 	for i, e := range entries {
@@ -153,12 +156,13 @@ func buildMigratedTable(rt *domain.RoutingTable, partitionID string, targetNode 
 	return domain.NewRoutingTable(rt.Version()+1, entries)
 }
 
-// Failover는 응답 불가능한 source PS의 partitionID를 targetNodeID로 이동시킨다.
-// ExecuteMigrateOut을 건너뛰고 target PS에서 마지막 checkpoint + WAL replay로 복원한다.
-// WALStore가 networked store(e.g. Redis Streams)이면 data loss 없음.
-// fs 기반 WALStore라면 마지막 checkpoint 이후 WAL 데이터는 소실된다.
+// Failover moves partitionID from an unreachable source PS to targetNodeID.
+// It skips ExecuteMigrateOut and restores state on the target PS via the last
+// checkpoint plus WAL replay. No data loss occurs when using a networked
+// WALStore (e.g. Redis Streams). With an fs-based WALStore, WAL entries
+// written after the last checkpoint are lost.
 func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID string) error {
-	// 1. 라우팅 테이블 조회 및 검증
+	// 1. Load and validate the routing table.
 	rt, err := m.routingStore.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("load routing table: %w", err)
@@ -172,7 +176,7 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 		return fmt.Errorf("partition %s not found", partitionID)
 	}
 
-	// 2. target 노드 검증
+	// 2. Validate the target node.
 	nodes, err := m.nodeRegistry.ListNodes(ctx)
 	if err != nil {
 		return fmt.Errorf("list nodes: %w", err)
@@ -185,7 +189,7 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 		return fmt.Errorf("target node %s is not active", targetNodeID)
 	}
 
-	// 3. 라우팅 → Draining (SDK: ErrPartitionBusy → 재시도 대기)
+	// 3. Set routing to Draining (SDK receives ErrPartitionBusy and retries).
 	drainingRT, err := buildDrainingTable(rt, partitionID)
 	if err != nil {
 		return fmt.Errorf("build draining routing table: %w", err)
@@ -194,9 +198,9 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 		return fmt.Errorf("save draining routing table: %w", err)
 	}
 
-	// 4. [ExecuteMigrateOut 건너뜀 — source PS 죽음]
+	// 4. [ExecuteMigrateOut skipped — source PS is dead]
 
-	// 5. target PS에 PreparePartition 명령 (checkpoint + WAL replay로 복원)
+	// 5. Send PreparePartition to the target PS (restores via checkpoint + WAL replay).
 	targetConn, err := m.connPool.Get(targetNode.Address)
 	if err != nil {
 		m.revertToActive(ctx, rt)
@@ -209,7 +213,7 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 		return fmt.Errorf("prepare partition on target PS: %w", err)
 	}
 
-	// 6. 라우팅 → targetNode Active
+	// 6. Set routing to targetNode Active.
 	finalRT, err := buildMigratedTable(rt, partitionID, targetNode)
 	if err != nil {
 		return fmt.Errorf("build migrated routing table: %w", err)

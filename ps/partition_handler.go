@@ -13,9 +13,9 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// partitionHandler는 PartitionService gRPC 핸들러.
-// SDK → PS data plane 요청을 처리한다.
-// req.ActorType으로 올바른 actorDispatcher를 선택한다.
+// partitionHandler is the PartitionService gRPC handler.
+// Handles SDK → PS data-plane requests.
+// Selects the correct actorDispatcher based on req.ActorType.
 type partitionHandler struct {
 	pb.UnimplementedPartitionServiceServer
 
@@ -24,24 +24,24 @@ type partitionHandler struct {
 	nodeID      string
 }
 
-// Send는 req.ActorType의 Actor에 요청을 전달하고 응답을 반환한다.
+// Send forwards a request to the Actor for req.ActorType and returns the response.
 func (h *partitionHandler) Send(
 	ctx context.Context,
 	req *pb.SendRequest,
 ) (*pb.SendResponse, error) {
-	// 1. actor type에 맞는 dispatcher 조회
+	// 1. Look up the dispatcher for the actor type.
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
 	}
 
-	// 2. 라우팅 테이블 조회
+	// 2. Load the routing table.
 	rt := h.routing.Load()
 	if rt == nil {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
 
-	// 3. 파티션 존재 확인 및 소유 검증
+	// 3. Verify the partition exists and is owned by this node.
 	entry, ok := rt.LookupByPartition(req.PartitionId)
 	if !ok {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
@@ -50,12 +50,12 @@ func (h *partitionHandler) Send(
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
 
-	// 4. 파티션이 Draining 상태이면 거부
+	// 4. Reject if the partition is in Draining status.
 	if entry.PartitionStatus == domain.PartitionStatusDraining {
 		return nil, status.Error(codes.ResourceExhausted, provider.ErrPartitionBusy.Error())
 	}
 
-	// 5. dispatcher를 통해 Actor에 전달 (역직렬화 포함)
+	// 5. Forward to the Actor via the dispatcher (includes deserialization).
 	payload, err := d.Send(ctx, req.PartitionId, req.Payload)
 	if err != nil {
 		return nil, transport.ToGRPCStatus(err)
@@ -64,8 +64,8 @@ func (h *partitionHandler) Send(
 	return &pb.SendResponse{Payload: payload}, nil
 }
 
-// Scan은 SDK의 범위 조회 요청을 Actor.Receive()로 전달한다.
-// Send와 동일하지만 expected key range를 검증하여 stale 라우팅을 감지한다.
+// Scan forwards an SDK range-query request to the Actor.
+// Behaves like Send but also validates the expected key range to detect stale routing.
 func (h *partitionHandler) Scan(
 	ctx context.Context,
 	req *pb.ScanRequest,
@@ -91,7 +91,7 @@ func (h *partitionHandler) Scan(
 		return nil, status.Error(codes.ResourceExhausted, provider.ErrPartitionBusy.Error())
 	}
 
-	// 파티션 key range가 SDK의 기대값과 다르면 라우팅 테이블이 stale한 것 (파티션이 split됨)
+	// If the partition key range differs from what the SDK expects, the routing table is stale (the partition was split).
 	if req.ExpectedKeyRangeStart != entry.Partition.KeyRange.Start ||
 		req.ExpectedKeyRangeEnd != entry.Partition.KeyRange.End {
 		return nil, status.Error(codes.FailedPrecondition, provider.ErrPartitionMoved.Error())

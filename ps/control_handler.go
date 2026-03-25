@@ -14,9 +14,9 @@ import (
 	pb "github.com/sangchul/actorbase/internal/transport/proto"
 )
 
-// controlHandler는 PartitionControlService gRPC 핸들러.
-// PM → PS control plane 요청을 처리한다.
-// req.ActorType으로 올바른 actorDispatcher를 선택한다.
+// controlHandler is the PartitionControlService gRPC handler.
+// Handles PM → PS control-plane requests.
+// Selects the correct actorDispatcher based on req.ActorType.
 type controlHandler struct {
 	pb.UnimplementedPartitionControlServiceServer
 
@@ -25,9 +25,9 @@ type controlHandler struct {
 	routing     *atomic.Pointer[domain.RoutingTable]
 }
 
-// ExecuteSplit은 PM의 split 명령을 처리한다.
-// req.SplitKey가 비어 있으면 Actor의 SplitHint() 또는 key range midpoint로 결정한다.
-// 실제 사용된 split key를 응답에 포함한다.
+// ExecuteSplit handles a split command from the PM.
+// If req.SplitKey is empty, the split key is determined via the Actor's SplitHint() or the key range midpoint.
+// The actually used split key is included in the response.
 func (h *controlHandler) ExecuteSplit(
 	ctx context.Context,
 	req *pb.ExecuteSplitRequest,
@@ -37,7 +37,7 @@ func (h *controlHandler) ExecuteSplit(
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
 	}
 
-	// req에 key range가 없으면 routing table에서 조회 (midpoint fallback 보장)
+	// If the request contains no key range, look it up in the routing table (ensures midpoint fallback).
 	keyRangeStart := req.KeyRangeStart
 	keyRangeEnd := req.KeyRangeEnd
 	if keyRangeStart == "" && keyRangeEnd == "" && req.SplitKey == "" {
@@ -60,11 +60,11 @@ func (h *controlHandler) ExecuteSplit(
 	return &pb.ExecuteSplitResponse{SplitKey: usedKey}, nil
 }
 
-// engineMidpoint는 engine.KeyRangeMidpoint의 별칭. controlHandler가 직접 호출할 일은 없으나
-// 패키지 참조 유지용으로 선언한다.
+// engineMidpoint is an alias for engine.KeyRangeMidpoint. The controlHandler does not call it
+// directly; this declaration exists solely to keep the package reference alive.
 var _ = engine.KeyRangeMidpoint
 
-// ExecuteMigrateOut은 PM의 migration out 명령을 처리한다.
+// ExecuteMigrateOut handles a migrate-out command from the PM.
 func (h *controlHandler) ExecuteMigrateOut(
 	ctx context.Context,
 	req *pb.ExecuteMigrateOutRequest,
@@ -83,8 +83,8 @@ func (h *controlHandler) ExecuteMigrateOut(
 	return &pb.ExecuteMigrateOutResponse{}, nil
 }
 
-// ExecuteMerge는 PM의 merge 명령을 처리한다.
-// lower 파티션이 upper 파티션의 상태를 흡수한다.
+// ExecuteMerge handles a merge command from the PM.
+// The lower partition absorbs the state of the upper partition.
 func (h *controlHandler) ExecuteMerge(
 	ctx context.Context,
 	req *pb.ExecuteMergeRequest,
@@ -105,7 +105,7 @@ func (h *controlHandler) ExecuteMerge(
 	return &pb.ExecuteMergeResponse{}, nil
 }
 
-// GetStats는 PM의 통계 조회 요청을 처리한다.
+// GetStats handles a stats-query request from the PM.
 func (h *controlHandler) GetStats(
 	_ context.Context,
 	_ *pb.GetStatsRequest,
@@ -133,7 +133,7 @@ func (h *controlHandler) GetStats(
 	}, nil
 }
 
-// PreparePartition은 PM의 파티션 로드 명령을 처리한다.
+// PreparePartition handles a partition-load command from the PM.
 func (h *controlHandler) PreparePartition(
 	ctx context.Context,
 	req *pb.PreparePartitionRequest,

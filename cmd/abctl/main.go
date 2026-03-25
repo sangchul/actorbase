@@ -1,17 +1,17 @@
-// cmd/abctl은 actorbase 클러스터 운영 CLI다.
+// cmd/abctl is the actorbase cluster operations CLI.
 //
-// 사용법:
+// Usage:
 //
 //	abctl [-pm <addr>] <command> [args]
 //
-// 명령:
+// Commands:
 //
-//	members                                                            현재 PS 노드 목록 출력
-//	routing                                                            현재 라우팅 테이블 출력
-//	split <actor-type> <partition-id> <split-key>                      파티션 split 요청
-//	migrate <actor-type> <partition-id> <node-id>                      파티션 migrate 요청
-//	merge <actor-type> <lower-partition-id> <upper-partition-id>       인접 파티션 merge 요청
-//	stats [node-id]                                                    클러스터(또는 특정 노드) 통계 출력
+//	members                                                            List current PS nodes
+//	routing                                                            Print current routing table
+//	split <actor-type> <partition-id> <split-key>                      Request a partition split
+//	migrate <actor-type> <partition-id> <node-id>                      Request a partition migrate
+//	merge <actor-type> <lower-partition-id> <upper-partition-id>       Request a merge of adjacent partitions
+//	stats [node-id]                                                    Print cluster (or specific node) statistics
 package main
 
 import (

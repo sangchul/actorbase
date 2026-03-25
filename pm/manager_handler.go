@@ -14,15 +14,15 @@ import (
 	"github.com/sangchul/actorbase/policy"
 )
 
-// managerHandler는 PartitionManagerService gRPC 핸들러.
-// SDK/abctl → PM management plane 요청을 처리한다.
+// managerHandler is the PartitionManagerService gRPC handler.
+// Handles SDK/abctl → PM management-plane requests.
 type managerHandler struct {
 	pb.UnimplementedPartitionManagerServiceServer
 	server *Server
 }
 
-// WatchRouting은 연결 즉시 현재 라우팅 테이블을 전송하고,
-// 이후 변경 시마다 스트리밍으로 push한다.
+// WatchRouting sends the current routing table immediately upon connection,
+// then pushes updates via streaming whenever the table changes.
 func (h *managerHandler) WatchRouting(
 	req *pb.WatchRoutingRequest,
 	stream pb.PartitionManagerService_WatchRoutingServer,
@@ -31,7 +31,7 @@ func (h *managerHandler) WatchRouting(
 	h.server.subscribe(req.ClientId, sub)
 	defer h.server.unsubscribe(req.ClientId)
 
-	// 현재 라우팅 테이블 즉시 전달
+	// Deliver the current routing table immediately.
 	if current := h.server.routing.Load(); current != nil {
 		if err := stream.Send(transport.RoutingTableToProto(current)); err != nil {
 			return err
@@ -54,8 +54,8 @@ func (h *managerHandler) WatchRouting(
 	}
 }
 
-// RequestSplit은 partitionID를 splitKey 기준으로 분할하도록 요청한다.
-// AutoPolicy 활성 중에는 수동 명령을 거부한다.
+// RequestSplit requests splitting partitionID at the given splitKey.
+// Rejects manual commands while AutoPolicy is active.
 func (h *managerHandler) RequestSplit(
 	ctx context.Context,
 	req *pb.SplitRequest,
@@ -74,8 +74,8 @@ func (h *managerHandler) RequestSplit(
 	return &pb.SplitResponse{NewPartitionId: newPartitionID}, nil
 }
 
-// RequestMigrate는 partitionID를 targetNodeID로 이동시키도록 요청한다.
-// AutoPolicy 활성 중에는 수동 명령을 거부한다.
+// RequestMigrate requests moving partitionID to targetNodeID.
+// Rejects manual commands while AutoPolicy is active.
 func (h *managerHandler) RequestMigrate(
 	ctx context.Context,
 	req *pb.MigrateRequest,
@@ -93,8 +93,8 @@ func (h *managerHandler) RequestMigrate(
 	return &pb.MigrateResponse{}, nil
 }
 
-// RequestMerge는 인접한 두 파티션의 merge를 요청한다.
-// AutoPolicy 활성 중에는 수동 명령을 거부한다.
+// RequestMerge requests merging two adjacent partitions.
+// Rejects manual commands while AutoPolicy is active.
 func (h *managerHandler) RequestMerge(
 	ctx context.Context,
 	req *pb.MergeRequest,
@@ -112,7 +112,7 @@ func (h *managerHandler) RequestMerge(
 	return &pb.MergeResponse{}, nil
 }
 
-// ApplyPolicy는 YAML 정책을 PM에 적용한다. AutoPolicy 활성화.
+// ApplyPolicy applies a YAML policy to the PM, activating AutoPolicy.
 func (h *managerHandler) ApplyPolicy(
 	ctx context.Context,
 	req *pb.ApplyPolicyRequest,
@@ -127,7 +127,7 @@ func (h *managerHandler) ApplyPolicy(
 	return &pb.ApplyPolicyResponse{}, nil
 }
 
-// GetPolicy는 현재 적용 중인 정책 YAML을 반환한다.
+// GetPolicy returns the YAML of the currently applied policy.
 func (h *managerHandler) GetPolicy(
 	_ context.Context,
 	_ *pb.GetPolicyRequest,
@@ -139,7 +139,7 @@ func (h *managerHandler) GetPolicy(
 	return &pb.GetPolicyResponse{PolicyYaml: yamlStr, Active: active}, nil
 }
 
-// ClearPolicy는 정책을 제거하고 ManualPolicy로 전환한다.
+// ClearPolicy removes the active policy and reverts to manual policy.
 func (h *managerHandler) ClearPolicy(
 	ctx context.Context,
 	_ *pb.ClearPolicyRequest,
@@ -150,8 +150,8 @@ func (h *managerHandler) ClearPolicy(
 	return &pb.ClearPolicyResponse{}, nil
 }
 
-// GetClusterStats는 클러스터 전체(또는 특정 노드)의 통계를 반환한다.
-// PM이 각 PS의 GetStats RPC를 병렬로 호출하여 집계한다.
+// GetClusterStats returns statistics for the entire cluster (or a specific node).
+// The PM calls each PS's GetStats RPC in parallel and aggregates the results.
 func (h *managerHandler) GetClusterStats(
 	ctx context.Context,
 	req *pb.GetClusterStatsRequest,
@@ -161,7 +161,7 @@ func (h *managerHandler) GetClusterStats(
 		return nil, transport.ToGRPCStatus(err)
 	}
 
-	// node_id 필터
+	// Filter by node_id if specified.
 	if req.NodeId != "" {
 		filtered := nodes[:0]
 		for _, n := range nodes {
@@ -222,7 +222,7 @@ func (h *managerHandler) GetClusterStats(
 	return &pb.GetClusterStatsResponse{Nodes: nodeProtos}, nil
 }
 
-// ListMembers는 현재 등록된 PS 노드 목록을 반환한다.
+// ListMembers returns the list of currently registered PS nodes.
 func (h *managerHandler) ListMembers(
 	ctx context.Context,
 	_ *pb.ListMembersRequest,

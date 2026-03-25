@@ -9,29 +9,29 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// BucketRequest는 bucket 메타데이터 요청.
+// BucketRequest is a bucket metadata request.
 type BucketRequest struct {
 	Op       string `json:"op"`        // "create", "get", "delete", "list"
 	Name     string `json:"name"`      // bucket name (= routing key)
-	Region   string `json:"region"`    // "create" 시에만 사용
-	StartKey string `json:"start_key"` // "list" 시 사용 (포함)
-	EndKey   string `json:"end_key"`   // "list" 시 사용 (미포함, ""=무한대)
+	Region   string `json:"region"`    // used only for "create"
+	StartKey string `json:"start_key"` // used for "list" (inclusive)
+	EndKey   string `json:"end_key"`   // used for "list" (exclusive, ""=unbounded)
 }
 
-// BucketItem은 list 결과 항목이다.
+// BucketItem is a single item in a list result.
 type BucketItem struct {
 	Name      string    `json:"name"`
 	Region    string    `json:"region"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// BucketResponse는 bucket 메타데이터 응답.
+// BucketResponse is a bucket metadata response.
 type BucketResponse struct {
 	Name      string       `json:"name"`
 	Region    string       `json:"region"`
 	CreatedAt time.Time    `json:"created_at"`
 	Found     bool         `json:"found"`
-	Items     []BucketItem `json:"items"` // "list" 결과
+	Items     []BucketItem `json:"items"` // "list" results
 }
 
 type bucketMeta struct {

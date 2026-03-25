@@ -143,9 +143,9 @@ func TestCheckpointStore_BinaryData(t *testing.T) {
 	ctx := context.Background()
 	s := newTestCheckpointStore(t)
 
-	// [8바이트 LSN] + [스냅샷] 바이너리 포맷 무결성 테스트
+	// integrity test for the [8-byte LSN] + [snapshot] binary format
 	lsn := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A} // LSN=42
-	snapshot := []byte{0xFF, 0xFE, 0x00, 0x01, 0x7B, 0x22, 0x6B, 0x22} // 임의 바이너리
+	snapshot := []byte{0xFF, 0xFE, 0x00, 0x01, 0x7B, 0x22, 0x6B, 0x22} // arbitrary binary
 	data := append(lsn, snapshot...)
 
 	if err := s.Save(ctx, "binary-partition", data); err != nil {

@@ -2,108 +2,108 @@ package provider
 
 import "context"
 
-// ── 타입 정의 ──────────────────────────────────────────────────────────────────
+// ── Type definitions ────────────────────────────────────────────────────────────
 
-// NodeStatus는 노드의 상태.
+// NodeStatus represents the status of a node.
 type NodeStatus int
 
 const (
 	NodeStatusActive   NodeStatus = iota
-	NodeStatusDraining            // 파티션 이전 중 (graceful shutdown)
+	NodeStatusDraining            // Partition migration in progress (graceful shutdown)
 )
 
-// NodeInfo는 클러스터 노드 정보.
+// NodeInfo holds cluster node information.
 type NodeInfo struct {
 	ID     string
 	Addr   string
 	Status NodeStatus
 }
 
-// NodeLeaveReason은 노드 이탈 원인.
+// NodeLeaveReason indicates the reason a node left the cluster.
 type NodeLeaveReason int
 
 const (
-	// NodeLeaveGraceful은 정상 종료. drainPartitions가 파티션 이전을 완료한 상태.
+	// NodeLeaveGraceful is a normal shutdown. drainPartitions has completed partition migration.
 	NodeLeaveGraceful NodeLeaveReason = iota
-	// NodeLeaveFailure는 장애(SIGKILL, 네트워크 단절 등). etcd lease 만료로 감지.
+	// NodeLeaveFailure is a failure (SIGKILL, network disconnect, etc.). Detected via etcd lease expiry.
 	NodeLeaveFailure
 )
 
-// PartitionInfo는 파티션 하나의 상태와 통계.
-// GetStats(RPS, KeyCount)와 라우팅 테이블(KeyRange, NodeID)을 합산하여 구성된다.
+// PartitionInfo holds the state and statistics of a single partition.
+// Composed by combining GetStats (RPS, KeyCount) and the routing table (KeyRange, NodeID).
 type PartitionInfo struct {
 	PartitionID   string
 	ActorType     string
-	KeyCount      int64   // -1: actor가 Countable 미구현
-	RPS           float64 // 60초 슬라이딩 윈도우 평균
+	KeyCount      int64   // -1: Actor does not implement Countable
+	RPS           float64 // 60-second sliding window average
 	KeyRangeStart string
 	KeyRangeEnd   string
 }
 
-// NodeStats는 노드 하나의 상태.
+// NodeStats holds the state of a single node.
 type NodeStats struct {
 	Node       NodeInfo
-	Reachable  bool            // false면 GetStats 실패. Partitions는 라우팅 테이블 기반.
-	NodeRPS    float64         // Reachable=false 이면 0
+	Reachable  bool            // false means GetStats failed; Partitions are based on the routing table
+	NodeRPS    float64         // 0 if Reachable is false
 	Partitions []PartitionInfo
 }
 
-// ClusterStats는 BalancePolicy 메서드 호출 시 전달되는 클러스터 상태 스냅샷.
+// ClusterStats is a snapshot of cluster state passed to BalancePolicy method calls.
 type ClusterStats struct {
 	Nodes []NodeStats
 }
 
-// ── BalanceAction ──────────────────────────────────────────────────────────────
+// ── BalanceAction ───────────────────────────────────────────────────────────────
 
-// BalanceActionType은 실행할 rebalance 작업의 종류.
+// BalanceActionType is the kind of rebalance operation to execute.
 type BalanceActionType int
 
 const (
-	// ActionSplit은 파티션을 SplitKey 기준으로 분할한다.
+	// ActionSplit splits a partition at the given SplitKey.
 	ActionSplit BalanceActionType = iota
-	// ActionMigrate는 살아있는 PS에서 다른 노드로 파티션을 이전한다.
+	// ActionMigrate moves a partition from a live PS to another node.
 	ActionMigrate
-	// ActionFailover는 장애 노드의 파티션을 복구한다.
-	// source PS가 죽었으므로 PreparePartition만 수행한다 (ExecuteMigrateOut 생략).
+	// ActionFailover recovers a partition from a failed node.
+	// Since the source PS is dead, only PreparePartition is performed (ExecuteMigrateOut is skipped).
 	ActionFailover
-	// ActionMerge는 인접한 두 파티션을 하나로 합친다.
-	// PartitionID가 하위 파티션, MergeTarget이 상위 파티션.
+	// ActionMerge merges two adjacent partitions into one.
+	// PartitionID is the lower partition; MergeTarget is the upper partition.
 	ActionMerge
 )
 
-// BalanceAction은 PM이 실행할 rebalance 작업 하나.
+// BalanceAction represents a single rebalance operation to be executed by the PM.
 type BalanceAction struct {
 	Type        BalanceActionType
 	ActorType   string
 	PartitionID string
-	TargetNode  string // ActionMigrate / ActionFailover 전용
-	MergeTarget string // ActionMerge 전용 — 흡수할 상위 파티션 ID
+	TargetNode  string // Used by ActionMigrate / ActionFailover only
+	MergeTarget string // Used by ActionMerge only — the upper partition to absorb
 }
 
-// ── BalancePolicy 인터페이스 ───────────────────────────────────────────────────
+// ── BalancePolicy interface ────────────────────────────────────────────────────
 
-// BalancePolicy는 PM의 분배 전략을 정의하는 인터페이스.
+// BalancePolicy defines the distribution strategy interface for the PM.
 //
-// 사용자가 직접 구현하거나, pm/policy의 내장 구현체(ThresholdPolicy)를 YAML로 로드한다.
-// pm.Config.BalancePolicy에 주입하면 PM이 사용한다.
+// Users can implement it directly, or load a built-in implementation (ThresholdPolicy)
+// from pm/policy via YAML. Inject into pm.Config.BalancePolicy for the PM to use.
 //
-// 반환된 []BalanceAction은 PM이 순서대로 실행한다.
-// nil 또는 빈 슬라이스를 반환하면 아무 작업도 수행하지 않는다.
+// The PM executes the returned []BalanceAction in order.
+// Returning nil or an empty slice results in no action.
 type BalancePolicy interface {
-	// Evaluate는 check_interval마다 호출된다.
-	// 현재 클러스터 stats를 기반으로 split/migrate 액션을 반환한다.
+	// Evaluate is called every check_interval.
+	// Returns split/migrate actions based on the current cluster stats.
 	Evaluate(ctx context.Context, stats ClusterStats) []BalanceAction
 
-	// OnNodeJoined는 새 노드가 클러스터에 합류했을 때 호출된다.
-	// 부하 재분배를 위한 migrate 액션을 반환할 수 있다.
+	// OnNodeJoined is called when a new node joins the cluster.
+	// May return migrate actions to redistribute load.
 	OnNodeJoined(ctx context.Context, node NodeInfo, stats ClusterStats) []BalanceAction
 
-	// OnNodeLeft는 노드가 클러스터를 이탈했을 때 호출된다.
-	// reason으로 정상 종료(Graceful)와 장애(Failure)를 구분한다.
+	// OnNodeLeft is called when a node leaves the cluster.
+	// The reason parameter distinguishes between graceful shutdown and failure.
 	//
-	// Graceful: drainPartitions가 이미 파티션을 이전 완료했으므로 보통 no-op.
+	// Graceful: drainPartitions has already completed migration, so this is usually a no-op.
 	//
-	// Failure: source PS가 죽었으므로 ActionFailover를 반환해야 파티션이 복구된다.
-	//   stats에 dead node의 파티션 목록(라우팅 테이블 기반, Reachable=false)이 포함된다.
+	// Failure: The source PS is dead, so ActionFailover must be returned to recover partitions.
+	//   The stats include the dead node's partitions (routing-table based, Reachable=false).
 	OnNodeLeft(ctx context.Context, node NodeInfo, reason NodeLeaveReason, stats ClusterStats) []BalanceAction
 }

@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newObject는 테스트용 빈 objectActor를 생성한다.
+// newObject creates an empty objectActor for testing.
 func newObject() *objectActor {
 	return &objectActor{objects: make(map[string]objectMeta), accessCt: make(map[string]int64)}
 }
@@ -74,8 +74,8 @@ func TestObjectActor_UnknownOp(t *testing.T) {
 }
 
 func TestObjectActor_WALReplay(t *testing.T) {
-	// WAL replay로 원본 상태를 재현한다.
-	// put과 delete가 섞인 WAL 시퀀스를 올바르게 처리해야 한다.
+	// WAL replay reproduces the original state.
+	// A mixed sequence of put and delete WAL entries must be handled correctly.
 	a := newObject()
 	_, walCat, _ := a.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "cat.jpg", Size: 100, ETag: "e1"})
 	_, walDog, _ := a.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "dog.jpg", Size: 200, ETag: "e2"})
@@ -94,7 +94,7 @@ func TestObjectActor_WALReplay(t *testing.T) {
 }
 
 func TestObjectActor_SnapshotRestore(t *testing.T) {
-	// checkpoint에서 복원한 actor는 원본과 동일한 상태를 가져야 한다.
+	// An actor restored from a checkpoint must have the same state as the original.
 	original := newObject()
 	original.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "cat.jpg", Size: 100, ETag: "e1", StorageClass: "STANDARD"})
 	original.Receive(nil, ObjectRequest{Op: "put", Bucket: "videos", Key: "movie.mp4", Size: 99999, ETag: "e2", StorageClass: "GLACIER"})
@@ -117,7 +117,7 @@ func TestObjectActor_SnapshotRestore(t *testing.T) {
 }
 
 func TestObjectActor_Split(t *testing.T) {
-	// routing key는 "{bucket}/{key}" 형태. splitKey도 같은 형식으로 동작한다.
+	// routing key is in the form "{bucket}/{key}"; splitKey uses the same format.
 	a := newObject()
 	a.Receive(nil, ObjectRequest{Op: "put", Bucket: "alpha", Key: "obj1", Size: 1, ETag: "e1"})
 	a.Receive(nil, ObjectRequest{Op: "put", Bucket: "alpha", Key: "obj2", Size: 2, ETag: "e2"})
@@ -130,17 +130,17 @@ func TestObjectActor_Split(t *testing.T) {
 	upper := newObject()
 	require.NoError(t, upper.Import(upperData))
 
-	// 상위 파티션: "beta/obj1", "gamma/obj1"
+	// upper partition: "beta/obj1", "gamma/obj1"
 	for _, tc := range []struct{ bucket, key string }{{"beta", "obj1"}, {"gamma", "obj1"}} {
 		resp, _, _ := upper.Receive(nil, ObjectRequest{Op: "get", Bucket: tc.bucket, Key: tc.key})
 		require.True(t, resp.Found, "%s/%s should be in upper partition", tc.bucket, tc.key)
 	}
-	// 하위 파티션: "alpha/obj1", "alpha/obj2"
+	// lower partition: "alpha/obj1", "alpha/obj2"
 	for _, tc := range []struct{ bucket, key string }{{"alpha", "obj1"}, {"alpha", "obj2"}} {
 		resp, _, _ := a.Receive(nil, ObjectRequest{Op: "get", Bucket: tc.bucket, Key: tc.key})
 		require.True(t, resp.Found, "%s/%s should remain in lower partition", tc.bucket, tc.key)
 	}
-	// split 후 중복 없음
+	// no duplicates after split
 	for _, tc := range []struct{ bucket, key string }{{"beta", "obj1"}, {"gamma", "obj1"}} {
 		resp, _, _ := a.Receive(nil, ObjectRequest{Op: "get", Bucket: tc.bucket, Key: tc.key})
 		require.False(t, resp.Found, "%s/%s should have been moved to upper partition", tc.bucket, tc.key)
@@ -160,7 +160,7 @@ func TestObjectActor_KeyCount(t *testing.T) {
 }
 
 func TestObjectActor_WALEntryFormat(t *testing.T) {
-	// WAL 항목의 routing key가 "{bucket}/{key}" 형태로 올바르게 직렬화되는지 확인한다.
+	// Verifies that the WAL entry's routing key is correctly serialized as "{bucket}/{key}".
 	a := newObject()
 	_, walEntry, _ := a.Receive(nil, ObjectRequest{
 		Op: "put", Bucket: "photos", Key: "cat.jpg",
@@ -175,7 +175,7 @@ func TestObjectActor_WALEntryFormat(t *testing.T) {
 }
 
 func TestObjectActor_LastModifiedPreservedOnReplay(t *testing.T) {
-	// Replay 시 LastModified가 원본 시각으로 복원되어야 한다.
+	// On Replay, LastModified must be restored to the original timestamp.
 	a := newObject()
 	_, walEntry, _ := a.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "cat.jpg", Size: 1, ETag: "e1"})
 	originalTime := a.objects["photos/cat.jpg"].LastModified
@@ -189,15 +189,15 @@ func TestObjectActor_LastModifiedPreservedOnReplay(t *testing.T) {
 }
 
 func TestObjectActor_SplitHint(t *testing.T) {
-	// SplitHint는 가장 많이 접근된 routing key를 반환한다.
-	// 이 key를 기준으로 split하면 hotspot이 상위 파티션으로 분리된다.
+	// SplitHint returns the most-accessed routing key.
+	// Splitting at this key moves the hotspot into the upper partition.
 	a := newObject()
 
 	t.Run("empty actor returns empty hint", func(t *testing.T) {
 		require.Empty(t, a.SplitHint())
 	})
 
-	// cat.jpg를 5회, dog.jpg를 2회, bird.jpg를 1회 접근
+	// access cat.jpg 5 times, dog.jpg 2 times, bird.jpg 1 time
 	for i := 0; i < 5; i++ {
 		a.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: "cat.jpg"})
 	}
@@ -208,12 +208,12 @@ func TestObjectActor_SplitHint(t *testing.T) {
 
 	t.Run("returns hottest key", func(t *testing.T) {
 		hint := a.SplitHint()
-		require.Equal(t, "photos/cat.jpg", hint, "가장 많이 접근된 key가 split 위치로 제안되어야 한다")
+		require.Equal(t, "photos/cat.jpg", hint, "the most-accessed key should be proposed as the split point")
 	})
 
 	t.Run("split at hint separates hotspot", func(t *testing.T) {
-		// hotspot key("photos/cat.jpg")를 기준으로 split하면
-		// "photos/cat.jpg" 이상의 key들이 상위 파티션으로 이동한다.
+		// splitting at the hotspot key ("photos/cat.jpg") moves keys >= that value
+		// into the upper partition.
 		a2 := newObject()
 		a2.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "bird.jpg", Size: 1, ETag: "e1"})
 		a2.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "cat.jpg", Size: 2, ETag: "e2"})
@@ -229,19 +229,19 @@ func TestObjectActor_SplitHint(t *testing.T) {
 		upper := newObject()
 		require.NoError(t, upper.Import(upperData))
 
-		// hotspot("cat.jpg")과 그 이후 key("dog.jpg")는 상위 파티션으로 이동
+		// hotspot ("cat.jpg") and subsequent keys ("dog.jpg") move to the upper partition
 		for _, key := range []string{"cat.jpg", "dog.jpg"} {
 			resp, _, _ := upper.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: key})
 			require.True(t, resp.Found, "photos/%s should be in upper partition", key)
 		}
-		// "bird.jpg"는 하위 파티션에 남아야 한다
+		// "bird.jpg" should remain in the lower partition
 		resp, _, _ := a2.Receive(nil, ObjectRequest{Op: "get", Bucket: "photos", Key: "bird.jpg"})
 		require.True(t, resp.Found, "photos/bird.jpg should remain in lower partition")
 	})
 }
 
 func TestObjectActor_PutOverwrite(t *testing.T) {
-	// 동일 key에 put을 두 번 하면 최신 값으로 덮어써야 한다.
+	// Putting the same key twice should overwrite with the latest value.
 	a := newObject()
 	a.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "cat.jpg", Size: 100, ETag: "v1"})
 	a.Receive(nil, ObjectRequest{Op: "put", Bucket: "photos", Key: "cat.jpg", Size: 200, ETag: "v2"})

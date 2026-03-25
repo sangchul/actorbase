@@ -11,13 +11,13 @@ import (
 	"github.com/sangchul/actorbase/internal/transport"
 )
 
-// Splitter는 파티션 split을 조율한다.
+// Splitter orchestrates partition splits.
 type Splitter struct {
 	routingStore cluster.RoutingTableStore
 	connPool     *transport.ConnPool
 }
 
-// NewSplitter는 Splitter를 생성한다.
+// NewSplitter creates a Splitter.
 func NewSplitter(routingStore cluster.RoutingTableStore, connPool *transport.ConnPool) *Splitter {
 	return &Splitter{
 		routingStore: routingStore,
@@ -25,12 +25,12 @@ func NewSplitter(routingStore cluster.RoutingTableStore, connPool *transport.Con
 	}
 }
 
-// Split은 partitionID를 splitKey 기준으로 둘로 나눈다.
-// actorType은 partitionID의 실제 actor type과 일치해야 한다. 불일치 시 에러를 반환한다.
-// 새로 생성된 파티션(상위 절반)의 ID를 반환한다.
-// split 후 두 파티션은 기존과 동일한 노드에 위치한다.
+// Split divides partitionID into two partitions at splitKey.
+// actorType must match the actual actor type of partitionID; an error is
+// returned on mismatch. Returns the ID of the newly created partition
+// (the upper half). Both partitions remain on the same node after the split.
 func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey string) (string, error) {
-	// 1. 현재 라우팅 테이블 조회
+	// 1. Load the current routing table.
 	rt, err := s.routingStore.Load(ctx)
 	if err != nil {
 		return "", fmt.Errorf("load routing table: %w", err)
@@ -39,19 +39,19 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey s
 		return "", fmt.Errorf("routing table is empty")
 	}
 
-	// 2. 파티션 존재 검증
+	// 2. Validate that the partition exists.
 	entry, ok := rt.LookupByPartition(partitionID)
 	if !ok {
 		return "", fmt.Errorf("partition %s not found in routing table", partitionID)
 	}
 
-	// 3. actor type 검증
+	// 3. Validate actor type.
 	if entry.Partition.ActorType != actorType {
 		return "", fmt.Errorf("actor type mismatch: partition %s has actor type %q, got %q",
 			partitionID, entry.Partition.ActorType, actorType)
 	}
 
-	// 4. splitKey 유효성 검증 (명시적으로 제공된 경우에만)
+	// 4. Validate splitKey (only when explicitly provided).
 	kr := entry.Partition.KeyRange
 	if splitKey != "" {
 		if splitKey <= kr.Start {
@@ -62,10 +62,10 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey s
 		}
 	}
 
-	// 5. newPartitionID 생성
+	// 5. Generate a new partition ID.
 	newPartitionID := uuid.New().String()
 
-	// 6. Source PS에 ExecuteSplit 명령. splitKey=""이면 PS가 결정하고 실제 key를 반환한다.
+	// 6. Send ExecuteSplit to the source PS. If splitKey=="", the PS decides and returns the actual key.
 	conn, err := s.connPool.Get(entry.Node.Address)
 	if err != nil {
 		return "", fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
@@ -76,7 +76,7 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey s
 		return "", fmt.Errorf("execute split on PS: %w", err)
 	}
 
-	// 7. 라우팅 테이블 갱신: PS가 결정한 실제 splitKey 사용
+	// 7. Update the routing table using the actual splitKey determined by the PS.
 	newEntries := buildSplitEntries(rt.Entries(), partitionID, usedKey, newPartitionID, entry)
 	newRT, err := domain.NewRoutingTable(rt.Version()+1, newEntries)
 	if err != nil {
@@ -90,7 +90,7 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey s
 	return newPartitionID, nil
 }
 
-// buildSplitEntries는 기존 entries에서 partitionID를 제거하고 두 개의 새 엔트리를 추가한다.
+// buildSplitEntries removes partitionID from entries and appends two new entries.
 func buildSplitEntries(
 	entries []domain.RouteEntry,
 	partitionID, splitKey, newPartitionID string,
@@ -104,7 +104,7 @@ func buildSplitEntries(
 		result = append(result, e)
 	}
 
-	// 하위 절반: [original.Start, splitKey)
+	// Lower half: [original.Start, splitKey)
 	result = append(result, domain.RouteEntry{
 		Partition: domain.Partition{
 			ID:        partitionID,
@@ -115,7 +115,7 @@ func buildSplitEntries(
 		PartitionStatus: domain.PartitionStatusActive,
 	})
 
-	// 상위 절반: [splitKey, original.End)
+	// Upper half: [splitKey, original.End)
 	result = append(result, domain.RouteEntry{
 		Partition: domain.Partition{
 			ID:        newPartitionID,

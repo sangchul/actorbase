@@ -9,7 +9,7 @@ import (
 
 const policyKey = "/actorbase/policy"
 
-// SavePolicy는 policy YAML 문자열을 etcd에 저장한다.
+// SavePolicy saves a policy YAML string to etcd.
 func SavePolicy(ctx context.Context, cli *clientv3.Client, yamlStr string) error {
 	_, err := cli.Put(ctx, policyKey, yamlStr)
 	if err != nil {
@@ -18,8 +18,8 @@ func SavePolicy(ctx context.Context, cli *clientv3.Client, yamlStr string) error
 	return nil
 }
 
-// LoadPolicy는 etcd에서 policy YAML 문자열을 로드한다.
-// policy가 없으면 빈 문자열과 nil을 반환한다.
+// LoadPolicy loads the policy YAML string from etcd.
+// Returns an empty string and nil if no policy is stored.
 func LoadPolicy(ctx context.Context, cli *clientv3.Client) (string, error) {
 	resp, err := cli.Get(ctx, policyKey)
 	if err != nil {
@@ -31,7 +31,7 @@ func LoadPolicy(ctx context.Context, cli *clientv3.Client) (string, error) {
 	return string(resp.Kvs[0].Value), nil
 }
 
-// ClearPolicy는 etcd에서 policy를 삭제한다.
+// ClearPolicy deletes the policy from etcd.
 func ClearPolicy(ctx context.Context, cli *clientv3.Client) error {
 	_, err := cli.Delete(ctx, policyKey)
 	if err != nil {

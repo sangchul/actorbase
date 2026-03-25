@@ -21,9 +21,9 @@ import (
 
 // ── actorDispatcher ───────────────────────────────────────────────────────────
 
-// actorDispatcher는 engine.ActorHost를 type-erased로 감싸는 인터페이스.
-// Send/Evict/EvictAll/Activate/Split은 byte slice 레벨에서 동작하여
-// 단일 PS에서 여러 actor type을 처리할 수 있다.
+// actorDispatcher is an interface that wraps engine.ActorHost in a type-erased manner.
+// Send/Evict/EvictAll/Activate/Split operate at the byte-slice level,
+// allowing a single PS to handle multiple actor types.
 type actorDispatcher interface {
 	Send(ctx context.Context, partitionID string, payload []byte) ([]byte, error)
 	Evict(ctx context.Context, partitionID string) error
@@ -36,7 +36,7 @@ type actorDispatcher interface {
 	TypeID() string
 }
 
-// typedDispatcher는 engine.ActorHost[Req, Resp]를 actorDispatcher로 감싼다.
+// typedDispatcher wraps engine.ActorHost[Req, Resp] as an actorDispatcher.
 type typedDispatcher[Req, Resp any] struct {
 	typeID string
 	host   *engine.ActorHost[Req, Resp]
@@ -108,10 +108,10 @@ func (d *typedDispatcher[Req, Resp]) TypeID() string {
 
 // ── ServerBuilder ─────────────────────────────────────────────────────────────
 
-// ServerBuilder는 PS 서버를 조립한다.
-// NewServerBuilder로 생성 후 Register로 actor type을 등록하고 Build로 Server를 생성한다.
+// ServerBuilder assembles a PS server.
+// Create one with NewServerBuilder, register actor types with Register, then call Build to produce a Server.
 //
-// 예시:
+// Example:
 //
 //	builder := ps.NewServerBuilder(baseConfig)
 //	ps.Register(builder, ps.TypeConfig[KVReq, KVResp]{TypeID: "kv", ...})
@@ -121,7 +121,7 @@ type ServerBuilder struct {
 	dispatchers map[string]actorDispatcher
 }
 
-// NewServerBuilder는 BaseConfig를 받아 ServerBuilder를 생성한다.
+// NewServerBuilder creates a ServerBuilder from the given BaseConfig.
 func NewServerBuilder(cfg BaseConfig) *ServerBuilder {
 	return &ServerBuilder{
 		base:        cfg,
@@ -129,8 +129,8 @@ func NewServerBuilder(cfg BaseConfig) *ServerBuilder {
 	}
 }
 
-// Register는 actor type을 PS에 등록한다.
-// Go 제네릭의 제약으로 메서드가 아닌 패키지 레벨 함수로 제공된다.
+// Register registers an actor type with the PS.
+// Provided as a package-level function rather than a method due to Go generics constraints.
 func Register[Req, Resp any](b *ServerBuilder, cfg TypeConfig[Req, Resp]) error {
 	if err := cfg.validate(); err != nil {
 		return err
@@ -142,7 +142,7 @@ func Register[Req, Resp any](b *ServerBuilder, cfg TypeConfig[Req, Resp]) error 
 	return nil
 }
 
-// Build는 Server를 생성한다.
+// Build creates a Server.
 func (b *ServerBuilder) Build() (*Server, error) {
 	b.base.setDefaults()
 	if err := b.base.validate(); err != nil {
@@ -193,8 +193,8 @@ func (b *ServerBuilder) Build() (*Server, error) {
 
 // ── Server ────────────────────────────────────────────────────────────────────
 
-// Server는 Partition Server의 진입점.
-// ServerBuilder.Build()로 생성한다.
+// Server is the entry point for the Partition Server.
+// Created via ServerBuilder.Build().
 type Server struct {
 	cfg         BaseConfig
 	dispatchers map[string]actorDispatcher
@@ -205,18 +205,18 @@ type Server struct {
 	routing     atomic.Pointer[domain.RoutingTable]
 }
 
-// Start는 PS를 기동한다. ctx 취소 시 graceful shutdown 후 반환한다.
+// Start starts the PS. Returns after graceful shutdown when ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	slog.Info("ps: waiting for PM leader", "node", s.cfg.NodeID)
 
-	// 1. PM 리더가 선출될 때까지 대기
+	// 1. Wait until the PM leader is elected.
 	pmAddr, err := cluster.WaitForLeader(ctx, s.etcdCli)
 	if err != nil {
 		return err
 	}
 	slog.Info("ps: PM leader found, starting", "node", s.cfg.NodeID, "addr", s.cfg.Addr, "pm", pmAddr)
 
-	// 2. etcd 노드 등록 시작 (백그라운드)
+	// 2. Start etcd node registration in the background.
 	node := domain.NodeInfo{
 		ID:      s.cfg.NodeID,
 		Address: s.cfg.Addr,
@@ -224,7 +224,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	go s.registry.Register(ctx, node) //nolint:errcheck
 
-	// 3. 라우팅 테이블 watch 시작 + 초기값 수신 대기
+	// 3. Start watching the routing table and wait for the initial value.
 	rtCh := s.rtStore.Watch(ctx)
 	firstRT, ok := <-rtCh
 	if !ok {
@@ -235,10 +235,10 @@ func (s *Server) Start(ctx context.Context) error {
 		slog.Info("ps: initial routing table received", "node", s.cfg.NodeID, "version", firstRT.Version(), "partitions", len(firstRT.Entries()))
 	}
 
-	// 4. 이후 라우팅 갱신을 백그라운드에서 처리
+	// 4. Handle subsequent routing updates in the background.
 	go s.watchRouting(ctx, rtCh)
 
-	// 5. gRPC 서버 시작
+	// 5. Start the gRPC server.
 	lis, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.cfg.Addr, err)
@@ -249,14 +249,14 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 	slog.Info("ps: gRPC server started", "node", s.cfg.NodeID, "addr", s.cfg.Addr)
 
-	// 6. actor type별 스케줄러 시작
+	// 6. Start schedulers for each actor type.
 	for _, d := range s.dispatchers {
 		slog.Info("ps: starting schedulers", "node", s.cfg.NodeID, "type", d.TypeID(),
 			"idle_timeout", s.cfg.IdleTimeout, "evict_interval", s.cfg.EvictInterval)
 		d.StartSchedulers(ctx, s.cfg.IdleTimeout, s.cfg.EvictInterval, s.cfg.CheckpointInterval)
 	}
 
-	// 7. ctx 취소 대기
+	// 7. Wait for ctx cancellation.
 	select {
 	case <-ctx.Done():
 	case err := <-grpcErrCh:
@@ -278,17 +278,17 @@ func (s *Server) watchRouting(ctx context.Context, ch <-chan *domain.RoutingTabl
 func (s *Server) shutdown() error {
 	slog.Info("ps: shutdown initiated", "node", s.cfg.NodeID)
 
-	// 1. 파티션 선이전
+	// 1. Pre-migrate partitions to other nodes.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), s.cfg.DrainTimeout)
 	defer drainCancel()
 	s.drainPartitions(drainCtx)
 	slog.Info("ps: drain complete", "node", s.cfg.NodeID)
 
-	// 2. gRPC: 진행 중인 RPC 완료 대기 후 중단
+	// 2. gRPC: wait for in-flight RPCs to complete, then stop.
 	s.grpcSrv.GracefulStop()
 	slog.Info("ps: gRPC server stopped", "node", s.cfg.NodeID)
 
-	// 3. 모든 actor type의 Actor checkpoint 저장
+	// 3. Save checkpoints for all actors across every actor type.
 	slog.Info("ps: evicting all actors", "node", s.cfg.NodeID)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
@@ -298,18 +298,18 @@ func (s *Server) shutdown() error {
 		}
 	}
 
-	// 4. etcd lease 즉시 revoke
+	// 4. Immediately revoke the etcd lease.
 	slog.Info("ps: deregistering from etcd", "node", s.cfg.NodeID)
 	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer deregCancel()
 	_ = s.registry.Deregister(deregCtx, s.cfg.NodeID)
 
 	slog.Info("ps: shutdown complete", "node", s.cfg.NodeID)
-	// 5. etcd 클라이언트 종료
+	// 5. Close the etcd client.
 	return s.etcdCli.Close()
 }
 
-// drainPartitions는 이 PS가 담당하는 모든 파티션을 다른 PS로 migrate 요청한다.
+// drainPartitions requests migration of all partitions owned by this PS to other PS nodes.
 func (s *Server) drainPartitions(ctx context.Context) {
 	pmAddr, err := cluster.GetLeaderAddr(ctx, s.etcdCli)
 	if err != nil {

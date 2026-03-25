@@ -20,12 +20,12 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// Client는 actorbase 클러스터에 요청을 전송하는 SDK 진입점.
+// Client is the SDK entry point for sending requests to an actorbase cluster.
 //
-// 내부적으로:
-//   - PM WatchRouting 스트림으로 라우팅 테이블을 수신·캐싱한다.
-//   - key로 담당 파티션을 찾아 해당 PS에 요청을 전달한다.
-//   - 라우팅 오류 시 테이블 갱신을 기다려 재시도한다.
+// Internally:
+//   - Receives and caches the routing table via the PM WatchRouting stream.
+//   - Finds the responsible partition by key and forwards the request to the corresponding PS.
+//   - On routing errors, waits for the table to be refreshed and retries.
 type Client[Req, Resp any] struct {
 	cfg      Config[Req, Resp]
 	pmClient *transport.PMClient
@@ -33,9 +33,9 @@ type Client[Req, Resp any] struct {
 	routing  atomic.Pointer[domain.RoutingTable]
 }
 
-// NewClient는 Config를 검증하고 PM 연결을 포함한 Client를 생성한다.
-// EtcdEndpoints가 설정된 경우 etcd에서 현재 PM 리더 주소를 조회한다.
-// Start를 호출하기 전까지는 Send를 호출하면 안 된다.
+// NewClient validates the Config and creates a Client including the PM connection.
+// If EtcdEndpoints is configured, the current PM leader address is resolved from etcd.
+// Send must not be called before Start returns.
 func NewClient[Req, Resp any](cfg Config[Req, Resp]) (*Client[Req, Resp], error) {
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
@@ -63,8 +63,8 @@ func NewClient[Req, Resp any](cfg Config[Req, Resp]) (*Client[Req, Resp], error)
 	}, nil
 }
 
-// discoverLeaderAddr는 etcd에서 현재 PM 리더 주소를 조회한다.
-// 리더가 선출될 때까지 최대 30초 대기한다.
+// discoverLeaderAddr resolves the current PM leader address from etcd.
+// Waits up to 30 seconds for a leader to be elected.
 func discoverLeaderAddr(endpoints []string) (string, error) {
 	etcdCli, err := clientv3.New(clientv3.Config{
 		Endpoints:   endpoints,
@@ -85,13 +85,14 @@ func discoverLeaderAddr(endpoints []string) (string, error) {
 	return addr, nil
 }
 
-// Start는 PM WatchRouting 스트림을 시작하고 첫 라우팅 테이블을 수신할 때까지 대기한다.
-// 첫 테이블 수신 후 즉시 반환하며, 이후 라우팅 업데이트와 연결 정리는 백그라운드에서 처리된다.
-// Start가 nil을 반환한 이후에는 Send를 즉시 호출해도 안전하다.
+// Start initiates the PM WatchRouting stream and waits until the first routing table is received.
+// Returns immediately after the first table is received; subsequent routing updates and connection
+// cleanup are handled in the background.
+// It is safe to call Send immediately after Start returns nil.
 func (c *Client[Req, Resp]) Start(ctx context.Context) error {
 	ch := c.pmClient.WatchRouting(ctx, c.cfg.ClientID)
 
-	// 첫 라우팅 테이블 수신 대기
+	// wait for the first routing table
 	select {
 	case rt, ok := <-ch:
 		if !ok {
@@ -102,7 +103,7 @@ func (c *Client[Req, Resp]) Start(ctx context.Context) error {
 		return ctx.Err()
 	}
 
-	// 이후 업데이트 수신 및 종료 시 연결 정리를 백그라운드에서 처리
+	// handle subsequent updates and connection cleanup on shutdown in the background
 	go func() {
 		c.consumeRouting(ctx, ch)
 		c.connPool.Close() //nolint:errcheck
@@ -111,20 +112,20 @@ func (c *Client[Req, Resp]) Start(ctx context.Context) error {
 	return nil
 }
 
-// consumeRouting은 WatchRouting 채널에서 라우팅 테이블을 수신한다.
-// HA 모드에서 채널이 닫히면 (PM 장애) etcd에서 새 리더를 발견하여 재연결한다.
+// consumeRouting receives routing tables from the WatchRouting channel.
+// In HA mode, when the channel is closed (PM failure), it discovers a new leader from etcd and reconnects.
 func (c *Client[Req, Resp]) consumeRouting(ctx context.Context, ch <-chan *domain.RoutingTable) {
 	for {
 		for rt := range ch {
 			c.routing.Store(rt)
 		}
 
-		// 채널 닫힘 — HA 모드가 아니거나 ctx가 취소됐으면 종료
+		// channel closed — exit if not in HA mode or if ctx is cancelled
 		if !c.cfg.haMode() || ctx.Err() != nil {
 			return
 		}
 
-		// HA 모드: 새 PM 리더를 발견하여 재연결
+		// HA mode: discover a new PM leader and reconnect
 		slog.Warn("sdk: PM connection lost, re-discovering leader...")
 		newAddr, err := c.rediscoverLeader(ctx)
 		if err != nil {
@@ -143,7 +144,7 @@ func (c *Client[Req, Resp]) consumeRouting(ctx context.Context, ch <-chan *domai
 	}
 }
 
-// rediscoverLeader는 etcd에서 새 PM 리더를 발견할 때까지 재시도한다.
+// rediscoverLeader retries until a new PM leader is discovered from etcd.
 func (c *Client[Req, Resp]) rediscoverLeader(ctx context.Context) (string, error) {
 	etcdCli, err := clientv3.New(clientv3.Config{
 		Endpoints:   c.cfg.EtcdEndpoints,
@@ -154,7 +155,7 @@ func (c *Client[Req, Resp]) rediscoverLeader(ctx context.Context) (string, error
 	}
 	defer etcdCli.Close() //nolint:errcheck
 
-	// 새 리더가 선출될 때까지 대기 (최대 30초)
+	// wait until a new leader is elected (up to 30 seconds)
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -165,9 +166,8 @@ func (c *Client[Req, Resp]) rediscoverLeader(ctx context.Context) (string, error
 	return addr, nil
 }
 
-// Send는 key를 담당하는 Actor에 req를 전달하고 Resp를 반환한다.
-// 라우팅 오류(ErrPartitionMoved, ErrPartitionNotOwned, ErrPartitionBusy) 시
-// 최대 MaxRetries까지 재시도한다.
+// Send forwards req to the Actor responsible for the given key and returns a Resp.
+// Retries up to MaxRetries on routing errors (ErrPartitionMoved, ErrPartitionNotOwned, ErrPartitionBusy).
 func (c *Client[Req, Resp]) Send(ctx context.Context, key string, req Req) (Resp, error) {
 	var zero Resp
 	var lastErr error
@@ -217,15 +217,15 @@ func (c *Client[Req, Resp]) Send(ctx context.Context, key string, req Req) (Resp
 	return zero, lastErr
 }
 
-// Scan은 [startKey, endKey) 범위에 걸친 모든 파티션에 req를 fan-out하고
-// 파티션 순서대로 정렬된 []Resp를 반환한다.
+// Scan fans out req to all partitions covering the [startKey, endKey) range
+// and returns []Resp sorted in partition order.
 //
-// 보장:
-//   - 누락 없음: stale 라우팅 또는 partition split으로 인한 ErrPartitionMoved/Busy 시
-//     해당 파티션 범위부터 재시도하여 키 누락을 방지한다.
-//   - 순서 보장: 결과는 파티션 KeyRange.Start 기준 오름차순이다.
+// Guarantees:
+//   - No omissions: on ErrPartitionMoved/Busy due to stale routing or partition split,
+//     retries from the affected partition range to prevent missing keys.
+//   - Order guarantee: results are in ascending order by partition KeyRange.Start.
 //
-// endKey == ""이면 모든 파티션의 끝까지 scan한다.
+// If endKey == "", the scan covers through the end of all partitions.
 func (c *Client[Req, Resp]) Scan(ctx context.Context, startKey, endKey string, req Req) ([]Resp, error) {
 	type scanResult struct {
 		entry domain.RouteEntry
@@ -243,7 +243,7 @@ func (c *Client[Req, Resp]) Scan(ctx context.Context, startKey, endKey string, r
 			break
 		}
 
-		// 병렬 fan-out
+		// parallel fan-out
 		resCh := make(chan scanResult, len(partitions))
 		var wg sync.WaitGroup
 		for _, entry := range partitions {
@@ -267,7 +267,7 @@ func (c *Client[Req, Resp]) Scan(ctx context.Context, startKey, endKey string, r
 		wg.Wait()
 		close(resCh)
 
-		// 결과 수집 후 KeyRange.Start 기준 정렬
+		// collect results then sort by KeyRange.Start
 		collected := make([]scanResult, 0, len(partitions))
 		for r := range resCh {
 			collected = append(collected, r)
@@ -276,14 +276,14 @@ func (c *Client[Req, Resp]) Scan(ctx context.Context, startKey, endKey string, r
 			return collected[i].entry.Partition.KeyRange.Start < collected[j].entry.Partition.KeyRange.Start
 		})
 
-		// 앞에서부터 성공한 파티션 결과를 순서대로 누적.
-		// 실패한 파티션에서 멈추고 currentStart를 해당 파티션의 시작으로 설정.
+		// accumulate successful partition results in order from the front.
+		// stop at the first failed partition and set currentStart to that partition's start.
 		allSucceeded := true
 		for _, r := range collected {
 			if r.err != nil {
 				allSucceeded = false
 				currentStart = r.entry.Partition.KeyRange.Start
-				// 재시도 불필요한 에러는 즉시 반환
+				// return immediately for errors that do not warrant a retry
 				if !errors.Is(r.err, provider.ErrPartitionMoved) &&
 					!errors.Is(r.err, provider.ErrPartitionNotOwned) &&
 					!errors.Is(r.err, provider.ErrPartitionBusy) {

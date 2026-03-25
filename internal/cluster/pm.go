@@ -16,11 +16,13 @@ const (
 	pmWaitTimeout = 30 * time.Second
 )
 
-// CampaignLeader는 etcd election을 통해 PM 리더 자리를 획득한다.
-// 리더가 될 때까지 블로킹한다. ctx가 취소되면 에러를 반환한다.
+// CampaignLeader acquires the PM leader role via an etcd election.
+// It blocks until this instance becomes the leader. Returns an error if ctx
+// is cancelled before leadership is acquired.
 //
-// 반환된 Session은 PM 정상 종료 시 Close를 호출해 리더십을 반납해야 한다.
-// Session이 닫히면 standby PM 중 하나가 자동으로 새 리더로 선출된다.
+// The caller must call Close on the returned Session during a graceful PM
+// shutdown to relinquish leadership. Closing the session causes one of the
+// standby PMs to be automatically elected as the new leader.
 func CampaignLeader(ctx context.Context, client *clientv3.Client, pmAddr string) (*concurrency.Session, error) {
 	sess, err := concurrency.NewSession(client, concurrency.WithTTL(pmLeaseTTL))
 	if err != nil {
@@ -39,11 +41,11 @@ func CampaignLeader(ctx context.Context, client *clientv3.Client, pmAddr string)
 	return sess, nil
 }
 
-// GetLeaderAddr는 etcd에서 현재 PM 리더 주소를 조회한다.
-// 리더가 없으면 에러를 반환한다.
+// GetLeaderAddr looks up the current PM leader address from etcd.
+// Returns an error if no leader has been elected.
 func GetLeaderAddr(ctx context.Context, client *clientv3.Client) (string, error) {
-	// etcd election은 {electionKey}/{leaseID} 형태의 키를 생성한다.
-	// 리더는 CreateRevision이 가장 작은 키다.
+	// The etcd election creates keys of the form {electionKey}/{leaseID}.
+	// The leader is the key with the smallest CreateRevision.
 	resp, err := client.Get(ctx, pmElectionKey+"/",
 		clientv3.WithPrefix(),
 		clientv3.WithSort(clientv3.SortByCreateRevision, clientv3.SortAscend),
@@ -57,18 +59,18 @@ func GetLeaderAddr(ctx context.Context, client *clientv3.Client) (string, error)
 	return string(resp.Kvs[0].Value), nil
 }
 
-// WaitForLeader는 PM 리더가 선출될 때까지 최대 pmWaitTimeout 동안 대기한다.
-// 리더 주소를 반환한다. PS Start() 초반에 호출한다.
+// WaitForLeader waits up to pmWaitTimeout for a PM leader to be elected.
+// Returns the leader address. Called early in PS Start().
 func WaitForLeader(ctx context.Context, client *clientv3.Client) (string, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, pmWaitTimeout)
 	defer cancel()
 
-	// 이미 리더가 있으면 즉시 반환
+	// Return immediately if a leader already exists.
 	if addr, err := GetLeaderAddr(waitCtx, client); err == nil {
 		return addr, nil
 	}
 
-	// 없으면 watch로 대기
+	// Otherwise wait via watch.
 	slog.Warn("ps: PM leader not found, waiting...", "timeout", pmWaitTimeout)
 	watchCh := client.Watch(waitCtx, pmElectionKey+"/", clientv3.WithPrefix())
 	for {

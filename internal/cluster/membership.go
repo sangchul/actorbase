@@ -10,18 +10,19 @@ import (
 	"github.com/sangchul/actorbase/internal/domain"
 )
 
-// NodeEventType은 멤버십 변경 이벤트의 종류.
+// NodeEventType is the type of a membership change event.
 type NodeEventType int
 
 const (
-	NodeJoined NodeEventType = iota // 새 노드가 등록됨
-	NodeLeft                        // 노드의 lease가 만료되거나 revoke됨
+	NodeJoined NodeEventType = iota // A new node has been registered.
+	NodeLeft                        // A node's lease has expired or been revoked.
 )
 
-// NodeLeaveReason은 노드 이탈 원인.
-// 현재 etcd watch 레벨에서 graceful과 failure를 구분하기 어려우므로
-// 항상 NodeLeaveFailure로 전달된다. BalancePolicy 구현체는 라우팅 테이블에
-// 파티션이 남아 있는지 확인하여 실제 처리 여부를 결정한다.
+// NodeLeaveReason is the reason a node left the cluster.
+// Because it is difficult to distinguish between graceful and failure at the
+// etcd watch level, NodeLeaveFailure is always delivered. BalancePolicy
+// implementations decide whether to act by checking whether partitions remain
+// in the routing table.
 type NodeLeaveReason int
 
 const (
@@ -29,28 +30,28 @@ const (
 	NodeLeaveFailure
 )
 
-// NodeEvent는 클러스터 멤버십 변경 이벤트.
+// NodeEvent is a cluster membership change event.
 type NodeEvent struct {
 	Type   NodeEventType
 	Node   domain.NodeInfo
-	Reason NodeLeaveReason // NodeLeft일 때만 유효
+	Reason NodeLeaveReason // Only valid when Type == NodeLeft.
 }
 
-// MembershipWatcher는 노드 join/leave 이벤트를 감지하는 인터페이스.
-// PM이 사용한다. 노드 장애 감지 및 파티션 재배치 트리거에 활용한다.
+// MembershipWatcher is the interface for detecting node join/leave events.
+// Used by the PM to detect node failures and trigger partition rebalancing.
 type MembershipWatcher interface {
-	// Watch는 노드 join/leave 이벤트 채널을 반환한다.
-	// Watch 재연결 시 현재 전체 노드 목록과 비교하여 놓친 이벤트를 보정한다.
-	// ctx 취소 시 채널이 닫힌다.
+	// Watch returns a channel of node join/leave events.
+	// On reconnect it reconciles against the current node list to recover
+	// any missed events. The channel is closed when ctx is cancelled.
 	Watch(ctx context.Context) <-chan NodeEvent
 }
 
-// NewMembershipWatcher는 etcd 기반 MembershipWatcher를 생성한다.
+// NewMembershipWatcher creates an etcd-based MembershipWatcher.
 func NewMembershipWatcher(client *clientv3.Client) MembershipWatcher {
 	return &etcdMembershipWatcher{client: client}
 }
 
-// etcdMembershipWatcher는 MembershipWatcher의 etcd 구현체.
+// etcdMembershipWatcher is the etcd implementation of MembershipWatcher.
 type etcdMembershipWatcher struct {
 	client *clientv3.Client
 }
@@ -64,10 +65,10 @@ func (w *etcdMembershipWatcher) Watch(ctx context.Context) <-chan NodeEvent {
 func (w *etcdMembershipWatcher) watchLoop(ctx context.Context, ch chan NodeEvent) {
 	defer close(ch)
 
-	// 현재 알고 있는 노드 목록 (재연결 시 diff 기준)
+	// Known node list used as the baseline for diffing on reconnect.
 	known := make(map[string]domain.NodeInfo)
 
-	// 초기 상태 로드 + 첫 이벤트 전달
+	// Load the initial state and deliver the first set of events.
 	current, err := w.listNodes(ctx)
 	if err != nil {
 		slog.Error("membership: initial list failed", "err", err)
@@ -87,11 +88,11 @@ func (w *etcdMembershipWatcher) watchLoop(ctx context.Context, ch chan NodeEvent
 		select {
 		case resp, ok := <-watchCh:
 			if !ok {
-				// watch 채널 종료: ctx 취소가 아니면 재연결 시도
+				// Watch channel closed: reconnect unless ctx was cancelled.
 				if ctx.Err() != nil {
 					return
 				}
-				// 재연결 후 diff로 놓친 이벤트 보정
+				// Reconcile missed events via diff after reconnect.
 				if err := w.reconcile(ctx, known, ch); err != nil {
 					return
 				}
@@ -136,8 +137,8 @@ func (w *etcdMembershipWatcher) watchLoop(ctx context.Context, ch chan NodeEvent
 	}
 }
 
-// reconcile은 etcd watch 재연결 후 놓친 이벤트를 보정한다.
-// 현재 etcd 상태와 known을 diff하여 join/leave 이벤트를 전달한다.
+// reconcile recovers missed events after an etcd watch reconnect.
+// It diffs the current etcd state against known and delivers join/leave events.
 func (w *etcdMembershipWatcher) reconcile(ctx context.Context, known map[string]domain.NodeInfo, ch chan NodeEvent) error {
 	current, err := w.listNodes(ctx)
 	if err != nil {
@@ -149,7 +150,7 @@ func (w *etcdMembershipWatcher) reconcile(ctx context.Context, known map[string]
 		currentMap[n.ID] = n
 	}
 
-	// 새로 추가된 노드
+	// Nodes that were newly added.
 	for id, n := range currentMap {
 		if _, exists := known[id]; !exists {
 			known[id] = n
@@ -161,7 +162,7 @@ func (w *etcdMembershipWatcher) reconcile(ctx context.Context, known map[string]
 		}
 	}
 
-	// 사라진 노드
+	// Nodes that have disappeared.
 	for id, n := range known {
 		if _, exists := currentMap[id]; !exists {
 			delete(known, id)
@@ -204,7 +205,7 @@ func unmarshalNodeInfo(data []byte) (domain.NodeInfo, error) {
 	}, nil
 }
 
-// nodeIDFromKey는 "/actorbase/nodes/{nodeID}" 키에서 nodeID를 추출한다.
+// nodeIDFromKey extracts the nodeID from a key of the form "/actorbase/nodes/{nodeID}".
 func nodeIDFromKey(key string) string {
 	if len(key) <= len(nodeKeyPrefix) {
 		return ""

@@ -1,13 +1,13 @@
-// examples/s3_client는 actorbase SDK를 사용한 S3 메타데이터 클라이언트 예시다.
+// examples/s3_client is an example S3 metadata client using the actorbase SDK.
 //
-// s3_server와 함께 사용하며, bucket/object CRUD를 CLI로 실행할 수 있다.
+// Used together with s3_server, it allows bucket/object CRUD operations via CLI.
 //
-// 사용법:
+// Usage:
 //
 //	s3_client [-pm <addr>] bucket <create|get|delete> <name> [region]
 //	s3_client [-pm <addr>] object <put|get|delete> <bucket> <key> [size] [etag]
 //
-// 예시:
+// Examples:
 //
 //	s3_client bucket create my-bucket us-east-1
 //	s3_client bucket get my-bucket
@@ -29,7 +29,7 @@ import (
 	"github.com/sangchul/actorbase/sdk"
 )
 
-// BucketRequest / BucketResponse — s3_server와 동일해야 한다.
+// BucketRequest / BucketResponse — must match the types used by s3_server.
 
 type BucketRequest struct {
 	Op       string `json:"op"`
@@ -53,7 +53,7 @@ type BucketResponse struct {
 	Items     []BucketItem `json:"items"`
 }
 
-// ObjectRequest / ObjectResponse — s3_server와 동일해야 한다.
+// ObjectRequest / ObjectResponse — must match the types used by s3_server.
 
 type ObjectRequest struct {
 	Op           string `json:"op"`
@@ -199,7 +199,7 @@ func runBucket(ctx context.Context, pmAddr string) {
 		}
 		endKey := ""
 		if prefix != "" {
-			// prefix 범위: [prefix, prefix의 마지막 바이트+1)
+			// prefix range: [prefix, prefix with last byte incremented by 1)
 			endKey = prefixEnd(prefix)
 		}
 		req := BucketRequest{Op: "list", StartKey: prefix, EndKey: endKey}
@@ -225,8 +225,8 @@ func runBucket(ctx context.Context, pmAddr string) {
 	}
 }
 
-// prefixEnd는 prefix 범위의 상한 key를 반환한다.
-// 예: "foo" → "fop" (마지막 바이트 +1). 0xFF이면 잘라낸다.
+// prefixEnd returns the upper-bound key for a prefix range.
+// Example: "foo" → "fop" (last byte incremented by 1). Trims bytes that are 0xFF.
 func prefixEnd(prefix string) string {
 	b := []byte(prefix)
 	for i := len(b) - 1; i >= 0; i-- {
@@ -235,7 +235,7 @@ func prefixEnd(prefix string) string {
 			return string(b[:i+1])
 		}
 	}
-	return "" // 모든 바이트가 0xFF인 경우 — 상한 없음
+	return "" // all bytes are 0xFF — no upper bound
 }
 
 func runObject(ctx context.Context, pmAddr string) {
@@ -323,7 +323,7 @@ func runObject(ctx context.Context, pmAddr string) {
 		if flag.NArg() >= 4 {
 			objPrefix = flag.Arg(3)
 		}
-		// object routing key: "{bucket}/{key}" — bucket 내 모든 object 범위
+		// object routing key: "{bucket}/{key}" — covers the range of all objects within the bucket
 		startKey := bucket + "/" + objPrefix
 		endKey := prefixEnd(bucket + "/" + objPrefix)
 		req := ObjectRequest{Op: "list", Bucket: bucket, StartKey: startKey, EndKey: endKey}

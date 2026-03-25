@@ -17,17 +17,17 @@ const (
 	defaultFlushInterval = 10 * time.Millisecond
 )
 
-// Config는 ActorHost 생성에 필요한 의존성과 설정을 담는다.
+// Config holds the dependencies and settings required to create an ActorHost.
 type Config[Req, Resp any] struct {
 	Factory         provider.ActorFactory[Req, Resp]
 	CheckpointStore provider.CheckpointStore
 	WALStore        provider.WALStore
 	Metrics         provider.Metrics
 
-	MailboxSize            int           // 기본값: defaultMailboxSize
-	FlushSize              int           // WAL 배치 최대 크기. 기본값: defaultFlushSize
-	FlushInterval          time.Duration // WAL 배치 최대 대기 시간. 기본값: defaultFlushInterval
-	CheckpointWALThreshold int           // 이 수만큼 WAL entry가 쌓이면 자동 checkpoint. 0이면 비활성.
+	MailboxSize            int           // default: defaultMailboxSize
+	FlushSize              int           // maximum WAL batch size; default: defaultFlushSize
+	FlushInterval          time.Duration // maximum WAL batch wait time; default: defaultFlushInterval
+	CheckpointWALThreshold int           // triggers automatic checkpoint after this many WAL entries accumulate; 0 disables.
 }
 
 func (c *Config[Req, Resp]) setDefaults() {
@@ -42,13 +42,13 @@ func (c *Config[Req, Resp]) setDefaults() {
 	}
 }
 
-// actorEntry는 활성화된 Actor 하나의 상태.
+// actorEntry holds the state of a single activated Actor.
 type actorEntry[Req, Resp any] struct {
 	mailbox *mailbox[Req, Resp]
-	ready   chan struct{} // 활성화 완료 시 close
+	ready   chan struct{} // closed when activation is complete
 }
 
-// ActorHost는 파티션 서버 내 모든 Actor의 생명주기를 관리한다.
+// ActorHost manages the lifecycle of all Actors within a partition server.
 type ActorHost[Req, Resp any] struct {
 	cfg     Config[Req, Resp]
 	flusher *walFlusher
@@ -59,7 +59,7 @@ type ActorHost[Req, Resp any] struct {
 	cancel  context.CancelFunc
 }
 
-// NewActorHost는 ActorHost를 생성하고 WALFlusher를 시작한다.
+// NewActorHost creates an ActorHost and starts the WALFlusher.
 func NewActorHost[Req, Resp any](cfg Config[Req, Resp]) *ActorHost[Req, Resp] {
 	cfg.setDefaults()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,8 +74,9 @@ func NewActorHost[Req, Resp any](cfg Config[Req, Resp]) *ActorHost[Req, Resp] {
 	return h
 }
 
-// Send는 partitionID의 Actor에 req를 전달하고 응답을 기다린다.
-// Actor가 비활성이면 먼저 활성화한다. 동시에 동일 파티션 활성화 요청이 오면 하나만 실행하고 나머지는 대기한다.
+// Send delivers req to the Actor for partitionID and waits for the response.
+// If the Actor is not active, it is activated first. Concurrent activation requests
+// for the same partition are deduplicated: only one runs and the rest wait.
 func (h *ActorHost[Req, Resp]) Send(ctx context.Context, partitionID string, req Req) (Resp, error) {
 	entry, err := h.getOrActivate(ctx, partitionID)
 	if err != nil {
@@ -85,8 +86,8 @@ func (h *ActorHost[Req, Resp]) Send(ctx context.Context, partitionID string, req
 	return entry.mailbox.send(ctx, req)
 }
 
-// Checkpoint는 partitionID Actor의 상태를 CheckpointStore에 저장하고 WAL을 trim한다.
-// Actor는 메모리에 유지된다.
+// Checkpoint saves the state of the partitionID Actor to the CheckpointStore and trims the WAL.
+// The Actor remains in memory.
 func (h *ActorHost[Req, Resp]) Checkpoint(ctx context.Context, partitionID string) error {
 	h.mu.Lock()
 	entry, ok := h.actors[partitionID]
@@ -102,8 +103,8 @@ func (h *ActorHost[Req, Resp]) Checkpoint(ctx context.Context, partitionID strin
 	return entry.mailbox.checkpoint(ctx)
 }
 
-// Evict는 partitionID Actor를 메모리에서 제거한다.
-// 제거 전 checkpoint를 수행한다.
+// Evict removes the partitionID Actor from memory.
+// A checkpoint is performed before removal.
 func (h *ActorHost[Req, Resp]) Evict(ctx context.Context, partitionID string) error {
 	h.mu.Lock()
 	entry, ok := h.actors[partitionID]
@@ -129,7 +130,7 @@ func (h *ActorHost[Req, Resp]) Evict(ctx context.Context, partitionID string) er
 	return nil
 }
 
-// EvictAll은 모든 활성 Actor를 evict한다. 서버 종료 시 호출한다.
+// EvictAll evicts all active Actors. Called on server shutdown.
 func (h *ActorHost[Req, Resp]) EvictAll(ctx context.Context) error {
 	h.mu.Lock()
 	ids := make([]string, 0, len(h.actors))
@@ -144,31 +145,31 @@ func (h *ActorHost[Req, Resp]) EvictAll(ctx context.Context) error {
 			firstErr = err
 		}
 	}
-	h.cancel() // WALFlusher 종료
+	h.cancel() // stop the WALFlusher
 	return firstErr
 }
 
-// Activate는 partitionID Actor를 명시적으로 활성화한다.
-// 이미 활성화된 경우 no-op. migration target PS의 PreparePartition 처리 시 사용한다.
+// Activate explicitly activates the partitionID Actor.
+// No-op if already active. Used when handling PreparePartition on the migration target PS.
 func (h *ActorHost[Req, Resp]) Activate(ctx context.Context, partitionID string) error {
 	_, err := h.getOrActivate(ctx, partitionID)
 	return err
 }
 
-// Split은 partitionID Actor를 splitKey 기준으로 두 파티션으로 분리한다.
-// Actor가 비활성이면 먼저 활성화한다 (checkpoint + WAL replay).
-// 분리 완료 후 두 Actor 모두 활성 상태로 등록된다.
+// Split splits the partitionID Actor into two partitions at splitKey.
+// If the Actor is not active, it is activated first (checkpoint + WAL replay).
+// After the split, both Actors are registered in the active state.
 //
-// splitKey가 ""이면 Actor가 SplitHinter를 구현한 경우 SplitHint()를 사용하고,
-// 그렇지 않으면 keyRangeStart/End로 midpoint를 계산한다.
-// 실제 사용된 splitKey를 반환한다.
+// If splitKey is "", the Actor's SplitHint() is used if it implements SplitHinter;
+// otherwise the midpoint of keyRangeStart/End is computed.
+// Returns the splitKey that was actually used.
 func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error) {
 	entry, err := h.getOrActivate(ctx, partitionID)
 	if err != nil {
 		return "", err
 	}
 
-	// 1. Actor goroutine 내에서 split 실행 (SplitHint 또는 midpoint 결정 포함)
+	// 1. run split inside the Actor goroutine (includes SplitHint or midpoint resolution)
 	if splitKey == "" {
 		splitKey = splitKeyAuto
 	}
@@ -177,25 +178,25 @@ func (h *ActorHost[Req, Resp]) Split(ctx context.Context, partitionID, splitKey,
 		return "", fmt.Errorf("split actor: %w", err)
 	}
 
-	// 2. 하위 파티션 checkpoint (split 이후 상태)
+	// 2. checkpoint the lower partition (state after split)
 	if err := entry.mailbox.checkpoint(ctx); err != nil {
 		return "", fmt.Errorf("checkpoint lower half: %w", err)
 	}
 
-	// 3. 상위 파티션 checkpoint 저장 (LSN=0: WAL 없음)
+	// 3. save checkpoint for the upper partition (LSN=0: no WAL)
 	if err := h.saveRawCheckpoint(ctx, newPartitionID, 0, upperHalf); err != nil {
 		return "", fmt.Errorf("save upper half checkpoint: %w", err)
 	}
 
-	// 4. 상위 파티션 활성화 (CheckpointStore에서 로드)
+	// 4. activate the upper partition (loaded from CheckpointStore)
 	return usedKey, h.Activate(ctx, newPartitionID)
 }
 
-// Merge는 lowerPartitionID Actor가 upperPartitionID Actor의 상태를 흡수한다.
-// 두 파티션 모두 같은 Host에 있어야 한다.
-// merge 완료 후 upper 파티션은 evict되고 checkpoint/WAL이 삭제된다.
+// Merge causes the lowerPartitionID Actor to absorb the state of the upperPartitionID Actor.
+// Both partitions must reside on the same Host.
+// After merging, the upper partition is evicted and its checkpoint/WAL are deleted.
 func (h *ActorHost[Req, Resp]) Merge(ctx context.Context, lowerPartitionID, upperPartitionID string) error {
-	// 1. upper actor 활성화 → Export (전체 상태)
+	// 1. activate upper actor → Export (full state)
 	upperEntry, err := h.getOrActivate(ctx, upperPartitionID)
 	if err != nil {
 		return fmt.Errorf("activate upper partition: %w", err)
@@ -205,19 +206,19 @@ func (h *ActorHost[Req, Resp]) Merge(ctx context.Context, lowerPartitionID, uppe
 		return fmt.Errorf("snapshot upper partition: %w", err)
 	}
 
-	// 2. upper actor evict (checkpoint 없이 삭제)
+	// 2. evict upper actor (delete without checkpoint)
 	h.mu.Lock()
 	delete(h.actors, upperPartitionID)
 	h.mu.Unlock()
 	upperEntry.mailbox.close()
 
-	// 3. upper checkpoint/WAL 삭제
+	// 3. delete upper checkpoint/WAL
 	if err := h.cfg.CheckpointStore.Delete(ctx, upperPartitionID); err != nil {
 		slog.Warn("merge: delete upper checkpoint failed", "partition", upperPartitionID, "err", err)
 	}
 	h.cfg.WALStore.TrimBefore(ctx, upperPartitionID, ^uint64(0))
 
-	// 4. lower actor 활성화 → Import(upperData) → checkpoint
+	// 4. activate lower actor → Import(upperData) → checkpoint
 	lowerEntry, err := h.getOrActivate(ctx, lowerPartitionID)
 	if err != nil {
 		return fmt.Errorf("activate lower partition: %w", err)
@@ -231,8 +232,8 @@ func (h *ActorHost[Req, Resp]) Merge(ctx context.Context, lowerPartitionID, uppe
 	return nil
 }
 
-// KeyRangeMidpoint는 [start, end) 키 범위의 중간값을 계산한다.
-// SplitHinter를 구현하지 않은 Actor의 split key 결정에 사용한다.
+// KeyRangeMidpoint computes the midpoint of the [start, end) key range.
+// Used to determine the split key for Actors that do not implement SplitHinter.
 func KeyRangeMidpoint(start, end string) string {
 	if start == "" && end == "" {
 		return "m"
@@ -273,7 +274,7 @@ func KeyRangeMidpoint(start, end string) string {
 	return mid
 }
 
-// GetStats는 현재 활성화된 모든 파티션의 통계를 반환한다.
+// GetStats returns statistics for all currently active partitions.
 func (h *ActorHost[Req, Resp]) GetStats() []PartitionStats {
 	h.mu.Lock()
 	snapshot := make(map[string]*actorEntry[Req, Resp], len(h.actors))
@@ -287,7 +288,7 @@ func (h *ActorHost[Req, Resp]) GetStats() []PartitionStats {
 		select {
 		case <-entry.ready:
 		default:
-			continue // 아직 활성화 중
+			continue // still activating
 		}
 		keyCount, rps := entry.mailbox.stats()
 		result = append(result, PartitionStats{
@@ -299,8 +300,8 @@ func (h *ActorHost[Req, Resp]) GetStats() []PartitionStats {
 	return result
 }
 
-// IdleActors는 lastMsg가 idleSince 이전인 partitionID 목록을 반환한다.
-// EvictionScheduler가 주기적으로 호출한다.
+// IdleActors returns the list of partitionIDs whose lastMsg is before idleSince.
+// Called periodically by EvictionScheduler.
 func (h *ActorHost[Req, Resp]) IdleActors(idleSince time.Time) []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -310,7 +311,7 @@ func (h *ActorHost[Req, Resp]) IdleActors(idleSince time.Time) []string {
 		select {
 		case <-entry.ready:
 		default:
-			continue // 아직 활성화 중
+			continue // still activating
 		}
 		if entry.mailbox.lastMsg.Load().Before(idleSince) {
 			result = append(result, id)
@@ -319,8 +320,8 @@ func (h *ActorHost[Req, Resp]) IdleActors(idleSince time.Time) []string {
 	return result
 }
 
-// ActivePartitions는 현재 활성화된 모든 partitionID 목록을 반환한다.
-// CheckpointScheduler가 주기적으로 호출한다.
+// ActivePartitions returns the list of all currently active partitionIDs.
+// Called periodically by CheckpointScheduler.
 func (h *ActorHost[Req, Resp]) ActivePartitions() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -331,14 +332,15 @@ func (h *ActorHost[Req, Resp]) ActivePartitions() []string {
 		case <-entry.ready:
 			result = append(result, id)
 		default:
-			// 아직 활성화 중인 경우 제외
+			// exclude entries that are still activating
 		}
 	}
 	return result
 }
 
-// getOrActivate는 partitionID의 actorEntry를 반환한다.
-// 없으면 activate한다. 동시 요청이 오면 하나만 activate하고 나머지는 대기한다.
+// getOrActivate returns the actorEntry for partitionID.
+// If it does not exist, it activates the Actor. Concurrent requests are deduplicated:
+// only one activation runs and the rest wait.
 func (h *ActorHost[Req, Resp]) getOrActivate(ctx context.Context, partitionID string) (*actorEntry[Req, Resp], error) {
 	h.mu.Lock()
 	entry, ok := h.actors[partitionID]
@@ -352,7 +354,7 @@ func (h *ActorHost[Req, Resp]) getOrActivate(ctx context.Context, partitionID st
 		}
 	}
 
-	// 이 goroutine이 activate 담당: placeholder 등록 후 락 해제
+	// this goroutine is responsible for activation: register placeholder then release lock
 	entry = &actorEntry[Req, Resp]{ready: make(chan struct{})}
 	h.actors[partitionID] = entry
 	h.mu.Unlock()
@@ -361,19 +363,19 @@ func (h *ActorHost[Req, Resp]) getOrActivate(ctx context.Context, partitionID st
 		h.mu.Lock()
 		delete(h.actors, partitionID)
 		h.mu.Unlock()
-		close(entry.ready) // 대기 중인 goroutine 해제
+		close(entry.ready) // unblock any waiting goroutines
 		return nil, err
 	}
 
-	close(entry.ready) // 활성화 완료 신호
+	close(entry.ready) // signal activation complete
 	return entry, nil
 }
 
-// doActivate는 Actor를 초기화하고 mailbox를 시작한다.
+// doActivate initializes an Actor and starts its mailbox.
 func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID string, entry *actorEntry[Req, Resp]) error {
 	slog.Info("activating actor", "partition_id", partitionID)
 
-	// 1. Checkpoint 로드
+	// 1. load checkpoint
 	raw, err := h.cfg.CheckpointStore.Load(ctx, partitionID)
 	if err != nil {
 		slog.Error("activate: load checkpoint failed", "partition_id", partitionID, "err", err)
@@ -388,7 +390,7 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 	}
 	slog.Info("activate: checkpoint loaded", "partition_id", partitionID, "lsn", fromLSN, "snapshot_bytes", len(snapshotData))
 
-	// 2. Actor 생성 및 복원
+	// 2. create Actor and restore from snapshot
 	actor := h.cfg.Factory(partitionID)
 	if len(snapshotData) > 0 {
 		if err := actor.Import(snapshotData); err != nil {
@@ -397,8 +399,8 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 		}
 	}
 
-	// 3. WAL replay: checkpoint 이후 entry 적용.
-	// fromLSN=0 (checkpoint 없음)이어도 WAL에 entry가 있으면 replay해야 한다.
+	// 3. WAL replay: apply entries after the checkpoint.
+	// Even if fromLSN=0 (no checkpoint), entries in the WAL must be replayed.
 	entries, err := h.cfg.WALStore.ReadFrom(ctx, partitionID, fromLSN+1)
 	if err != nil {
 		slog.Error("activate: read WAL failed", "partition_id", partitionID, "from_lsn", fromLSN+1, "err", err)
@@ -407,8 +409,8 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 	slog.Info("activate: WAL replay", "partition_id", partitionID, "entries", len(entries))
 	for i, e := range entries {
 		if err := actor.Replay(e.Data); err != nil {
-			// 마지막 엔트리가 실패하면 crash 중 부분 기록된 partial write로 간주하고 스킵.
-			// 중간 엔트리 실패는 실제 손상이므로 에러 반환.
+			// If the last entry fails, treat it as a partial write during a crash and skip it.
+			// Failure on a non-final entry indicates real data corruption; return an error.
 			if i == len(entries)-1 {
 				slog.Warn("activate: last WAL entry may be truncated (partial write?), skipping",
 					"partition_id", partitionID, "lsn", e.LSN, "err", err)
@@ -419,9 +421,9 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 		}
 	}
 
-	// 4. checkpointFn 클로저: mailbox goroutine 내에서 호출되므로 actor 접근이 thread-safe.
-	// 활성화 요청 ctx를 캡처하면 해당 요청 완료 후 ctx가 취소되어 이후 checkpoint가 실패한다.
-	// mailbox는 장기 실행 goroutine이므로 context.Background()를 사용한다.
+	// 4. checkpointFn closure: called from within the mailbox goroutine, so actor access is thread-safe.
+	// Capturing the activation request ctx would cause future checkpoints to fail once that request completes.
+	// The mailbox is a long-running goroutine, so context.Background() is used instead.
 	wal := h.cfg.WALStore
 	cpStore := h.cfg.CheckpointStore
 	fn := checkpointFn(func(lsn uint64) error {
@@ -436,7 +438,7 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 		return wal.TrimBefore(bgCtx, partitionID, lsn)
 	})
 
-	// 5. onWALError: WAL flush 실패 시 checkpoint 없이 actors 맵에서 제거
+	// 5. onWALError: on WAL flush failure, remove the actor from the actors map without checkpointing
 	onWALError := func() {
 		slog.Error("WAL flush failed, actor evicted without checkpoint",
 			"partition_id", partitionID)
@@ -445,7 +447,7 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 		h.mu.Unlock()
 	}
 
-	// 6. mailbox 생성 및 goroutine 시작
+	// 6. create mailbox and start goroutine
 	logger := slog.Default().With("partition_id", partitionID)
 	mb := newMailbox[Req, Resp](
 		h.cfg.MailboxSize,
@@ -461,13 +463,13 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 	return nil
 }
 
-// saveRawCheckpoint는 이미 직렬화된 snapshot 데이터를 CheckpointStore에 저장한다.
-// Split에서 상위 파티션 checkpoint 저장 시 사용한다.
+// saveRawCheckpoint saves already-serialized snapshot data to the CheckpointStore.
+// Used in Split to save the upper partition's checkpoint.
 func (h *ActorHost[Req, Resp]) saveRawCheckpoint(ctx context.Context, partitionID string, lsn uint64, snap []byte) error {
 	return saveCheckpoint(ctx, h.cfg.CheckpointStore, partitionID, lsn, snap)
 }
 
-// saveCheckpoint는 lsn과 snap을 합쳐 CheckpointStore에 저장한다.
+// saveCheckpoint combines lsn and snap and saves them to the CheckpointStore.
 func saveCheckpoint(ctx context.Context, store provider.CheckpointStore, partitionID string, lsn uint64, snap []byte) error {
 	data := make([]byte, 8+len(snap))
 	binary.BigEndian.PutUint64(data[:8], lsn)

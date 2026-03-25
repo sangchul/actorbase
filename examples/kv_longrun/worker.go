@@ -10,20 +10,20 @@ import (
 	"github.com/sangchul/actorbase/sdk"
 )
 
-// Stats는 전체 worker들의 집계 통계다.
+// Stats holds aggregate statistics across all workers.
 type Stats struct {
 	success atomic.Int64
 	fail    atomic.Int64
 }
 
-// workerConfig는 연산 비율을 설정한다.
+// workerConfig configures the operation ratios.
 type workerConfig struct {
-	setRatio float64 // set 연산 비율
-	delRatio float64 // del 연산 비율 (나머지는 get)
+	setRatio float64 // fraction of set operations
+	delRatio float64 // fraction of del operations (remainder is get)
 }
 
-// worker는 담당 키 범위([keyLow, keyHigh))에서 set/del/get을 수행한다.
-// 서버 성공 응답 후 ledger를 업데이트한다.
+// worker performs set/del/get operations on its assigned key range ([keyLow, keyHigh)).
+// The ledger is updated after a successful server response.
 type worker struct {
 	id      int
 	keyLow  int
@@ -33,9 +33,9 @@ type worker struct {
 	cfg     workerConfig
 }
 
-// run은 stopCh가 닫힐 때까지 set/del/get을 반복한다.
-// ctx는 gRPC 호출용으로만 사용한다 — in-flight 요청이 완료될 때까지 ctx는 살아있어야 한다.
-// stopCh가 닫히면 새 요청을 시작하지 않고, 현재 진행 중인 요청은 ctx로 완료를 기다린다.
+// run repeatedly performs set/del/get until stopCh is closed.
+// ctx is used only for gRPC calls — it must remain alive until in-flight requests complete.
+// When stopCh is closed, no new requests are started; the current in-flight request waits for completion via ctx.
 func (w *worker) run(ctx context.Context, stopCh <-chan struct{}, stats *Stats) {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(w.id)*1000))
 	for {
@@ -70,7 +70,7 @@ func (w *worker) run(ctx context.Context, stopCh <-chan struct{}, stats *Stats) 
 			}
 
 		default:
-			// get — live consistency 확인용, ledger는 변경하지 않음
+			// get — for live consistency checking only; does not update the ledger
 			_, err := w.client.Send(ctx, key, KVRequest{Op: "get", Key: key})
 			if err == nil {
 				stats.success.Add(1)

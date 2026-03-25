@@ -10,8 +10,8 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// toGRPCStatus는 provider error를 gRPC status error로 변환한다.
-// 알 수 없는 에러는 INTERNAL로 변환한다.
+// toGRPCStatus converts a provider error to a gRPC status error.
+// Unknown errors are converted to INTERNAL.
 func toGRPCStatus(err error) error {
 	if err == nil {
 		return nil
@@ -34,8 +34,8 @@ func toGRPCStatus(err error) error {
 	}
 }
 
-// fromGRPCStatus는 gRPC status error를 provider error로 변환한다.
-// 알 수 없는 status는 그대로 반환한다.
+// fromGRPCStatus converts a gRPC status error to a provider error.
+// Unknown status codes are returned as-is.
 func fromGRPCStatus(err error) error {
 	if err == nil {
 		return nil
@@ -58,8 +58,8 @@ func fromGRPCStatus(err error) error {
 	case codes.PermissionDenied:
 		return fmt.Errorf("%s", st.Message())
 	case codes.Internal:
-		// ErrActorPanicked만 codes.Internal로 인코딩된다.
-		// 그 외 Internal은 서버 내부 오류로 메시지를 보존한다.
+		// Only ErrActorPanicked is encoded as codes.Internal.
+		// Other Internal codes are server-side errors; preserve their message.
 		if errors.Is(provider.ErrActorPanicked, fmt.Errorf("%s", st.Message())) ||
 			st.Message() == provider.ErrActorPanicked.Error() {
 			return provider.ErrActorPanicked

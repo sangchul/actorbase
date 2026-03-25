@@ -9,20 +9,20 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-// ObjectRequest는 object 메타데이터 요청.
-// routing key는 "{bucket}/{key}" 형태.
+// ObjectRequest is an object metadata request.
+// The routing key is in the form "{bucket}/{key}".
 type ObjectRequest struct {
 	Op           string `json:"op"`            // "put", "get", "delete", "list"
 	Bucket       string `json:"bucket"`        // bucket name
 	Key          string `json:"key"`           // object key
-	Size         int64  `json:"size"`          // "put" 시에만 사용 (bytes)
-	ETag         string `json:"etag"`          // "put" 시에만 사용
-	StorageClass string `json:"storage_class"` // "put" 시에만 사용 (STANDARD, etc.)
-	StartKey     string `json:"start_key"`     // "list" 시 사용 (포함)
-	EndKey       string `json:"end_key"`       // "list" 시 사용 (미포함, ""=무한대)
+	Size         int64  `json:"size"`          // used only for "put" (bytes)
+	ETag         string `json:"etag"`          // used only for "put"
+	StorageClass string `json:"storage_class"` // used only for "put" (STANDARD, etc.)
+	StartKey     string `json:"start_key"`     // used for "list" (inclusive)
+	EndKey       string `json:"end_key"`       // used for "list" (exclusive, ""=unbounded)
 }
 
-// ObjectItem은 list 결과 항목이다.
+// ObjectItem is a single item in a list result.
 type ObjectItem struct {
 	Bucket       string    `json:"bucket"`
 	Key          string    `json:"key"`
@@ -32,7 +32,7 @@ type ObjectItem struct {
 	LastModified time.Time `json:"last_modified"`
 }
 
-// ObjectResponse는 object 메타데이터 응답.
+// ObjectResponse is an object metadata response.
 type ObjectResponse struct {
 	Bucket       string       `json:"bucket"`
 	Key          string       `json:"key"`
@@ -41,7 +41,7 @@ type ObjectResponse struct {
 	StorageClass string       `json:"storage_class"`
 	LastModified time.Time    `json:"last_modified"`
 	Found        bool         `json:"found"`
-	Items        []ObjectItem `json:"items"` // "list" 결과
+	Items        []ObjectItem `json:"items"` // "list" results
 }
 
 type objectMeta struct {
@@ -59,7 +59,7 @@ type objectWALOp struct {
 
 type objectActor struct {
 	objects  map[string]objectMeta // "{bucket}/{key}" → meta
-	accessCt map[string]int64      // routing key별 누적 접근 수 (hotspot 추적)
+	accessCt map[string]int64      // cumulative access count per routing key (for hotspot tracking)
 }
 
 func objKey(bucket, key string) string {
@@ -68,7 +68,7 @@ func objKey(bucket, key string) string {
 
 func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResponse, []byte, error) {
 	k := objKey(req.Bucket, req.Key)
-	a.accessCt[k]++ // mailbox goroutine 내에서만 호출되므로 별도 동기화 불필요
+	a.accessCt[k]++ // called only within the mailbox goroutine, so no separate synchronization needed
 	switch req.Op {
 	case "put":
 		meta := objectMeta{
@@ -107,7 +107,7 @@ func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResp
 		var items []ObjectItem
 		for objK, meta := range a.objects {
 			if objK >= req.StartKey && (req.EndKey == "" || objK < req.EndKey) {
-				// routing key는 "{bucket}/{key}" 형태 — bucket과 key 분리
+				// routing key is in the form "{bucket}/{key}" — split into bucket and key
 				bucket, key := parseBucketKey(objK)
 				items = append(items, ObjectItem{
 					Bucket:       bucket,
@@ -129,7 +129,7 @@ func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResp
 	}
 }
 
-// parseBucketKey는 "{bucket}/{key}" routing key를 분리한다.
+// parseBucketKey splits a "{bucket}/{key}" routing key into its bucket and key components.
 func parseBucketKey(rk string) (bucket, key string) {
 	for i, c := range rk {
 		if c == '/' {
@@ -180,9 +180,9 @@ func (a *objectActor) Import(data []byte) error {
 
 func (a *objectActor) KeyCount() int64 { return int64(len(a.objects)) }
 
-// SplitHint는 가장 많이 접근된 routing key를 split 위치로 제안한다.
-// 해당 key 이상의 object들이 상위 파티션으로 이동하므로 hotspot이 분산된다.
-// mailbox goroutine 내에서 호출되므로 accessCt 접근이 thread-safe하다.
+// SplitHint suggests the most frequently accessed routing key as the split point.
+// Objects at or above that key are moved to the upper partition, distributing the hotspot.
+// Called within the mailbox goroutine, so access to accessCt is thread-safe.
 func (a *objectActor) SplitHint() string {
 	var hotKey string
 	var maxCt int64

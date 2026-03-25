@@ -1,13 +1,13 @@
-// examples/kv_client는 actorbase SDK를 사용한 KV 클라이언트 예시다.
+// examples/kv_client is an example KV client using the actorbase SDK.
 //
-// kv_server와 함께 사용하며, key-value CRUD를 CLI로 실행할 수 있다.
-// actorbase로 자체 분산 KV 저장소를 구축하는 사람이 SDK 사용법을 참고하는 데 목적이 있다.
+// Used together with kv_server, it allows key-value CRUD operations via CLI.
+// It is intended as a reference for SDK usage when building a custom distributed KV store with actorbase.
 //
-// 사용법:
+// Usage:
 //
 //	kv_client [-pm <addr>] <get|set|del> <key> [value]
 //
-// 예시:
+// Examples:
 //
 //	kv_client set apple red
 //	kv_client get apple
@@ -27,8 +27,8 @@ import (
 	"github.com/sangchul/actorbase/sdk"
 )
 
-// KVRequest / KVResponse는 kv_server의 Actor가 처리하는 타입과 동일해야 한다.
-// (Codec이 동일한 직렬화 형식을 사용하므로 구조체 레이아웃만 맞으면 된다.)
+// KVRequest / KVResponse must match the types handled by the kv_server Actor.
+// (Only the struct layout needs to match, since both sides use the same Codec serialization format.)
 
 type KVRequest struct {
 	Op       string `json:"op"`
@@ -93,7 +93,7 @@ Commands:
 		os.Exit(1)
 	}
 
-	// -pm 기본값: etcd 미지정 시 localhost:8000
+	// -pm default: localhost:8000 when -etcd is not specified
 	cfg := sdk.Config[KVRequest, KVResponse]{
 		TypeID: "kv",
 		Codec:  adapterjson.New(),
