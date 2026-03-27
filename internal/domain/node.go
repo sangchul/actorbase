@@ -4,12 +4,22 @@ package domain
 type NodeStatus int
 
 const (
-	// NodeStatusActive: the node is operating normally and accepting requests.
-	NodeStatusActive NodeStatus = iota
+	// NodeStatusWaiting: pre-registered by the PM but not yet online.
+	// A PS must be in this state before it can call RequestJoin.
+	NodeStatusWaiting NodeStatus = iota
 
-	// NodeStatusDraining: partition migration is in progress.
-	// The node still accepts new requests but will soon relinquish its partitions.
+	// NodeStatusActive: the node is online and accepting requests.
+	NodeStatusActive
+
+	// NodeStatusDraining: graceful shutdown in progress.
+	// The node has announced its intent to shut down and is migrating its partitions.
 	NodeStatusDraining
+
+	// NodeStatusFailed: unexpected failure (SIGKILL or lease TTL expiry).
+	// The PM will failover the node's partitions but will NOT automatically
+	// transition back to Waiting. An operator must run 'abctl node reset'
+	// after diagnosing the failure.
+	NodeStatusFailed
 )
 
 // NodeInfo holds metadata for a single node in the cluster.

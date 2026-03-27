@@ -180,6 +180,11 @@ const (
 	PartitionManagerService_ApplyPolicy_FullMethodName     = "/actorbase.v1.PartitionManagerService/ApplyPolicy"
 	PartitionManagerService_GetPolicy_FullMethodName       = "/actorbase.v1.PartitionManagerService/GetPolicy"
 	PartitionManagerService_ClearPolicy_FullMethodName     = "/actorbase.v1.PartitionManagerService/ClearPolicy"
+	PartitionManagerService_RequestJoin_FullMethodName     = "/actorbase.v1.PartitionManagerService/RequestJoin"
+	PartitionManagerService_SetNodeDraining_FullMethodName = "/actorbase.v1.PartitionManagerService/SetNodeDraining"
+	PartitionManagerService_AddNode_FullMethodName         = "/actorbase.v1.PartitionManagerService/AddNode"
+	PartitionManagerService_RemoveNode_FullMethodName      = "/actorbase.v1.PartitionManagerService/RemoveNode"
+	PartitionManagerService_ResetNode_FullMethodName       = "/actorbase.v1.PartitionManagerService/ResetNode"
 )
 
 // PartitionManagerServiceClient is the client API for PartitionManagerService service.
@@ -209,6 +214,21 @@ type PartitionManagerServiceClient interface {
 	GetPolicy(ctx context.Context, in *GetPolicyRequest, opts ...grpc.CallOption) (*GetPolicyResponse, error)
 	// ClearPolicy는 정책을 제거하여 ManualPolicy로 전환한다.
 	ClearPolicy(ctx context.Context, in *ClearPolicyRequest, opts ...grpc.CallOption) (*ClearPolicyResponse, error)
+	// RequestJoin is called by PS on startup. PM validates the node is in Waiting
+	// state in the catalog and transitions it to Active.
+	RequestJoin(ctx context.Context, in *RequestJoinRequest, opts ...grpc.CallOption) (*RequestJoinResponse, error)
+	// SetNodeDraining is called by PS before graceful shutdown.
+	// PM transitions the node from Active to Draining.
+	SetNodeDraining(ctx context.Context, in *SetNodeDrainingRequest, opts ...grpc.CallOption) (*SetNodeDrainingResponse, error)
+	// AddNode pre-registers a new node in the catalog with Waiting status.
+	// Called by abctl node add.
+	AddNode(ctx context.Context, in *AddNodeRequest, opts ...grpc.CallOption) (*AddNodeResponse, error)
+	// RemoveNode permanently deletes a node from the catalog.
+	// Only Waiting or Failed nodes may be removed. Called by abctl node remove.
+	RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*RemoveNodeResponse, error)
+	// ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
+	// Called by abctl node reset after the operator has diagnosed the failure.
+	ResetNode(ctx context.Context, in *ResetNodeRequest, opts ...grpc.CallOption) (*ResetNodeResponse, error)
 }
 
 type partitionManagerServiceClient struct {
@@ -318,6 +338,56 @@ func (c *partitionManagerServiceClient) ClearPolicy(ctx context.Context, in *Cle
 	return out, nil
 }
 
+func (c *partitionManagerServiceClient) RequestJoin(ctx context.Context, in *RequestJoinRequest, opts ...grpc.CallOption) (*RequestJoinResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestJoinResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_RequestJoin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) SetNodeDraining(ctx context.Context, in *SetNodeDrainingRequest, opts ...grpc.CallOption) (*SetNodeDrainingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetNodeDrainingResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_SetNodeDraining_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) AddNode(ctx context.Context, in *AddNodeRequest, opts ...grpc.CallOption) (*AddNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddNodeResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_AddNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*RemoveNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveNodeResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_RemoveNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) ResetNode(ctx context.Context, in *ResetNodeRequest, opts ...grpc.CallOption) (*ResetNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResetNodeResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_ResetNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PartitionManagerServiceServer is the server API for PartitionManagerService service.
 // All implementations must embed UnimplementedPartitionManagerServiceServer
 // for forward compatibility.
@@ -345,6 +415,21 @@ type PartitionManagerServiceServer interface {
 	GetPolicy(context.Context, *GetPolicyRequest) (*GetPolicyResponse, error)
 	// ClearPolicy는 정책을 제거하여 ManualPolicy로 전환한다.
 	ClearPolicy(context.Context, *ClearPolicyRequest) (*ClearPolicyResponse, error)
+	// RequestJoin is called by PS on startup. PM validates the node is in Waiting
+	// state in the catalog and transitions it to Active.
+	RequestJoin(context.Context, *RequestJoinRequest) (*RequestJoinResponse, error)
+	// SetNodeDraining is called by PS before graceful shutdown.
+	// PM transitions the node from Active to Draining.
+	SetNodeDraining(context.Context, *SetNodeDrainingRequest) (*SetNodeDrainingResponse, error)
+	// AddNode pre-registers a new node in the catalog with Waiting status.
+	// Called by abctl node add.
+	AddNode(context.Context, *AddNodeRequest) (*AddNodeResponse, error)
+	// RemoveNode permanently deletes a node from the catalog.
+	// Only Waiting or Failed nodes may be removed. Called by abctl node remove.
+	RemoveNode(context.Context, *RemoveNodeRequest) (*RemoveNodeResponse, error)
+	// ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
+	// Called by abctl node reset after the operator has diagnosed the failure.
+	ResetNode(context.Context, *ResetNodeRequest) (*ResetNodeResponse, error)
 	mustEmbedUnimplementedPartitionManagerServiceServer()
 }
 
@@ -381,6 +466,21 @@ func (UnimplementedPartitionManagerServiceServer) GetPolicy(context.Context, *Ge
 }
 func (UnimplementedPartitionManagerServiceServer) ClearPolicy(context.Context, *ClearPolicyRequest) (*ClearPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ClearPolicy not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) RequestJoin(context.Context, *RequestJoinRequest) (*RequestJoinResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestJoin not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) SetNodeDraining(context.Context, *SetNodeDrainingRequest) (*SetNodeDrainingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetNodeDraining not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) AddNode(context.Context, *AddNodeRequest) (*AddNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddNode not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) RemoveNode(context.Context, *RemoveNodeRequest) (*RemoveNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveNode not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) ResetNode(context.Context, *ResetNodeRequest) (*ResetNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResetNode not implemented")
 }
 func (UnimplementedPartitionManagerServiceServer) mustEmbedUnimplementedPartitionManagerServiceServer() {
 }
@@ -559,6 +659,96 @@ func _PartitionManagerService_ClearPolicy_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PartitionManagerService_RequestJoin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestJoinRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).RequestJoin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_RequestJoin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).RequestJoin(ctx, req.(*RequestJoinRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_SetNodeDraining_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetNodeDrainingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).SetNodeDraining(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_SetNodeDraining_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).SetNodeDraining(ctx, req.(*SetNodeDrainingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_AddNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).AddNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_AddNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).AddNode(ctx, req.(*AddNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_RemoveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).RemoveNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_RemoveNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).RemoveNode(ctx, req.(*RemoveNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_ResetNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResetNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).ResetNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_ResetNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).ResetNode(ctx, req.(*ResetNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PartitionManagerService_ServiceDesc is the grpc.ServiceDesc for PartitionManagerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -597,6 +787,26 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ClearPolicy",
 			Handler:    _PartitionManagerService_ClearPolicy_Handler,
+		},
+		{
+			MethodName: "RequestJoin",
+			Handler:    _PartitionManagerService_RequestJoin_Handler,
+		},
+		{
+			MethodName: "SetNodeDraining",
+			Handler:    _PartitionManagerService_SetNodeDraining_Handler,
+		},
+		{
+			MethodName: "AddNode",
+			Handler:    _PartitionManagerService_AddNode_Handler,
+		},
+		{
+			MethodName: "RemoveNode",
+			Handler:    _PartitionManagerService_RemoveNode_Handler,
+		},
+		{
+			MethodName: "ResetNode",
+			Handler:    _PartitionManagerService_ResetNode_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

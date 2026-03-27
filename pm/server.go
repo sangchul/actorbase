@@ -29,7 +29,8 @@ type Server struct {
 	cfg          Config
 	etcdCli      *clientv3.Client
 	routingStore cluster.RoutingTableStore
-	nodeRegistry cluster.NodeRegistry
+	nodeRegistry cluster.NodeRegistry // heartbeat keys (liveness)
+	nodeCatalog  cluster.NodeCatalog  // persistent node state (all 4 states)
 	membership   cluster.MembershipWatcher
 	splitter     *rebalance.Splitter
 	migrator     *rebalance.Migrator
@@ -80,11 +81,12 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	nodeRegistry := cluster.NewNodeRegistry(etcdCli, 10*time.Second)
+	nodeCatalog := cluster.NewNodeCatalog(etcdCli)
 	membership := cluster.NewMembershipWatcher(etcdCli)
 	routingStore := cluster.NewRoutingTableStore(etcdCli)
 	connPool := transport.NewConnPool()
 	splitter := rebalance.NewSplitter(routingStore, connPool)
-	migrator := rebalance.NewMigrator(routingStore, nodeRegistry, connPool)
+	migrator := rebalance.NewMigrator(routingStore, nodeCatalog, connPool)
 	merger := rebalance.NewMerger(routingStore, connPool)
 
 	grpcSrv := transport.NewGRPCServer(transport.ServerConfig{
@@ -97,6 +99,7 @@ func NewServer(cfg Config) (*Server, error) {
 		etcdCli:      etcdCli,
 		routingStore: routingStore,
 		nodeRegistry: nodeRegistry,
+		nodeCatalog:  nodeCatalog,
 		membership:   membership,
 		splitter:     splitter,
 		migrator:     migrator,
@@ -132,7 +135,7 @@ func (s *Server) Start(ctx context.Context) error {
 			slog.Warn("pm: stored policy parse failed", "err", parseErr)
 		} else {
 			balancerCtx, cancel := context.WithCancel(ctx)
-			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
+			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.connPool, &s.opMu)
 			go b.start(balancerCtx)
 			s.policyMu.Lock()
 			s.activePolicy = pol
@@ -144,31 +147,35 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
-	// 3. Load the initial routing table.
+	// 3. Reconcile catalog: Active/Draining nodes with no live heartbeat → Waiting.
+	// This handles the case where PM crashed while PS was gracefully shutting down.
+	s.reconcileCatalog(ctx)
+
+	// 4. Load the initial routing table.
 	currentRT, err := s.routingStore.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("pm: load routing table: %w", err)
 	}
 	s.routing.Store(currentRT)
 
-	// 4. Watch etcd and broadcast updates to subscribers.
+	// 5. Watch etcd and broadcast updates to subscribers.
 	go s.watchRouting(ctx)
 
-	// 5. Watch node join/leave events and invoke BalancePolicy.
+	// 6. Watch node join/leave events and invoke BalancePolicy.
 	go s.watchMembership(ctx)
 
-	// 6. If the cluster is empty, wait for the first PS to register and create the initial routing table.
+	// 7. If the cluster is empty, wait for the first PS to register and create the initial routing table.
 	if currentRT == nil {
 		go s.bootstrap(ctx)
 	}
 
-	// 7. Start the web console HTTP server if configured.
+	// 8. Start the web console HTTP server if configured.
 	if s.cfg.HTTPAddr != "" {
 		consoleSrv := console.NewServer(s.cfg.HTTPAddr, s.cfg.ListenAddr)
 		go consoleSrv.Start(ctx)
 	}
 
-	// 8. Start accepting gRPC connections.
+	// 9. Start accepting gRPC connections.
 	lis, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("pm: listen %s: %w", s.cfg.ListenAddr, err)
@@ -187,6 +194,42 @@ func (s *Server) Start(ctx context.Context) error {
 	s.grpcSrv.GracefulStop()
 	s.connPool.Close() //nolint:errcheck
 	return nil
+}
+
+// reconcileCatalog sets catalog nodes that are Active/Draining but have no live heartbeat to Waiting.
+// Called once on PM startup (after leader election) to handle the case where PM was down
+// when a PS gracefully shut down (leaving catalog in Active state with no heartbeat).
+func (s *Server) reconcileCatalog(ctx context.Context) {
+	liveIDs, err := s.nodeRegistry.ListLiveNodeIDs(ctx)
+	if err != nil {
+		slog.Warn("pm: reconcile: failed to list live nodes", "err", err)
+		return
+	}
+	liveSet := make(map[string]struct{}, len(liveIDs))
+	for _, id := range liveIDs {
+		liveSet[id] = struct{}{}
+	}
+
+	nodes, err := s.nodeCatalog.ListNodes(ctx)
+	if err != nil {
+		slog.Warn("pm: reconcile: failed to list catalog nodes", "err", err)
+		return
+	}
+
+	for _, n := range nodes {
+		if n.Status != domain.NodeStatusActive && n.Status != domain.NodeStatusDraining {
+			continue
+		}
+		if _, alive := liveSet[n.ID]; alive {
+			continue
+		}
+		// Node is Active/Draining in catalog but has no live heartbeat — set to Waiting.
+		if err := s.nodeCatalog.UpdateStatus(ctx, n.ID, domain.NodeStatusWaiting); err != nil {
+			slog.Warn("pm: reconcile: failed to reset node", "node", n.ID, "err", err)
+		} else {
+			slog.Info("pm: reconcile: reset stale node to Waiting", "node", n.ID, "prev_status", n.Status)
+		}
+	}
 }
 
 func (s *Server) watchRouting(ctx context.Context) {
@@ -230,7 +273,17 @@ func (s *Server) watchMembership(ctx context.Context) {
 }
 
 func (s *Server) handleNodeJoined(ctx context.Context, node domain.NodeInfo) {
-	nodes, err := s.nodeRegistry.ListNodes(ctx)
+	// Safety check: the node must be Active in the catalog (set by RequestJoin).
+	// Under normal flow this is always true; log a warning if not.
+	if entry, found, err := s.nodeCatalog.GetNode(ctx, node.ID); err == nil {
+		if !found || entry.Status != domain.NodeStatusActive {
+			slog.Warn("pm: handleNodeJoined: node not Active in catalog, ignoring",
+				"node", node.ID, "found", found)
+			return
+		}
+	}
+
+	nodes, err := s.activeNodes(ctx)
 	if err != nil {
 		slog.Error("pm: handleNodeJoined: list nodes failed", "node", node.ID, "err", err)
 		return
@@ -249,7 +302,11 @@ func (s *Server) handleNodeJoined(ctx context.Context, node domain.NodeInfo) {
 }
 
 func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reason cluster.NodeLeaveReason) {
-	nodes, err := s.nodeRegistry.ListNodes(ctx)
+	// Determine the catalog state to decide how to handle the departure.
+	catalogEntry, found, _ := s.nodeCatalog.GetNode(ctx, node.ID)
+	wasDraining := found && catalogEntry.Status == domain.NodeStatusDraining
+
+	nodes, err := s.activeNodes(ctx)
 	if err != nil {
 		slog.Error("pm: handleNodeLeft: list nodes failed", "node", node.ID, "err", err)
 		return
@@ -269,7 +326,7 @@ func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reaso
 		}
 	}
 	slog.Info("pm: handleNodeLeft: computing failover actions",
-		"node", node.ID, "reason", reason,
+		"node", node.ID, "reason", reason, "was_draining", wasDraining,
 		"live_nodes", len(nodes), "dead_partitions", deadPartitions)
 
 	pol := s.activeBalancePolicy()
@@ -279,9 +336,24 @@ func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reaso
 	slog.Info("pm: handleNodeLeft: policy returned actions", "node", node.ID, "actions", len(actions))
 	s.executeBalanceActions(ctx, actions)
 
-	// Always failover remaining partitions of the dead node, regardless of policy.
-	// If the policy already handled them, they will no longer be in the routing table, making this a no-op.
-	s.failoverDeadNode(ctx, node.ID)
+	if wasDraining {
+		// Graceful shutdown: drainPartitions already migrated the partitions.
+		// Failover any stragglers (usually none), then transition back to Waiting.
+		s.failoverDeadNode(ctx, node.ID)
+		if err := s.nodeCatalog.UpdateStatus(ctx, node.ID, domain.NodeStatusWaiting); err != nil {
+			slog.Error("pm: handleNodeLeft: failed to set Waiting after drain", "node", node.ID, "err", err)
+		} else {
+			slog.Info("pm: node returned to Waiting after graceful drain", "node", node.ID)
+		}
+	} else {
+		// Unexpected failure: mark Failed, then failover. Node stays Failed until
+		// the operator runs 'abctl node reset' to allow it to rejoin.
+		if err := s.nodeCatalog.UpdateStatus(ctx, node.ID, domain.NodeStatusFailed); err != nil {
+			slog.Error("pm: handleNodeLeft: failed to set Failed", "node", node.ID, "err", err)
+		}
+		s.failoverDeadNode(ctx, node.ID)
+		slog.Info("pm: node marked Failed; run 'abctl node reset' to allow rejoin", "node", node.ID)
+	}
 }
 
 // failoverDeadNode failovers any remaining partitions of the dead node to active nodes, regardless of policy.
@@ -304,8 +376,8 @@ func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
 		return
 	}
 
-	// Find available target nodes.
-	nodes, err := s.nodeRegistry.ListNodes(ctx)
+	// Find available target nodes (Active only).
+	nodes, err := s.activeNodes(ctx)
 	if err != nil {
 		slog.Error("pm: failoverDeadNode: list nodes failed", "err", err)
 		return
@@ -351,8 +423,25 @@ func (s *Server) activeBalancePolicy() provider.BalancePolicy {
 	return s.cfg.BalancePolicy
 }
 
+// activeNodes returns only Active nodes from the catalog.
+// Used to build cluster stats and failover target lists.
+func (s *Server) activeNodes(ctx context.Context) ([]domain.NodeInfo, error) {
+	all, err := s.nodeCatalog.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active := make([]domain.NodeInfo, 0, len(all))
+	for _, n := range all {
+		if n.Status == domain.NodeStatusActive {
+			active = append(active, n)
+		}
+	}
+	return active, nil
+}
+
 // quickClusterStats builds a lightweight ClusterStats for event handlers.
 // Live nodes carry a partition list based on the routing table (no RPS); dead nodes are also routing-table-based.
+// nodes should contain only Active nodes.
 func (s *Server) quickClusterStats(ctx context.Context, nodes []domain.NodeInfo, rt *domain.RoutingTable, deadNodeID string) provider.ClusterStats {
 	_ = ctx
 	partitionsByNode := make(map[string][]provider.PartitionInfo)
@@ -522,7 +611,7 @@ func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.B
 	s.activePolicyYAML = yamlStr
 	balancerCtx, cancel := context.WithCancel(s.serverCtx)
 	s.balancerCancel = cancel
-	b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeRegistry, s.routingStore, s.connPool, &s.opMu)
+	b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.connPool, &s.opMu)
 	go b.start(balancerCtx)
 	s.policyMu.Unlock()
 	slog.Info("pm: AutoPolicy applied", "check_interval", runnerCfg.CheckInterval)

@@ -101,43 +101,50 @@ Build():
 
 ```
 Start:
-  1. cluster.WaitForLeader(ctx, etcdCli)  // PM 리더가 선출될 때까지 대기 (최대 30초)
-  2. go registry.Register(ctx, myNode)    // etcd 등록 + keepalive 시작
-  3. rtCh = rtStore.Watch(ctx)            // RoutingTable watch 시작
-  4. <초기 RoutingTable 수신 대기>         // 준비 전 요청 수락 방지
-  5. go watchRouting(ctx, rtCh)           // 이후 갱신 백그라운드 처리
-  6. grpcSrv.Serve(listener)              // gRPC 수신 시작 (비동기)
-  7. for each dispatcher:
+  1. cluster.WaitForLeader(ctx, etcdCli)       // PM 리더가 선출될 때까지 대기 (최대 30초)
+  2. PM.RequestJoin(ctx, nodeID, addr)          // PM이 catalog에서 Waiting 검증 → Active 전이
+                                               // 미등록/비-Waiting이면 에러 → PS 종료
+  3. go registry.Register(ctx, myNode)          // etcd heartbeat 등록 + keepalive 시작
+  4. rtCh = rtStore.Watch(ctx)                  // RoutingTable watch 시작
+  5. <초기 RoutingTable 수신 대기>              // 준비 전 요청 수락 방지
+  6. go watchRouting(ctx, rtCh)                 // 이후 갱신 백그라운드 처리
+  7. grpcSrv.Serve(listener)                    // gRPC 수신 시작 (비동기)
+  8. for each dispatcher:
        go dispatcher.StartSchedulers(ctx, ...)
-  8. <-ctx.Done()
-  9. graceful shutdown
+  9. <-ctx.Done()
+  10. graceful shutdown
 ```
+
+> **사전 조건**: `abctl node add <nodeID> <addr>` 로 PM catalog에 Waiting 상태로 등록되어 있어야 한다. 미등록 PS는 RequestJoin에서 PERMISSION_DENIED를 받고 즉시 종료된다.
 
 ### 종료 순서 (graceful shutdown)
 
 ```
 ctx 취소 시:
-  1. drainPartitions(drainCtx)          // 파티션 선이전: PM에 RequestMigrate
+  1. PM.SetNodeDraining(ctx, nodeID)    // Active → Draining 전이 알림
+                                        // PM의 handleNodeLeft가 Draining을 감지하면 Waiting으로 복귀
+  2. drainPartitions(drainCtx)          // 파티션 선이전: PM에 RequestMigrate
                                         // gRPC 서버가 살아있는 동안 실행해야 함
-  2. grpcSrv.GracefulStop()             // 진행 중인 RPC 완료 대기
-  3. for each dispatcher:
+  3. grpcSrv.GracefulStop()             // 진행 중인 RPC 완료 대기
+  4. for each dispatcher:
        dispatcher.EvictAll(shutdownCtx) // drain 실패 파티션 safety checkpoint
-  4. registry.Deregister(ctx, nodeID)  // etcd lease 즉시 revoke
+  5. registry.Deregister(ctx, nodeID)  // etcd heartbeat lease 즉시 revoke
+                                        // PM이 NodeLeft 감지 → Draining이므로 Waiting 복귀
 ```
 
 ### drainPartitions (내부)
 
-PS 종료 전 자신의 파티션을 PM에 위임하는 절차.
+PS 종료 전 자신의 파티션을 PM에 위임하는 절차. SetNodeDraining 호출 후 실행된다.
 
 ```
 drainPartitions(ctx):
   1. cluster.GetLeaderAddr(ctx, etcdCli)  // etcd에서 현재 PM 리더 주소 조회
-  2. PMClient.ListMembers()           // 가용 노드 목록 조회
+  2. PMClient.ListMembers()               // 가용 노드 목록 조회
   3. routing.Load()에서 내 파티션 추출 (entry.Node.ID == myNodeID)
   4. for each 파티션:
-       target = targets[round-robin] (나 제외 active 노드)
+       target = targets[round-robin] (나 제외 Active 노드)
        PMClient.RequestMigrate(entry.Partition.ActorType, partitionID, target)
-  5. 실패 파티션: 로그 후 계속. NodeLeft 후 failoverNode가 처리.
+  5. 실패 파티션: 로그 후 계속. NodeLeft 후 failoverDeadNode가 처리.
 ```
 
 > `drainPartitions`에는 DrainTimeout(기본 60초)을, `EvictAll`에는 별도 ShutdownTimeout(기본 30초)을 사용한다.
@@ -195,7 +202,8 @@ PM의 split/migrate/stats 명령을 처리한다. 각 핸들러는 `req.ActorTyp
 | 설정 분리 | BaseConfig + TypeConfig[Req,Resp] | 공통 설정과 타입별 설정의 명확한 분리 |
 | dispatcher 라우팅 | req.ActorType → dispatchers[actorType] | proto에 actor_type 필드로 handlers가 non-generic 가능 |
 | 라우팅 테이블 보관 | atomic.Pointer[domain.RoutingTable] | 핫패스에서 잠금 없이 읽기 가능 |
-| graceful shutdown 순서 | drainPartitions → GracefulStop → EvictAll → Deregister | drain 선행으로 정상 파티션 이전 |
+| graceful shutdown 순서 | SetNodeDraining → drainPartitions → GracefulStop → EvictAll → Deregister | PM에 Draining 알림 후 파티션 이전. NodeLeft 시 PM이 Waiting으로 복귀. |
+| 클러스터 합류 절차 | RequestJoin RPC (PM 승인) | 사전 등록(Waiting) 없는 PS는 기동 불가. PM이 유일한 게이트키퍼. |
 
 ---
 

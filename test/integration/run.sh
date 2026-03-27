@@ -155,6 +155,20 @@ partition_count() {
   routing_entries | wc -l | tr -d ' '
 }
 
+# kv actor type 파티션만 필터링 (multi-actor-type 환경에서 merge 등에 사용)
+kv_routing_entries() {
+  routing | awk 'NR>4 && $1!="" && $1!~"^-" && $2=="kv" {print $1"\t"$3"\t"$4"\t"$5}'
+}
+
+kv_partition_count() {
+  kv_routing_entries | wc -l | tr -d ' '
+}
+
+kv_partition_id_by_index() {
+  local idx="$1"
+  kv_routing_entries | awk -F'\t' "NR==$idx {print \$1}"
+}
+
 cleanup() {
   [[ -n "$PS2_PID"  ]] && kill "$PS2_PID"  2>/dev/null || true
   [[ -n "$PS1_PID"  ]] && kill "$PS1_PID"  2>/dev/null || true
@@ -271,6 +285,10 @@ fi
 # ── PS 기동 함수 ──────────────────────────────────────────────────────────────
 
 start_ps1() {
+  # If node is in Failed state (after SIGKILL), reset to Waiting so PM accepts RequestJoin.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node reset ps-1 2>/dev/null || true
+  # Pre-register ps-1 in the PM catalog (Waiting → Active on startup).
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node add ps-1 localhost:8001 2>/dev/null || true
   "$BIN_DIR/kv_server" -node-id ps-1 -addr localhost:8001 -etcd "$ETCD_ADDR" \
     "${WAL_ARGS[@]}" "${CKPT_ARGS[@]}" >"$PS1_LOG" 2>&1 &
   PS1_PID=$!
@@ -278,6 +296,10 @@ start_ps1() {
 }
 
 start_ps2() {
+  # If node is in Failed state (after SIGKILL), reset to Waiting so PM accepts RequestJoin.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node reset ps-2 2>/dev/null || true
+  # Pre-register ps-2 in the PM catalog (Waiting → Active on startup).
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node add ps-2 localhost:8002 2>/dev/null || true
   "$BIN_DIR/kv_server" -node-id ps-2 -addr localhost:8002 -etcd "$ETCD_ADDR" \
     "${WAL_ARGS[@]}" "${CKPT_ARGS[@]}" >"$PS2_LOG" 2>&1 &
   PS2_PID=$!
@@ -796,8 +818,9 @@ scenario_12() {
   PM_PID=$!
   sleep 1
 
-  # PS-1 재기동: kv + counter 두 타입 등록
+  # PS-1 재기동: kv + counter 두 타입 등록 (새 etcd이므로 node add 필요)
   log "PS-1 재기동 with -actor-types kv,counter..."
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node add ps-1 localhost:8001 2>/dev/null || true
   "$BIN_DIR/kv_server" -node-id ps-1 -addr localhost:8001 -etcd "$ETCD_ADDR" \
     "${WAL_ARGS[@]}" "${CKPT_ARGS[@]}" \
     -actor-types kv,counter >"$LOG_DIR/ps1_multi.log" 2>&1 &
@@ -944,42 +967,42 @@ scenario_14() {
   kv_set "merge-z" "val-z" >/dev/null
   sleep 1  # WAL flush 대기
 
-  # 현재 파티션 수 확인
+  # 현재 kv 파티션 수 확인 (multi-actor-type 환경에서는 kv만 카운트)
   local before_count
-  before_count=$(partition_count)
-  log "현재 파티션 수: $before_count"
+  before_count=$(kv_partition_count)
+  log "현재 kv 파티션 수: $before_count"
 
-  # split으로 2개 이상 만들기 (이미 2개 이상이면 재활용)
+  # split으로 kv 파티션을 2개 이상 만들기 (이미 2개 이상이면 재활용)
   if [[ "$before_count" -lt 2 ]]; then
     local pid
-    pid=$(partition_id_by_index 1)
+    pid=$(kv_partition_id_by_index 1)
     "$BIN_DIR/abctl" -pm "$PM_ADDR" split kv "$pid" "merge-m" >/dev/null 2>&1
     sleep 1
   fi
 
   local split_count
-  split_count=$(partition_count)
-  log "split 후 파티션 수: $split_count"
+  split_count=$(kv_partition_count)
+  log "split 후 kv 파티션 수: $split_count"
 
   # lower/upper 파티션 ID 파악 (같은 노드에 있어야 merge 가능)
-  # routing_entries: id\tstart\tend\tnode
+  # kv_routing_entries: id\tstart\tend\tnode (kv 타입만)
   # "merge-m" 이전이 lower, "merge-m" 이후가 upper
   local lower_id upper_id
-  lower_id=$(routing_entries | awk -F'\t' '$3=="merge-m" || ($2=="(start)" && $3=="merge-m") {print $1}' | head -1)
-  upper_id=$(routing_entries | awk -F'\t' '$2=="merge-m" {print $1}' | head -1)
+  lower_id=$(kv_routing_entries | awk -F'\t' '$3=="merge-m" || ($2=="(start)" && $3=="merge-m") {print $1}' | head -1)
+  upper_id=$(kv_routing_entries | awk -F'\t' '$2=="merge-m" {print $1}' | head -1)
 
   if [[ -z "$lower_id" || -z "$upper_id" ]]; then
-    # fallback: 첫 번째와 두 번째 파티션
-    lower_id=$(partition_id_by_index 1)
-    upper_id=$(partition_id_by_index 2)
+    # fallback: kv 파티션 중 첫 번째와 두 번째 (인접한 파티션)
+    lower_id=$(kv_partition_id_by_index 1)
+    upper_id=$(kv_partition_id_by_index 2)
   fi
 
   log "merge 대상: lower=$lower_id, upper=$upper_id"
 
   # 두 파티션이 같은 노드에 있는지 확인. 다르면 migrate
   local lower_node upper_node
-  lower_node=$(routing_entries | awk -F'\t' -v id="$lower_id" '$1==id {print $4}')
-  upper_node=$(routing_entries | awk -F'\t' -v id="$upper_id" '$1==id {print $4}')
+  lower_node=$(kv_routing_entries | awk -F'\t' -v id="$lower_id" '$1==id {print $4}')
+  upper_node=$(kv_routing_entries | awk -F'\t' -v id="$upper_id" '$1==id {print $4}')
 
   if [[ "$lower_node" != "$upper_node" ]]; then
     log "upper를 $lower_node으로 migrate..."
@@ -987,16 +1010,16 @@ scenario_14() {
     sleep 2
   fi
 
-  # merge 실행
-  merge_out=$("$BIN_DIR/abctl" -pm "$PM_ADDR" merge kv "$lower_id" "$upper_id" 2>/dev/null)
+  # merge 실행 (set -e 환경에서 실패 시 스크립트 종료 방지)
+  merge_out=$("$BIN_DIR/abctl" -pm "$PM_ADDR" merge kv "$lower_id" "$upper_id" 2>/dev/null) || merge_out=""
   assert_contains "merge 명령 성공" "merge successful" "$merge_out"
 
   sleep 1
 
-  # merge 후 파티션 수 감소 확인
+  # merge 후 kv 파티션 수 감소 확인
   local after_count
-  after_count=$(partition_count)
-  assert_eq "merge 후 파티션 수 감소" "$((split_count - 1))" "$after_count"
+  after_count=$(kv_partition_count)
+  assert_eq "merge 후 kv 파티션 수 감소" "$((split_count - 1))" "$after_count"
 
   # merge 후 모든 데이터 접근 가능
   assert_eq "merge 후 merge-a 조회" "val-a" "$(kv_get merge-a)"

@@ -25,7 +25,7 @@ type balancerRunner struct {
 	splitter     *rebalance.Splitter
 	migrator     *rebalance.Migrator
 	merger       *rebalance.Merger
-	nodeRegistry cluster.NodeRegistry
+	nodeCatalog  cluster.NodeCatalog
 	routingStore cluster.RoutingTableStore
 	connPool     *transport.ConnPool
 	opMu         *sync.Mutex
@@ -41,7 +41,7 @@ func newBalancerRunner(
 	splitter *rebalance.Splitter,
 	migrator *rebalance.Migrator,
 	merger *rebalance.Merger,
-	nodeRegistry cluster.NodeRegistry,
+	nodeCatalog  cluster.NodeCatalog,
 	routingStore cluster.RoutingTableStore,
 	connPool *transport.ConnPool,
 	opMu *sync.Mutex,
@@ -52,7 +52,7 @@ func newBalancerRunner(
 		splitter:            splitter,
 		migrator:            migrator,
 		merger:              merger,
-		nodeRegistry:        nodeRegistry,
+		nodeCatalog:         nodeCatalog,
 		routingStore:        routingStore,
 		connPool:            connPool,
 		opMu:                opMu,
@@ -77,8 +77,20 @@ func (r *balancerRunner) start(ctx context.Context) {
 }
 
 func (r *balancerRunner) runOnce(ctx context.Context) {
-	nodes, err := r.nodeRegistry.ListNodes(ctx)
-	if err != nil || len(nodes) == 0 {
+	allNodes, err := r.nodeCatalog.ListNodes(ctx)
+	if err != nil || len(allNodes) == 0 {
+		return
+	}
+	// Only pass Active nodes to the policy; Waiting/Failed/Draining nodes
+	// should not be considered for load-balancing decisions.
+	nodes := make([]domain.NodeInfo, 0, len(allNodes))
+	for _, n := range allNodes {
+		if n.Status == domain.NodeStatusActive {
+			nodes = append(nodes, n)
+		}
+	}
+	_ = err // already checked above
+	if len(nodes) == 0 {
 		return
 	}
 	rt, err := r.routingStore.Load(ctx)

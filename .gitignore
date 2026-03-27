@@ -3,3 +3,8 @@ default.etcd/
 /kv_longrun
 s3_client
 s3_server
+node_modules/
+kv_client
+abctl
+kv_server
+.DS_Store

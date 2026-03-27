@@ -13,19 +13,19 @@ import (
 // Migrator orchestrates partition migrations.
 type Migrator struct {
 	routingStore cluster.RoutingTableStore
-	nodeRegistry cluster.NodeRegistry
+	nodeCatalog  cluster.NodeCatalog
 	connPool     *transport.ConnPool
 }
 
 // NewMigrator creates a Migrator.
 func NewMigrator(
 	routingStore cluster.RoutingTableStore,
-	nodeRegistry cluster.NodeRegistry,
+	nodeCatalog cluster.NodeCatalog,
 	connPool *transport.ConnPool,
 ) *Migrator {
 	return &Migrator{
 		routingStore: routingStore,
-		nodeRegistry: nodeRegistry,
+		nodeCatalog:  nodeCatalog,
 		connPool:     connPool,
 	}
 }
@@ -59,7 +59,7 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 	}
 
 	// 2. Validate the target node.
-	nodes, err := m.nodeRegistry.ListNodes(ctx)
+	nodes, err := m.nodeCatalog.ListNodes(ctx)
 	if err != nil {
 		return fmt.Errorf("list nodes: %w", err)
 	}
@@ -177,7 +177,7 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 	}
 
 	// 2. Validate the target node.
-	nodes, err := m.nodeRegistry.ListNodes(ctx)
+	nodes, err := m.nodeCatalog.ListNodes(ctx)
 	if err != nil {
 		return fmt.Errorf("list nodes: %w", err)
 	}

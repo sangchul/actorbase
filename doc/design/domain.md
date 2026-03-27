@@ -40,8 +40,10 @@ type Partition struct {
 ```go
 type NodeStatus int
 const (
-    NodeStatusActive   NodeStatus = iota // 정상 동작 중
-    NodeStatusDraining                   // migration 진행 중
+    NodeStatusWaiting  NodeStatus = iota // 0 — 사전 등록됨, 아직 미기동
+    NodeStatusActive                      // 1 — 정상 동작 중
+    NodeStatusDraining                    // 2 — graceful shutdown, 파티션 이전 중
+    NodeStatusFailed                      // 3 — 예기치 않은 장애 (TTL 만료 또는 SIGKILL)
 )
 
 type NodeInfo struct {
@@ -50,6 +52,34 @@ type NodeInfo struct {
     Status  NodeStatus
 }
 ```
+
+### 노드 상태 머신
+
+```
+[abctl node add] ──► Waiting ◄──────────────────────────────────┐
+                       │                                         │
+               PS가 RequestJoin RPC 호출                        │
+               PM이 Waiting 검증 후 Active 전이                 │
+                       │                                         │
+                       ▼                                         │
+                    Active ──SIGTERM──► Draining ──파티션 이전 완료 후 ─┤
+                       │                                         │
+                  TTL 만료/SIGKILL                               │
+                       │                                         │
+                       ▼                                         │
+                    Failed ──파티션 failover 후 Failed 유지 ────────┘
+                                                           (abctl node reset으로만 Waiting 복귀)
+```
+
+| From | To | 트리거 |
+|------|-----|--------|
+| (없음) | Waiting | `abctl node add <nodeID> <addr>` |
+| Waiting | Active | PS 기동 → PM `RequestJoin` RPC 성공 |
+| Active | Draining | PS SIGTERM → PM `SetNodeDraining` RPC 호출 |
+| Active | Failed | heartbeat TTL 만료 (SIGKILL/장애) → PM NodeLeft 감지 |
+| Draining | Waiting | 파티션 이전 완료 + heartbeat 소멸 → PM이 NodeLeft 감지 |
+| Failed | Waiting | `abctl node reset <nodeID>` (운영자 수동 복구) |
+| Waiting / Failed | (삭제) | `abctl node remove <nodeID>` |
 
 ---
 

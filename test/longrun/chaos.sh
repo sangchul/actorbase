@@ -194,6 +194,9 @@ start_ps() {
     ckpt_args=(-checkpoint-dir "$CKPT_DIR")
   fi
 
+  # If node is in Failed state (SIGKILL), reset to Waiting so PM accepts RequestJoin.
+  "$ABCTL" -pm "$PM_ADDR" node reset "$node_id" 2>/dev/null || true
+
   log "Restarting $node_id at $addr"
   "$KV_SERVER" \
     -node-id "$node_id" \

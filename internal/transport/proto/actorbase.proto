@@ -78,6 +78,26 @@ service PartitionManagerService {
 
   // ClearPolicy는 정책을 제거하여 ManualPolicy로 전환한다.
   rpc ClearPolicy(ClearPolicyRequest) returns (ClearPolicyResponse);
+
+  // RequestJoin is called by PS on startup. PM validates the node is in Waiting
+  // state in the catalog and transitions it to Active.
+  rpc RequestJoin(RequestJoinRequest) returns (RequestJoinResponse);
+
+  // SetNodeDraining is called by PS before graceful shutdown.
+  // PM transitions the node from Active to Draining.
+  rpc SetNodeDraining(SetNodeDrainingRequest) returns (SetNodeDrainingResponse);
+
+  // AddNode pre-registers a new node in the catalog with Waiting status.
+  // Called by abctl node add.
+  rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+
+  // RemoveNode permanently deletes a node from the catalog.
+  // Only Waiting or Failed nodes may be removed. Called by abctl node remove.
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+
+  // ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
+  // Called by abctl node reset after the operator has diagnosed the failure.
+  rpc ResetNode(ResetNodeRequest) returns (ResetNodeResponse);
 }
 
 message WatchRoutingRequest {
@@ -203,8 +223,10 @@ message RouteEntryProto {
 }
 
 enum NodeStatus {
-  NODE_STATUS_ACTIVE   = 0;
-  NODE_STATUS_DRAINING = 1;
+  NODE_STATUS_WAITING  = 0; // pre-registered, not yet online
+  NODE_STATUS_ACTIVE   = 1; // online and serving
+  NODE_STATUS_DRAINING = 2; // graceful shutdown, migrating partitions
+  NODE_STATUS_FAILED   = 3; // unexpected failure, awaiting operator reset
 }
 
 // ─────────────────────────────────────────────────────────
@@ -227,6 +249,42 @@ message GetPolicyResponse {
 message ClearPolicyRequest {}
 
 message ClearPolicyResponse {}
+
+// ─────────────────────────────────────────────────────────
+// Node Membership Messages
+// ─────────────────────────────────────────────────────────
+
+message RequestJoinRequest {
+  string node_id = 1;
+  string address = 2;
+}
+
+message RequestJoinResponse {}
+
+message SetNodeDrainingRequest {
+  string node_id = 1;
+}
+
+message SetNodeDrainingResponse {}
+
+message AddNodeRequest {
+  string node_id = 1;
+  string address = 2;
+}
+
+message AddNodeResponse {}
+
+message RemoveNodeRequest {
+  string node_id = 1;
+}
+
+message RemoveNodeResponse {}
+
+message ResetNodeRequest {
+  string node_id = 1;
+}
+
+message ResetNodeResponse {}
 
 // ─────────────────────────────────────────────────────────
 // Stats Messages

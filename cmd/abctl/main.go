@@ -6,12 +6,15 @@
 //
 // Commands:
 //
-//	members                                                            List current PS nodes
+//	members                                                            List all nodes (all states)
 //	routing                                                            Print current routing table
 //	split <actor-type> <partition-id> <split-key>                      Request a partition split
 //	migrate <actor-type> <partition-id> <node-id>                      Request a partition migrate
 //	merge <actor-type> <lower-partition-id> <upper-partition-id>       Request a merge of adjacent partitions
 //	stats [node-id]                                                    Print cluster (or specific node) statistics
+//	node add <node-id> <addr>                                          Pre-register a node (Waiting)
+//	node remove <node-id>                                              Remove a Waiting or Failed node
+//	node reset <node-id>                                               Reset a Failed node to Waiting
 package main
 
 import (
@@ -22,6 +25,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/pm"
 )
 
@@ -86,6 +90,34 @@ func main() {
 			os.Exit(1)
 		}
 		cmdMerge(cfg, flag.Arg(1), flag.Arg(2), flag.Arg(3))
+	case "node":
+		if flag.NArg() < 2 {
+			fmt.Fprintln(os.Stderr, "usage: abctl node <add <node-id> <addr>|remove <node-id>|reset <node-id>>")
+			os.Exit(1)
+		}
+		switch flag.Arg(1) {
+		case "add":
+			if flag.NArg() < 4 {
+				fmt.Fprintln(os.Stderr, "usage: abctl node add <node-id> <addr>")
+				os.Exit(1)
+			}
+			cmdNodeAdd(cfg, flag.Arg(2), flag.Arg(3))
+		case "remove":
+			if flag.NArg() < 3 {
+				fmt.Fprintln(os.Stderr, "usage: abctl node remove <node-id>")
+				os.Exit(1)
+			}
+			cmdNodeRemove(cfg, flag.Arg(2))
+		case "reset":
+			if flag.NArg() < 3 {
+				fmt.Fprintln(os.Stderr, "usage: abctl node reset <node-id>")
+				os.Exit(1)
+			}
+			cmdNodeReset(cfg, flag.Arg(2))
+		default:
+			fmt.Fprintf(os.Stderr, "unknown node subcommand: %s\n", flag.Arg(1))
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", flag.Arg(0))
 		printUsage()
@@ -100,7 +132,7 @@ Global flags:
   -pm string   PM gRPC address (default from ~/.actorbase/config.json or ACTORBASE_PM_ADDR env)
 
 Commands:
-  members                                          List active PS nodes
+  members                                          List all nodes (all states)
   routing                                          Print current routing table
   split <actor-type> <partition-id> <split-key>    Split a partition at the given key
   migrate <actor-type> <partition-id> <node-id>    Migrate a partition to the target node
@@ -109,6 +141,9 @@ Commands:
   policy apply <file>                              Apply policy YAML (activate AutoPolicy)
   policy get                                       Show current policy
   policy clear                                     Remove policy (revert to ManualPolicy)
+  node add <node-id> <addr>                        Pre-register a node (Waiting state)
+  node remove <node-id>                            Remove a Waiting or Failed node
+  node reset <node-id>                             Reset a Failed node to Waiting (allow rejoin)
 
 `)
 }
@@ -140,9 +175,9 @@ func cmdMembers(cfg *Config) {
 
 	fmt.Printf("%-36s  %-20s  %s\n", "NODE-ID", "ADDRESS", "STATUS")
 	fmt.Printf("%-36s  %-20s  %s\n",
-		"------------------------------------", "--------------------", "------")
+		"------------------------------------", "--------------------", "---------")
 	for _, m := range members {
-		fmt.Printf("%-36s  %-20s  %s\n", m.NodeID, m.Address, m.Status)
+		fmt.Printf("%-36s  %-20s  %s\n", m.NodeID, m.Address, nodeStatusLabel(m.Status))
 	}
 }
 
@@ -263,6 +298,57 @@ func cmdPolicyClear(cfg *Config) {
 		os.Exit(1)
 	}
 	fmt.Println("Policy cleared. Reverted to ManualPolicy.")
+}
+
+func cmdNodeAdd(cfg *Config, nodeID, addr string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.AddNode(ctx, nodeID, addr); err != nil {
+		fmt.Fprintf(os.Stderr, "node add failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("node %q registered with Waiting status\n", nodeID)
+}
+
+func cmdNodeRemove(cfg *Config, nodeID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.RemoveNode(ctx, nodeID); err != nil {
+		fmt.Fprintf(os.Stderr, "node remove failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("node %q removed from catalog\n", nodeID)
+}
+
+func cmdNodeReset(cfg *Config, nodeID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.ResetNode(ctx, nodeID); err != nil {
+		fmt.Fprintf(os.Stderr, "node reset failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("node %q reset to Waiting; it may now rejoin the cluster\n", nodeID)
+}
+
+func nodeStatusLabel(s domain.NodeStatus) string {
+	switch s {
+	case domain.NodeStatusWaiting:
+		return "Waiting"
+	case domain.NodeStatusActive:
+		return "Active"
+	case domain.NodeStatusDraining:
+		return "Draining"
+	case domain.NodeStatusFailed:
+		return "Failed"
+	default:
+		return fmt.Sprintf("Unknown(%d)", s)
+	}
 }
 
 func cmdStats(cfg *Config, nodeID string) {

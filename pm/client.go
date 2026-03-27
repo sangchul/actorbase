@@ -6,6 +6,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/internal/transport"
 )
 
@@ -15,7 +16,7 @@ import (
 type Member struct {
 	NodeID  string
 	Address string
-	Status  string // "active" | "draining"
+	Status  domain.NodeStatus
 }
 
 // RoutingEntry is a single entry in the routing table.
@@ -74,7 +75,7 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// ListMembers returns the list of currently registered PS nodes.
+// ListMembers returns all nodes in the catalog across all states.
 func (c *Client) ListMembers(ctx context.Context) ([]Member, error) {
 	members, err := c.inner.ListMembers(ctx)
 	if err != nil {
@@ -82,13 +83,24 @@ func (c *Client) ListMembers(ctx context.Context) ([]Member, error) {
 	}
 	result := make([]Member, len(members))
 	for i, m := range members {
-		status := "active"
-		if m.Status != 0 {
-			status = "draining"
-		}
-		result[i] = Member{NodeID: m.NodeID, Address: m.Address, Status: status}
+		result[i] = Member{NodeID: m.NodeID, Address: m.Address, Status: m.Status}
 	}
 	return result, nil
+}
+
+// AddNode pre-registers a node in the catalog with Waiting status.
+func (c *Client) AddNode(ctx context.Context, nodeID, addr string) error {
+	return c.inner.AddNode(ctx, nodeID, addr)
+}
+
+// RemoveNode deletes a Waiting or Failed node from the catalog.
+func (c *Client) RemoveNode(ctx context.Context, nodeID string) error {
+	return c.inner.RemoveNode(ctx, nodeID)
+}
+
+// ResetNode transitions a Failed node back to Waiting.
+func (c *Client) ResetNode(ctx context.Context, nodeID string) error {
+	return c.inner.ResetNode(ctx, nodeID)
 }
 
 // WatchRouting receives routing table changes via streaming.

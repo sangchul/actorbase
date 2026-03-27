@@ -216,7 +216,13 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	slog.Info("ps: PM leader found, starting", "node", s.cfg.NodeID, "addr", s.cfg.Addr, "pm", pmAddr)
 
-	// 2. Start etcd node registration in the background.
+	// 2. Request cluster admission from PM. PM validates Waiting state and transitions to Active.
+	if err := s.requestJoin(ctx, pmAddr); err != nil {
+		return fmt.Errorf("ps: RequestJoin rejected by PM: %w", err)
+	}
+	slog.Info("ps: PM admitted node", "node", s.cfg.NodeID)
+
+	// 3. Start etcd heartbeat in the background (liveness signal for MembershipWatcher).
 	node := domain.NodeInfo{
 		ID:      s.cfg.NodeID,
 		Address: s.cfg.Addr,
@@ -224,7 +230,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	go s.registry.Register(ctx, node) //nolint:errcheck
 
-	// 3. Start watching the routing table and wait for the initial value.
+	// 4. Start watching the routing table and wait for the initial value.
 	rtCh := s.rtStore.Watch(ctx)
 	firstRT, ok := <-rtCh
 	if !ok {
@@ -235,10 +241,10 @@ func (s *Server) Start(ctx context.Context) error {
 		slog.Info("ps: initial routing table received", "node", s.cfg.NodeID, "version", firstRT.Version(), "partitions", len(firstRT.Entries()))
 	}
 
-	// 4. Handle subsequent routing updates in the background.
+	// 5. Handle subsequent routing updates in the background.
 	go s.watchRouting(ctx, rtCh)
 
-	// 5. Start the gRPC server.
+	// 6. Start the gRPC server.
 	lis, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.cfg.Addr, err)
@@ -249,14 +255,14 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 	slog.Info("ps: gRPC server started", "node", s.cfg.NodeID, "addr", s.cfg.Addr)
 
-	// 6. Start schedulers for each actor type.
+	// 7. Start schedulers for each actor type.
 	for _, d := range s.dispatchers {
 		slog.Info("ps: starting schedulers", "node", s.cfg.NodeID, "type", d.TypeID(),
 			"idle_timeout", s.cfg.IdleTimeout, "evict_interval", s.cfg.EvictInterval)
 		d.StartSchedulers(ctx, s.cfg.IdleTimeout, s.cfg.EvictInterval, s.cfg.CheckpointInterval)
 	}
 
-	// 7. Wait for ctx cancellation.
+	// 8. Wait for ctx cancellation.
 	select {
 	case <-ctx.Done():
 	case err := <-grpcErrCh:
@@ -278,17 +284,20 @@ func (s *Server) watchRouting(ctx context.Context, ch <-chan *domain.RoutingTabl
 func (s *Server) shutdown() error {
 	slog.Info("ps: shutdown initiated", "node", s.cfg.NodeID)
 
-	// 1. Pre-migrate partitions to other nodes.
+	// 1. Notify PM that we are beginning graceful shutdown (Active → Draining).
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), s.cfg.DrainTimeout)
 	defer drainCancel()
+	s.notifyDraining(drainCtx)
+
+	// 2. Pre-migrate partitions to other nodes.
 	s.drainPartitions(drainCtx)
 	slog.Info("ps: drain complete", "node", s.cfg.NodeID)
 
-	// 2. gRPC: wait for in-flight RPCs to complete, then stop.
+	// 3. gRPC: wait for in-flight RPCs to complete, then stop.
 	s.grpcSrv.GracefulStop()
 	slog.Info("ps: gRPC server stopped", "node", s.cfg.NodeID)
 
-	// 3. Save checkpoints for all actors across every actor type.
+	// 4. Save checkpoints for all actors across every actor type.
 	slog.Info("ps: evicting all actors", "node", s.cfg.NodeID)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
@@ -298,14 +307,14 @@ func (s *Server) shutdown() error {
 		}
 	}
 
-	// 4. Immediately revoke the etcd lease.
+	// 5. Immediately revoke the etcd lease.
 	slog.Info("ps: deregistering from etcd", "node", s.cfg.NodeID)
 	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer deregCancel()
 	_ = s.registry.Deregister(deregCtx, s.cfg.NodeID)
 
 	slog.Info("ps: shutdown complete", "node", s.cfg.NodeID)
-	// 5. Close the etcd client.
+	// 6. Close the etcd client.
 	return s.etcdCli.Close()
 }
 
@@ -360,5 +369,39 @@ func (s *Server) drainPartitions(ctx context.Context) {
 			slog.Info("ps: drain: partition migrated",
 				"partition", entry.Partition.ID, "target", target.NodeID)
 		}
+	}
+}
+
+// requestJoin calls PM's RequestJoin RPC to gain cluster admission.
+// The node must be pre-registered with Waiting status via 'abctl node add'.
+func (s *Server) requestJoin(ctx context.Context, pmAddr string) error {
+	pool := transport.NewConnPool()
+	defer pool.Close() //nolint:errcheck
+	conn, err := pool.Get(pmAddr)
+	if err != nil {
+		return fmt.Errorf("connect to PM %s: %w", pmAddr, err)
+	}
+	return transport.NewPMClient(conn).RequestJoin(ctx, s.cfg.NodeID, s.cfg.Addr)
+}
+
+// notifyDraining calls PM's SetNodeDraining RPC before starting drainPartitions.
+// Errors are only logged; the shutdown continues regardless.
+func (s *Server) notifyDraining(ctx context.Context) {
+	pmAddr, err := cluster.GetLeaderAddr(ctx, s.etcdCli)
+	if err != nil {
+		slog.Warn("ps: notifyDraining: cannot get PM address, skipping", "err", err)
+		return
+	}
+	pool := transport.NewConnPool()
+	defer pool.Close() //nolint:errcheck
+	conn, err := pool.Get(pmAddr)
+	if err != nil {
+		slog.Warn("ps: notifyDraining: cannot connect to PM", "pm_addr", pmAddr, "err", err)
+		return
+	}
+	if err := transport.NewPMClient(conn).SetNodeDraining(ctx, s.cfg.NodeID); err != nil {
+		slog.Warn("ps: notifyDraining: SetNodeDraining failed", "node", s.cfg.NodeID, "err", err)
+	} else {
+		slog.Info("ps: notified PM of draining", "node", s.cfg.NodeID)
 	}
 }

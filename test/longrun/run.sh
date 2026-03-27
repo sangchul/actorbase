@@ -149,6 +149,8 @@ log "PM started (pid=$PM_PID)"
 
 start_ps() {
   local node_id="$1" addr="$2" pid_file="$3" log_file="$4"
+  # Pre-register the node (idempotent: ignore error if already registered in Waiting state).
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node add "$node_id" "$addr" 2>/dev/null || true
   local wal_args=()
   if [[ "$WAL_BACKEND" == "redis" ]]; then
     wal_args=(-wal-backend redis -redis-addr "$REDIS_ADDR")

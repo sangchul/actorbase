@@ -235,7 +235,7 @@ type MemberInfo struct {
 	Status  domain.NodeStatus
 }
 
-// ListMembers retrieves the list of currently registered PS nodes from the PM.
+// ListMembers retrieves all nodes in the catalog (all states) from the PM.
 func (c *PMClient) ListMembers(ctx context.Context) ([]MemberInfo, error) {
 	resp, err := c.client.ListMembers(ctx, &pb.ListMembersRequest{})
 	if err != nil {
@@ -243,17 +243,58 @@ func (c *PMClient) ListMembers(ctx context.Context) ([]MemberInfo, error) {
 	}
 	members := make([]MemberInfo, len(resp.Members))
 	for i, m := range resp.Members {
-		var status domain.NodeStatus
-		if m.Status == pb.NodeStatus_NODE_STATUS_DRAINING {
-			status = domain.NodeStatusDraining
-		}
 		members[i] = MemberInfo{
 			NodeID:  m.NodeId,
 			Address: m.Address,
-			Status:  status,
+			Status:  protoStatusToDomain(m.Status),
 		}
 	}
 	return members, nil
+}
+
+// RequestJoin asks the PM to admit this node into the cluster.
+// The node must be pre-registered with Waiting status via AddNode.
+func (c *PMClient) RequestJoin(ctx context.Context, nodeID, addr string) error {
+	_, err := c.client.RequestJoin(ctx, &pb.RequestJoinRequest{NodeId: nodeID, Address: addr})
+	return fromGRPCStatus(err)
+}
+
+// SetNodeDraining notifies the PM that this node is beginning graceful shutdown.
+func (c *PMClient) SetNodeDraining(ctx context.Context, nodeID string) error {
+	_, err := c.client.SetNodeDraining(ctx, &pb.SetNodeDrainingRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
+// AddNode pre-registers a node in the catalog with Waiting status.
+func (c *PMClient) AddNode(ctx context.Context, nodeID, addr string) error {
+	_, err := c.client.AddNode(ctx, &pb.AddNodeRequest{NodeId: nodeID, Address: addr})
+	return fromGRPCStatus(err)
+}
+
+// RemoveNode deletes a Waiting or Failed node from the catalog.
+func (c *PMClient) RemoveNode(ctx context.Context, nodeID string) error {
+	_, err := c.client.RemoveNode(ctx, &pb.RemoveNodeRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
+// ResetNode transitions a Failed node back to Waiting.
+func (c *PMClient) ResetNode(ctx context.Context, nodeID string) error {
+	_, err := c.client.ResetNode(ctx, &pb.ResetNodeRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
+// protoStatusToDomain converts pb.NodeStatus to domain.NodeStatus.
+func protoStatusToDomain(s pb.NodeStatus) domain.NodeStatus {
+	switch s {
+	case pb.NodeStatus_NODE_STATUS_ACTIVE:
+		return domain.NodeStatusActive
+	case pb.NodeStatus_NODE_STATUS_DRAINING:
+		return domain.NodeStatusDraining
+	case pb.NodeStatus_NODE_STATUS_FAILED:
+		return domain.NodeStatusFailed
+	default:
+		return domain.NodeStatusWaiting
+	}
 }
 
 // ApplyPolicy sends a YAML policy to the PM to activate AutoPolicy.

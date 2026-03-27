@@ -152,25 +152,26 @@ func (h *managerHandler) ClearPolicy(
 
 // GetClusterStats returns statistics for the entire cluster (or a specific node).
 // The PM calls each PS's GetStats RPC in parallel and aggregates the results.
+// Only Active nodes are queried (Waiting/Failed nodes have no running gRPC server).
 func (h *managerHandler) GetClusterStats(
 	ctx context.Context,
 	req *pb.GetClusterStatsRequest,
 ) (*pb.GetClusterStatsResponse, error) {
-	nodes, err := h.server.nodeRegistry.ListNodes(ctx)
+	allNodes, err := h.server.nodeCatalog.ListNodes(ctx)
 	if err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
 
-	// Filter by node_id if specified.
-	if req.NodeId != "" {
-		filtered := nodes[:0]
-		for _, n := range nodes {
-			if n.ID == req.NodeId {
-				filtered = append(filtered, n)
-				break
-			}
+	// Only include Active nodes for stats (they have a live gRPC server).
+	var nodes []domain.NodeInfo
+	for _, n := range allNodes {
+		if n.Status != domain.NodeStatusActive {
+			continue
 		}
-		nodes = filtered
+		if req.NodeId != "" && n.ID != req.NodeId {
+			continue
+		}
+		nodes = append(nodes, n)
 	}
 
 	pool := transport.NewConnPool()
@@ -222,26 +223,148 @@ func (h *managerHandler) GetClusterStats(
 	return &pb.GetClusterStatsResponse{Nodes: nodeProtos}, nil
 }
 
-// ListMembers returns the list of currently registered PS nodes.
+// ListMembers returns all nodes in the catalog across all states.
 func (h *managerHandler) ListMembers(
 	ctx context.Context,
 	_ *pb.ListMembersRequest,
 ) (*pb.ListMembersResponse, error) {
-	nodes, err := h.server.nodeRegistry.ListNodes(ctx)
+	nodes, err := h.server.nodeCatalog.ListNodes(ctx)
 	if err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
 	members := make([]*pb.MemberInfo, len(nodes))
 	for i, n := range nodes {
-		var status pb.NodeStatus
-		if n.Status == domain.NodeStatusDraining {
-			status = pb.NodeStatus_NODE_STATUS_DRAINING
-		}
 		members[i] = &pb.MemberInfo{
 			NodeId:  n.ID,
 			Address: n.Address,
-			Status:  status,
+			Status:  domainStatusToProto(n.Status),
 		}
 	}
 	return &pb.ListMembersResponse{Members: members}, nil
+}
+
+// RequestJoin is called by PS on startup to request cluster membership.
+// PM validates that the node is in Waiting state and transitions it to Active.
+func (h *managerHandler) RequestJoin(
+	ctx context.Context,
+	req *pb.RequestJoinRequest,
+) (*pb.RequestJoinResponse, error) {
+	entry, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	if !found {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"node %q is not registered; run 'abctl node add' first", req.NodeId)
+	}
+	if entry.Status != domain.NodeStatusWaiting {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"node %q is in %v state, expected Waiting", req.NodeId, entry.Status)
+	}
+	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusActive); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.RequestJoinResponse{}, nil
+}
+
+// SetNodeDraining is called by PS before graceful shutdown.
+// PM transitions the node from Active to Draining.
+func (h *managerHandler) SetNodeDraining(
+	ctx context.Context,
+	req *pb.SetNodeDrainingRequest,
+) (*pb.SetNodeDrainingResponse, error) {
+	entry, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	if !found {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.NodeId)
+	}
+	if entry.Status != domain.NodeStatusActive {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"node %q is in %v state, expected Active", req.NodeId, entry.Status)
+	}
+	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusDraining); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.SetNodeDrainingResponse{}, nil
+}
+
+// AddNode pre-registers a new node in the catalog with Waiting status.
+// Called by abctl node add.
+func (h *managerHandler) AddNode(
+	ctx context.Context,
+	req *pb.AddNodeRequest,
+) (*pb.AddNodeResponse, error) {
+	node := domain.NodeInfo{
+		ID:      req.NodeId,
+		Address: req.Address,
+		Status:  domain.NodeStatusWaiting,
+	}
+	if err := h.server.nodeCatalog.AddNode(ctx, node); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.AddNodeResponse{}, nil
+}
+
+// RemoveNode deletes a node from the catalog.
+// Only Waiting or Failed nodes may be removed.
+func (h *managerHandler) RemoveNode(
+	ctx context.Context,
+	req *pb.RemoveNodeRequest,
+) (*pb.RemoveNodeResponse, error) {
+	entry, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	if !found {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.NodeId)
+	}
+	if entry.Status != domain.NodeStatusWaiting && entry.Status != domain.NodeStatusFailed {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"node %q is in %v state; only Waiting or Failed nodes may be removed", req.NodeId, entry.Status)
+	}
+	if err := h.server.nodeCatalog.RemoveNode(ctx, req.NodeId); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.RemoveNodeResponse{}, nil
+}
+
+// ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
+// Called by abctl node reset after the operator has diagnosed the failure.
+func (h *managerHandler) ResetNode(
+	ctx context.Context,
+	req *pb.ResetNodeRequest,
+) (*pb.ResetNodeResponse, error) {
+	entry, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	if !found {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.NodeId)
+	}
+	if entry.Status != domain.NodeStatusFailed {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"node %q is in %v state, expected Failed", req.NodeId, entry.Status)
+	}
+	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusWaiting); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.ResetNodeResponse{}, nil
+}
+
+// domainStatusToProto converts domain.NodeStatus to pb.NodeStatus.
+func domainStatusToProto(s domain.NodeStatus) pb.NodeStatus {
+	switch s {
+	case domain.NodeStatusWaiting:
+		return pb.NodeStatus_NODE_STATUS_WAITING
+	case domain.NodeStatusActive:
+		return pb.NodeStatus_NODE_STATUS_ACTIVE
+	case domain.NodeStatusDraining:
+		return pb.NodeStatus_NODE_STATUS_DRAINING
+	case domain.NodeStatusFailed:
+		return pb.NodeStatus_NODE_STATUS_FAILED
+	default:
+		return pb.NodeStatus_NODE_STATUS_WAITING
+	}
 }
