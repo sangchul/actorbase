@@ -348,9 +348,44 @@ func (c *PMClient) GetClusterStats(ctx context.Context, nodeID string) ([]NodeSt
 	return result, nil
 }
 
+// ── PSController interface (PM → PS, control plane) ──────────────────────────
+
+// PSController is the interface for PM → PS control-plane operations.
+// Using the interface allows tests to inject mock implementations without
+// requiring a real gRPC connection.
+type PSController interface {
+	ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error)
+	ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string) error
+	PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string) error
+	ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error
+	GetStats(ctx context.Context) (*pb.GetStatsResponse, error)
+}
+
+// PSClientFactory creates PSController instances for a given PS address.
+// The production implementation wraps ConnPool; tests provide a mock.
+type PSClientFactory interface {
+	GetClient(addr string) (PSController, error)
+}
+
+// NewConnPoolFactory returns a PSClientFactory backed by pool.
+func NewConnPoolFactory(pool *ConnPool) PSClientFactory {
+	return &connPoolFactory{pool: pool}
+}
+
+type connPoolFactory struct{ pool *ConnPool }
+
+func (f *connPoolFactory) GetClient(addr string) (PSController, error) {
+	conn, err := f.pool.Get(addr)
+	if err != nil {
+		return nil, err
+	}
+	return NewPSControlClient(conn), nil
+}
+
 // ── PSControlClient (PM → PS, control plane) ─────────────────────────────────
 
 // PSControlClient is used by the PM to issue split/migrate commands to a PS.
+// It implements PSController.
 type PSControlClient struct {
 	conn   *grpc.ClientConn
 	client pb.PartitionControlServiceClient

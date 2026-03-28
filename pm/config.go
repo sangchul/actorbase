@@ -13,6 +13,7 @@ type Config struct {
 
 	ListenAddr    string   // gRPC listen address ("host:port").
 	EtcdEndpoints []string // List of etcd endpoints.
+	RedisAddr     string   // Redis address for routing table and policy storage (e.g. "localhost:6379").
 
 	// ActorTypes is the list of actor types to create during bootstrap.
 	// When the first PS registers, an initial partition covering the full key range is created per actor type.
@@ -46,6 +47,9 @@ func (c *Config) validate() error {
 	}
 	if len(c.EtcdEndpoints) == 0 {
 		return fmt.Errorf("pm: EtcdEndpoints is required")
+	}
+	if c.RedisAddr == "" {
+		return fmt.Errorf("pm: RedisAddr is required")
 	}
 	if len(c.ActorTypes) == 0 {
 		return fmt.Errorf("pm: ActorTypes is required (at least one actor type)")

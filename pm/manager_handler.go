@@ -67,7 +67,7 @@ func (h *managerHandler) RequestSplit(
 	h.server.opMu.Lock()
 	defer h.server.opMu.Unlock()
 
-	newPartitionID, err := h.server.splitter.Split(ctx, req.ActorType, req.PartitionId, req.SplitKey)
+	newPartitionID, err := h.server.doSplit(ctx, req.ActorType, req.PartitionId, req.SplitKey)
 	if err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
@@ -87,7 +87,7 @@ func (h *managerHandler) RequestMigrate(
 	h.server.opMu.Lock()
 	defer h.server.opMu.Unlock()
 
-	if err := h.server.migrator.Migrate(ctx, req.ActorType, req.PartitionId, req.TargetNodeId); err != nil {
+	if err := h.server.doMigrate(ctx, req.ActorType, req.PartitionId, req.TargetNodeId); err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
 	return &pb.MigrateResponse{}, nil
@@ -106,7 +106,7 @@ func (h *managerHandler) RequestMerge(
 	h.server.opMu.Lock()
 	defer h.server.opMu.Unlock()
 
-	if err := h.server.merger.Merge(ctx, req.ActorType, req.LowerPartitionId, req.UpperPartitionId); err != nil {
+	if err := h.server.doMerge(ctx, req.ActorType, req.LowerPartitionId, req.UpperPartitionId); err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
 	return &pb.MergeResponse{}, nil

@@ -10,7 +10,6 @@ import (
 
 	"github.com/sangchul/actorbase/internal/cluster"
 	"github.com/sangchul/actorbase/internal/domain"
-	"github.com/sangchul/actorbase/internal/rebalance"
 	"github.com/sangchul/actorbase/internal/transport"
 	pb "github.com/sangchul/actorbase/internal/transport/proto"
 	"github.com/sangchul/actorbase/policy"
@@ -22,12 +21,12 @@ import (
 type balancerRunner struct {
 	cfg          *policy.RunnerConfig
 	pol          provider.BalancePolicy
-	splitter     *rebalance.Splitter
-	migrator     *rebalance.Migrator
-	merger       *rebalance.Merger
+	splitter     pmSplitter
+	migrator     pmMigrator
+	merger       pmMerger
 	nodeCatalog  cluster.NodeCatalog
 	routingStore cluster.RoutingTableStore
-	connPool     *transport.ConnPool
+	psFactory    transport.PSClientFactory
 	opMu         *sync.Mutex
 
 	mu                  sync.Mutex
@@ -35,15 +34,16 @@ type balancerRunner struct {
 	partitionLastAction map[string]time.Time
 }
 
+
 func newBalancerRunner(
 	cfg *policy.RunnerConfig,
 	pol provider.BalancePolicy,
-	splitter *rebalance.Splitter,
-	migrator *rebalance.Migrator,
-	merger *rebalance.Merger,
+	splitter pmSplitter,
+	migrator pmMigrator,
+	merger pmMerger,
 	nodeCatalog  cluster.NodeCatalog,
 	routingStore cluster.RoutingTableStore,
-	connPool *transport.ConnPool,
+	psFactory transport.PSClientFactory,
 	opMu *sync.Mutex,
 ) *balancerRunner {
 	return &balancerRunner{
@@ -54,7 +54,7 @@ func newBalancerRunner(
 		merger:              merger,
 		nodeCatalog:         nodeCatalog,
 		routingStore:        routingStore,
-		connPool:            connPool,
+		psFactory:           psFactory,
 		opMu:                opMu,
 		partitionLastAction: make(map[string]time.Time),
 	}
@@ -133,12 +133,12 @@ func (r *balancerRunner) buildClusterStats(ctx context.Context, nodes []domain.N
 		wg.Add(1)
 		go func(idx int, node domain.NodeInfo) {
 			defer wg.Done()
-			conn, connErr := r.connPool.Get(node.Address)
+			psCtrl, connErr := r.psFactory.GetClient(node.Address)
 			if connErr != nil {
 				results[idx] = fetchResult{nodeInfo: node, err: connErr}
 				return
 			}
-			resp, statsErr := transport.NewPSControlClient(conn).GetStats(fetchCtx)
+			resp, statsErr := psCtrl.GetStats(fetchCtx)
 			results[idx] = fetchResult{nodeInfo: node, resp: resp, err: statsErr}
 		}(i, n)
 	}
@@ -215,7 +215,7 @@ func (r *balancerRunner) executeActions(ctx context.Context, actions []provider.
 			slog.Info("autoBalancer: split triggered",
 				"partition", action.PartitionID, "actor_type", action.ActorType)
 			r.opMu.Lock()
-			newID, err := r.splitter.Split(ctx, action.ActorType, action.PartitionID, "")
+			newID, err := r.splitter.Split(ctx, action.ActorType, action.PartitionID, "", "")
 			r.opMu.Unlock()
 			if err != nil {
 				slog.Error("autoBalancer: split failed", "partition", action.PartitionID, "err", err)

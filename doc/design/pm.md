@@ -40,8 +40,10 @@ NewServer:
   2. cfg.BalancePolicy == nil이면 NoopBalancePolicy로 대체
   3. etcd 클라이언트 생성
   4. NodeRegistry, NodeCatalog, MembershipWatcher, RoutingTableStore 생성
-  5. ConnPool, Splitter, Migrator, Merger 생성
-  6. gRPC 서버 생성 + PartitionManagerService 핸들러 등록
+  5. ConnPool 생성 → PSClientFactory (ConnPoolFactory) 래핑 → Splitter, Migrator, Merger 생성
+     // PSClientFactory 인터페이스를 통해 balancerRunner도 의존성 주입 가능
+  6. WorkJournal 생성 (etcd 기반 — PM 크래시 복구용)
+  7. gRPC 서버 생성 + PartitionManagerService 핸들러 등록
 ```
 
 ### 기동 순서 (Start)
@@ -55,17 +57,18 @@ Start:
   3. cluster.LoadPolicy(ctx, etcdCli)                                  // 저장된 AutoPolicy 복원 (있으면 balancer 시작)
   4. reconcileCatalog(ctx)                                             // catalog Active/Draining vs live heartbeat 대조
                                                                        // heartbeat 없는 노드 → Waiting 복원
-  5. currentRT = routingStore.Load()
-  6. routing.Store(currentRT)
-  7. go watchRouting(ctx)        // etcd watch → 구독자 broadcast
-  8. go watchMembership(ctx)     // 노드 join/leave → Policy 호출
-  9. if currentRT == nil:
-       go bootstrap(ctx)         // 첫 PS 등록 대기 후 초기 테이블 생성
-  10. if cfg.HTTPAddr != "":
+  5. resumePendingWork(ctx)                                            // WorkJournal에 남은 미완료 split/migrate/merge 재시도
+  6. currentRT = routingStore.Load()
+  7. routing.Store(currentRT)
+  8. go watchRouting(ctx)        // etcd watch → 구독자 broadcast
+  9. go watchMembership(ctx)     // 노드 join/leave → Policy 호출
+  10. if currentRT == nil:
+        go bootstrap(ctx)        // 첫 PS 등록 대기 후 초기 테이블 생성
+  11. if cfg.HTTPAddr != "":
         go consoleSrv.Start(ctx) // 웹 콘솔 HTTP 서버 (go:embed 정적 파일 + REST API)
-  11. grpcSrv.Serve(listener)    // 리더만 gRPC 포트 오픈
-  12. <-ctx.Done()
-  13. grpcSrv.GracefulStop() + connPool.Close()
+  12. grpcSrv.Serve(listener)    // 리더만 gRPC 포트 오픈
+  13. <-ctx.Done()
+  14. grpcSrv.GracefulStop() + connPool.Close()
       // defer sess.Close() 실행 → etcd lease revoke → standby 자동 선출
 ```
 
@@ -88,6 +91,33 @@ reconcileCatalog(ctx):
 ```
 
 > heartbeat가 살아있는 Active 노드는 건드리지 않는다. Failed 노드도 건드리지 않는다 (이미 운영자 확인 필요 상태).
+
+### resumePendingWork (내부)
+
+PM 크래시 전 진행 중이던 split/migrate/merge를 재시도한다. etcd `WorkJournal`에 기록된 미완료 항목을 읽어 각 타입별로 처리한다.
+
+```
+resumePendingWork(ctx):
+  1. workJournal.ListPending() → 미완료 작업 목록
+
+  Split:
+    - newPartitionID가 이미 라우팅 테이블에 있으면 → 이미 완료됨, journal.Complete
+    - 원본 partitionID가 라우팅 테이블에 없으면 → 이미 완료됨, journal.Complete
+    - 그 외 → 동일 newPartitionID로 splitter.Split 재시도
+      (PS에 이미 만들어진 파티션 재사용 — 중복 파티션 생성 방지)
+
+  Migrate:
+    - 파티션이 없거나 이미 targetNode에 있으면 → journal.Complete
+    - 파티션이 Draining 상태이면 → migrator.ResumeMigrate (Draining 검사 skip)
+    - Active 상태이면 → migrator.Migrate 재시도
+
+  Merge:
+    - upper 파티션이 이미 없으면 → 이미 완료됨, journal.Complete
+    - upper 파티션이 Draining 상태이면 → merger.ResumeMerge (ExecuteMerge 조건부 skip)
+    - 그 외 → merger.Merge 재시도
+```
+
+> `WorkJournal` 항목은 완료(성공 또는 실패)시 삭제된다. 진행 중인 단계를 넘어 완료 상태만 etcd에 남기지 않는다.
 
 ### watchRouting (내부)
 
@@ -230,6 +260,8 @@ for action in actions:
 | Failover vs Migrate | Migrator.Failover: ExecuteMigrateOut 건너뜀 | source PS 죽었으면 gRPC 호출 불가. checkpoint에서 직접 복원. |
 | PM 리더 선출 | etcd election (`concurrency.Campaign`) | 여러 PM 중 하나만 active. 리더 장애 시 standby가 자동 승계. PS가 PM 없이 기동되는 것도 방지. |
 | PM startup reconcile | leader 선출 직후 catalog vs heartbeat diff | PM 크래시 중 PS 종료 시 catalog Active 잔존 케이스 자동 복원. |
+| WorkJournal (PM 크래시 복구) | etcd 기반 at-least-once journal | PM 크래시 전 진행 중이던 split/migrate/merge를 재시작 후 resume. 항목은 완료 시 삭제. |
+| PSClientFactory 인터페이스 | ConnPool 추상화 | balancerRunner·Splitter·Migrator·Merger가 ConnPool에 직접 의존하지 않아 단위 테스트에서 mock 주입 가능. |
 
 ---
 

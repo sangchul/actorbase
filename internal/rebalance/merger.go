@@ -2,26 +2,28 @@ package rebalance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/sangchul/actorbase/internal/cluster"
 	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/internal/transport"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // Merger orchestrates the merge of two adjacent partitions.
 // The lower partition absorbs the state of the upper partition.
 type Merger struct {
 	routingStore cluster.RoutingTableStore
-	connPool     *transport.ConnPool
+	psFactory    transport.PSClientFactory
 }
 
 // NewMerger creates a Merger.
-func NewMerger(routingStore cluster.RoutingTableStore, connPool *transport.ConnPool) *Merger {
+func NewMerger(routingStore cluster.RoutingTableStore, psFactory transport.PSClientFactory) *Merger {
 	return &Merger{
 		routingStore: routingStore,
-		connPool:     connPool,
+		psFactory:    psFactory,
 	}
 }
 
@@ -93,12 +95,11 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 	}
 
 	// 8. Send ExecuteMerge RPC to the PS.
-	conn, err := m.connPool.Get(lowerEntry.Node.Address)
+	psCtrl, err := m.psFactory.GetClient(lowerEntry.Node.Address)
 	if err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("connect to PS %s: %w", lowerEntry.Node.Address, err)
 	}
-	psCtrl := transport.NewPSControlClient(conn)
 	if err := psCtrl.ExecuteMerge(ctx, actorType, lowerPartitionID, upperPartitionID); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("execute merge on PS: %w", err)
@@ -117,6 +118,56 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 		"actor_type", actorType,
 		"lower", lowerPartitionID, "upper", upperPartitionID)
 
+	return nil
+}
+
+// ResumeMerge is called by a newly elected PM leader when the routing table
+// shows both lower and upper partitions stuck in Draining state due to a PM crash.
+//
+// It does not check PartitionStatusDraining and re-runs the remaining steps:
+// 1. ExecuteMerge on PS — if the upper partition is already gone (already merged),
+//    the ErrNotFound response is treated as "already done".
+// 2. Final routing table update: lower range extended, upper removed.
+func (m *Merger) ResumeMerge(ctx context.Context, actorType, lowerID, upperID string) error {
+	rt, err := m.routingStore.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("load routing table: %w", err)
+	}
+	if rt == nil {
+		return fmt.Errorf("routing table is empty")
+	}
+
+	lowerEntry, lowerOK := rt.LookupByPartition(lowerID)
+	upperEntry, upperOK := rt.LookupByPartition(upperID)
+	if !lowerOK {
+		return fmt.Errorf("lower partition %s not found", lowerID)
+	}
+	if !upperOK {
+		// Upper already gone from routing — merge completed.
+		return nil
+	}
+
+	psCtrl, err := m.psFactory.GetClient(lowerEntry.Node.Address)
+	if err != nil {
+		return fmt.Errorf("connect to PS %s: %w", lowerEntry.Node.Address, err)
+	}
+
+	// Step 1: ExecuteMerge — treat ErrNotFound for upper as already merged.
+	if mergeErr := psCtrl.ExecuteMerge(ctx, actorType, lowerID, upperID); mergeErr != nil {
+		if !errors.Is(mergeErr, provider.ErrNotFound) {
+			return fmt.Errorf("resume execute merge: %w", mergeErr)
+		}
+		slog.Info("rebalance: ResumeMerge: upper partition already merged on PS", "upper", upperID)
+	}
+
+	// Step 2: Update routing: extend lower range to cover upper range, remove upper.
+	mergedRT, err := buildMergedTable(rt, lowerID, upperID, upperEntry.Partition.KeyRange.End)
+	if err != nil {
+		return fmt.Errorf("build merged routing table: %w", err)
+	}
+	if err := m.routingStore.Save(ctx, mergedRT); err != nil {
+		return fmt.Errorf("save merged routing table: %w", err)
+	}
 	return nil
 }
 

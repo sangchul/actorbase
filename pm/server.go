@@ -2,6 +2,7 @@ package pm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 
@@ -23,19 +25,40 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
+// ── PM-internal interfaces for testability ───────────────────────────────────
+// These allow unit tests to inject mock implementations of the rebalance operations.
+
+type pmSplitter interface {
+	Split(ctx context.Context, actorType, partitionID, splitKey, newPartitionID string) (string, error)
+}
+
+type pmMigrator interface {
+	Migrate(ctx context.Context, actorType, partitionID, targetNodeID string) error
+	Failover(ctx context.Context, partitionID, targetNodeID string) error
+	ResumeMigrate(ctx context.Context, actorType, partitionID, targetNodeID string) error
+}
+
+type pmMerger interface {
+	Merge(ctx context.Context, actorType, lowerID, upperID string) error
+	ResumeMerge(ctx context.Context, actorType, lowerID, upperID string) error
+}
+
 // Server is the entry point for the Partition Manager.
 // Assembles components and starts/manages the gRPC server.
 type Server struct {
 	cfg          Config
 	etcdCli      *clientv3.Client
+	redisCli     goredis.UniversalClient
 	routingStore cluster.RoutingTableStore
 	nodeRegistry cluster.NodeRegistry // heartbeat keys (liveness)
 	nodeCatalog  cluster.NodeCatalog  // persistent node state (all 4 states)
 	membership   cluster.MembershipWatcher
-	splitter     *rebalance.Splitter
-	migrator     *rebalance.Migrator
-	merger       *rebalance.Merger
+	workJournal  cluster.WorkJournal
+	splitter     pmSplitter
+	migrator     pmMigrator
+	merger       pmMerger
 	connPool     *transport.ConnPool
+	psFactory    transport.PSClientFactory
 	grpcSrv      *grpc.Server
 
 	// Current routing table. Delivered immediately when a new WatchRouting stream connects.
@@ -80,14 +103,20 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("pm: create etcd client: %w", err)
 	}
 
+	redisCli := goredis.NewUniversalClient(&goredis.UniversalOptions{
+		Addrs: []string{cfg.RedisAddr},
+	})
+
 	nodeRegistry := cluster.NewNodeRegistry(etcdCli, 10*time.Second)
 	nodeCatalog := cluster.NewNodeCatalog(etcdCli)
 	membership := cluster.NewMembershipWatcher(etcdCli)
-	routingStore := cluster.NewRoutingTableStore(etcdCli)
+	workJournal := cluster.NewWorkJournal(etcdCli)
+	routingStore := cluster.NewRedisRoutingTableStore(redisCli)
 	connPool := transport.NewConnPool()
-	splitter := rebalance.NewSplitter(routingStore, connPool)
-	migrator := rebalance.NewMigrator(routingStore, nodeCatalog, connPool)
-	merger := rebalance.NewMerger(routingStore, connPool)
+	psFactory := transport.NewConnPoolFactory(connPool)
+	splitter := rebalance.NewSplitter(routingStore, psFactory)
+	migrator := rebalance.NewMigrator(routingStore, nodeCatalog, psFactory)
+	merger := rebalance.NewMerger(routingStore, psFactory)
 
 	grpcSrv := transport.NewGRPCServer(transport.ServerConfig{
 		ListenAddr: cfg.ListenAddr,
@@ -97,14 +126,17 @@ func NewServer(cfg Config) (*Server, error) {
 	s := &Server{
 		cfg:          cfg,
 		etcdCli:      etcdCli,
+		redisCli:     redisCli,
 		routingStore: routingStore,
 		nodeRegistry: nodeRegistry,
 		nodeCatalog:  nodeCatalog,
 		membership:   membership,
+		workJournal:  workJournal,
 		splitter:     splitter,
 		migrator:     migrator,
 		merger:       merger,
 		connPool:     connPool,
+		psFactory:    psFactory,
 		grpcSrv:      grpcSrv,
 		subscribers:  make(map[string]*subscriber),
 	}
@@ -127,15 +159,15 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	defer sess.Close() //nolint:errcheck — resign on shutdown
 
-	// 2. Restore YAML policy from etcd.
-	if yamlStr, err := cluster.LoadPolicy(ctx, s.etcdCli); err != nil {
-		slog.Warn("pm: load policy from etcd failed", "err", err)
+	// 2. Restore YAML policy from Redis.
+	if yamlStr, err := cluster.LoadRedisPolicy(ctx, s.redisCli); err != nil {
+		slog.Warn("pm: load policy from redis failed", "err", err)
 	} else if yamlStr != "" {
 		if pol, runnerCfg, parseErr := policy.ParsePolicy([]byte(yamlStr)); parseErr != nil {
 			slog.Warn("pm: stored policy parse failed", "err", parseErr)
 		} else {
 			balancerCtx, cancel := context.WithCancel(ctx)
-			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.connPool, &s.opMu)
+			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.psFactory, &s.opMu)
 			go b.start(balancerCtx)
 			s.policyMu.Lock()
 			s.activePolicy = pol
@@ -158,24 +190,27 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.routing.Store(currentRT)
 
-	// 5. Watch etcd and broadcast updates to subscribers.
+	// 5. Watch routing store and broadcast updates to subscribers.
 	go s.watchRouting(ctx)
 
 	// 6. Watch node join/leave events and invoke BalancePolicy.
 	go s.watchMembership(ctx)
 
-	// 7. If the cluster is empty, wait for the first PS to register and create the initial routing table.
+	// 7. Resume any in-progress work that was interrupted by a PM crash.
+	s.resumePendingWork(ctx)
+
+	// 8. If the cluster is empty, wait for the first PS to register and create the initial routing table.
 	if currentRT == nil {
 		go s.bootstrap(ctx)
 	}
 
-	// 8. Start the web console HTTP server if configured.
+	// 9. Start the web console HTTP server if configured.
 	if s.cfg.HTTPAddr != "" {
 		consoleSrv := console.NewServer(s.cfg.HTTPAddr, s.cfg.ListenAddr)
 		go consoleSrv.Start(ctx)
 	}
 
-	// 9. Start accepting gRPC connections.
+	// 10. Start accepting gRPC connections.
 	lis, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("pm: listen %s: %w", s.cfg.ListenAddr, err)
@@ -399,7 +434,7 @@ func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
 		slog.Info("pm: failoverDeadNode: failing over partition",
 			"partition", entry.Partition.ID, "actor_type", entry.Partition.ActorType, "target", target.ID)
 		s.opMu.Lock()
-		ferr := s.migrator.Failover(ctx, entry.Partition.ID, target.ID)
+		ferr := s.doFailover(ctx, entry.Partition.ID, target.ID)
 		s.opMu.Unlock()
 		if ferr != nil {
 			slog.Error("pm: failoverDeadNode: failover failed",
@@ -491,7 +526,7 @@ func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.B
 		case provider.ActionSplit:
 			slog.Info("pm: executing split", "actor_type", action.ActorType, "partition", action.PartitionID)
 			s.opMu.Lock()
-			_, err := s.splitter.Split(ctx, action.ActorType, action.PartitionID, "")
+			_, err := s.doSplit(ctx, action.ActorType, action.PartitionID, "")
 			s.opMu.Unlock()
 			if err != nil {
 				slog.Error("pm: policy split failed", "partition", action.PartitionID, "err", err)
@@ -502,7 +537,7 @@ func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.B
 		case provider.ActionMigrate:
 			slog.Info("pm: executing migrate", "actor_type", action.ActorType, "partition", action.PartitionID, "target", action.TargetNode)
 			s.opMu.Lock()
-			err := s.migrator.Migrate(ctx, action.ActorType, action.PartitionID, action.TargetNode)
+			err := s.doMigrate(ctx, action.ActorType, action.PartitionID, action.TargetNode)
 			s.opMu.Unlock()
 			if err != nil {
 				slog.Error("pm: policy migrate failed", "partition", action.PartitionID, "target", action.TargetNode, "err", err)
@@ -513,7 +548,7 @@ func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.B
 		case provider.ActionFailover:
 			slog.Info("pm: executing failover", "partition", action.PartitionID, "target", action.TargetNode)
 			s.opMu.Lock()
-			err := s.migrator.Failover(ctx, action.PartitionID, action.TargetNode)
+			err := s.doFailover(ctx, action.PartitionID, action.TargetNode)
 			s.opMu.Unlock()
 			if err != nil {
 				slog.Error("pm: policy failover failed", "partition", action.PartitionID, "target", action.TargetNode, "err", err)
@@ -525,7 +560,7 @@ func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.B
 			slog.Info("pm: executing merge", "actor_type", action.ActorType,
 				"lower", action.PartitionID, "upper", action.MergeTarget)
 			s.opMu.Lock()
-			err := s.merger.Merge(ctx, action.ActorType, action.PartitionID, action.MergeTarget)
+			err := s.doMerge(ctx, action.ActorType, action.PartitionID, action.MergeTarget)
 			s.opMu.Unlock()
 			if err != nil {
 				slog.Error("pm: policy merge failed",
@@ -599,7 +634,7 @@ func (s *Server) isAutoActive() bool {
 // applyPolicy applies a YAML-based policy and restarts the balancerRunner.
 // pol and runnerCfg are obtained from policy.ParsePolicy.
 func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.BalancePolicy, runnerCfg *policy.RunnerConfig) error {
-	if err := cluster.SavePolicy(ctx, s.etcdCli, yamlStr); err != nil {
+	if err := cluster.SaveRedisPolicy(ctx, s.redisCli, yamlStr); err != nil {
 		return err
 	}
 	s.policyMu.Lock()
@@ -611,7 +646,7 @@ func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.B
 	s.activePolicyYAML = yamlStr
 	balancerCtx, cancel := context.WithCancel(s.serverCtx)
 	s.balancerCancel = cancel
-	b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.connPool, &s.opMu)
+	b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.psFactory, &s.opMu)
 	go b.start(balancerCtx)
 	s.policyMu.Unlock()
 	slog.Info("pm: AutoPolicy applied", "check_interval", runnerCfg.CheckInterval)
@@ -620,7 +655,7 @@ func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.B
 
 // clearPolicy removes the YAML policy and reverts to cfg.BalancePolicy (the code-injected policy).
 func (s *Server) clearPolicy(ctx context.Context) error {
-	if err := cluster.ClearPolicy(ctx, s.etcdCli); err != nil {
+	if err := cluster.ClearRedisPolicy(ctx, s.redisCli); err != nil {
 		return err
 	}
 	s.policyMu.Lock()
@@ -646,4 +681,268 @@ func (s *Server) unsubscribe(clientID string) {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
 	delete(s.subscribers, clientID)
+}
+
+// ── WorkJournal-wrapped operation methods ────────────────────────────────────
+
+// doSplit records a WorkJournal entry, runs Split, then marks it complete.
+// The journal entry is always deleted when this function returns — success or failure.
+// It only persists across process restarts (PM crash), at which point resumePendingWork
+// picks it up and retries with the same newPartitionID.
+func (s *Server) doSplit(ctx context.Context, actorType, partitionID, splitKey string) (string, error) {
+	newPartitionID := uuid.New().String() // pre-generate for idempotent resume
+	params, err := cluster.MarshalWorkParams(cluster.SplitParams{
+		ActorType: actorType, PartitionID: partitionID,
+		SplitKey: splitKey, NewPartitionID: newPartitionID,
+	})
+	if err != nil {
+		return "", err
+	}
+	work := cluster.PendingWork{
+		ID: uuid.New().String(), Type: cluster.WorkTypeSplit,
+		Params: params, StartedAt: time.Now(),
+	}
+	if err := s.workJournal.Begin(ctx, work); err != nil {
+		return "", fmt.Errorf("journal begin split: %w", err)
+	}
+	newID, splitErr := s.splitter.Split(ctx, actorType, partitionID, splitKey, newPartitionID)
+	// Always clean up the journal — it only persists if the PM process is killed.
+	if err := s.workJournal.Complete(ctx, work.ID); err != nil {
+		slog.Warn("pm: journal complete split failed (non-fatal)", "work_id", work.ID, "err", err)
+	}
+	return newID, splitErr
+}
+
+// doMigrate records a WorkJournal entry, runs Migrate, then marks it complete.
+// The journal entry is always deleted on return (success or failure).
+func (s *Server) doMigrate(ctx context.Context, actorType, partitionID, targetNodeID string) error {
+	params, err := cluster.MarshalWorkParams(cluster.MigrateParams{
+		ActorType: actorType, PartitionID: partitionID, TargetNodeID: targetNodeID,
+	})
+	if err != nil {
+		return err
+	}
+	work := cluster.PendingWork{
+		ID: uuid.New().String(), Type: cluster.WorkTypeMigrate,
+		Params: params, StartedAt: time.Now(),
+	}
+	if err := s.workJournal.Begin(ctx, work); err != nil {
+		return fmt.Errorf("journal begin migrate: %w", err)
+	}
+	migrateErr := s.migrator.Migrate(ctx, actorType, partitionID, targetNodeID)
+	if err := s.workJournal.Complete(ctx, work.ID); err != nil {
+		slog.Warn("pm: journal complete migrate failed (non-fatal)", "work_id", work.ID, "err", err)
+	}
+	return migrateErr
+}
+
+// doMerge records a WorkJournal entry, runs Merge, then marks it complete.
+// The journal entry is always deleted on return (success or failure).
+func (s *Server) doMerge(ctx context.Context, actorType, lowerID, upperID string) error {
+	params, err := cluster.MarshalWorkParams(cluster.MergeParams{
+		ActorType: actorType, LowerID: lowerID, UpperID: upperID,
+	})
+	if err != nil {
+		return err
+	}
+	work := cluster.PendingWork{
+		ID: uuid.New().String(), Type: cluster.WorkTypeMerge,
+		Params: params, StartedAt: time.Now(),
+	}
+	if err := s.workJournal.Begin(ctx, work); err != nil {
+		return fmt.Errorf("journal begin merge: %w", err)
+	}
+	mergeErr := s.merger.Merge(ctx, actorType, lowerID, upperID)
+	if err := s.workJournal.Complete(ctx, work.ID); err != nil {
+		slog.Warn("pm: journal complete merge failed (non-fatal)", "work_id", work.ID, "err", err)
+	}
+	return mergeErr
+}
+
+// doFailover records a WorkJournal entry, runs Failover, then marks it complete.
+// The journal entry is always deleted on return (success or failure).
+func (s *Server) doFailover(ctx context.Context, partitionID, targetNodeID string) error {
+	params, err := cluster.MarshalWorkParams(cluster.MigrateParams{
+		PartitionID: partitionID, TargetNodeID: targetNodeID,
+	})
+	if err != nil {
+		return err
+	}
+	work := cluster.PendingWork{
+		ID: uuid.New().String(), Type: cluster.WorkTypeFailover,
+		Params: params, StartedAt: time.Now(),
+	}
+	if err := s.workJournal.Begin(ctx, work); err != nil {
+		return fmt.Errorf("journal begin failover: %w", err)
+	}
+	failoverErr := s.migrator.Failover(ctx, partitionID, targetNodeID)
+	if err := s.workJournal.Complete(ctx, work.ID); err != nil {
+		slog.Warn("pm: journal complete failover failed (non-fatal)", "work_id", work.ID, "err", err)
+	}
+	return failoverErr
+}
+
+// ── resumePendingWork ────────────────────────────────────────────────────────
+
+// resumePendingWork checks the WorkJournal for in-progress operations that
+// survived a PM crash and re-executes them. This is called once on startup,
+// after leader election and initial routing table load.
+func (s *Server) resumePendingWork(ctx context.Context) {
+	pending, err := s.workJournal.ListPending(ctx)
+	if err != nil {
+		slog.Warn("pm: resumePendingWork: list failed", "err", err)
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+	slog.Info("pm: resumePendingWork: found pending work", "count", len(pending))
+
+	rt, err := s.routingStore.Load(ctx)
+	if err != nil {
+		slog.Warn("pm: resumePendingWork: load routing table failed", "err", err)
+		return
+	}
+
+	for _, work := range pending {
+		slog.Info("pm: resumePendingWork: resuming", "work_id", work.ID, "type", work.Type, "started_at", work.StartedAt)
+		switch work.Type {
+		case cluster.WorkTypeSplit:
+			var p cluster.SplitParams
+			if err := json.Unmarshal(work.Params, &p); err != nil {
+				slog.Error("pm: resumePendingWork: unmarshal split params", "err", err)
+				continue
+			}
+			if rt != nil {
+				// newPartitionID already in routing → split already completed.
+				if p.NewPartitionID != "" {
+					if _, ok := rt.LookupByPartition(p.NewPartitionID); ok {
+						_ = s.workJournal.Complete(ctx, work.ID)
+						continue
+					}
+				}
+				// Original partition gone → split already completed (new ID tracking unavailable).
+				if _, ok := rt.LookupByPartition(p.PartitionID); !ok {
+					_ = s.workJournal.Complete(ctx, work.ID)
+					continue
+				}
+			}
+			// Retry with the same newPartitionID to avoid orphan partitions on PS.
+			s.opMu.Lock()
+			_, splitErr := s.splitter.Split(ctx, p.ActorType, p.PartitionID, p.SplitKey, p.NewPartitionID)
+			s.opMu.Unlock()
+			if splitErr != nil {
+				slog.Error("pm: resumePendingWork: split failed", "partition", p.PartitionID, "err", splitErr)
+			} else {
+				_ = s.workJournal.Complete(ctx, work.ID)
+			}
+
+		case cluster.WorkTypeMigrate:
+			var p cluster.MigrateParams
+			if err := json.Unmarshal(work.Params, &p); err != nil {
+				slog.Error("pm: resumePendingWork: unmarshal migrate params", "err", err)
+				continue
+			}
+			if rt != nil {
+				entry, ok := rt.LookupByPartition(p.PartitionID)
+				if !ok || entry.Node.ID == p.TargetNodeID {
+					_ = s.workJournal.Complete(ctx, work.ID)
+					continue
+				}
+				if entry.PartitionStatus == domain.PartitionStatusDraining {
+					// Partition stuck in Draining — use dedicated resume path that skips the check.
+					s.opMu.Lock()
+					err := s.migrator.ResumeMigrate(ctx, p.ActorType, p.PartitionID, p.TargetNodeID)
+					s.opMu.Unlock()
+					if err != nil {
+						slog.Error("pm: resumePendingWork: ResumeMigrate failed", "partition", p.PartitionID, "err", err)
+					} else {
+						_ = s.workJournal.Complete(ctx, work.ID)
+					}
+					continue
+				}
+			}
+			s.opMu.Lock()
+			migrateErr := s.migrator.Migrate(ctx, p.ActorType, p.PartitionID, p.TargetNodeID)
+			s.opMu.Unlock()
+			if migrateErr != nil {
+				slog.Error("pm: resumePendingWork: migrate failed", "partition", p.PartitionID, "err", migrateErr)
+			} else {
+				_ = s.workJournal.Complete(ctx, work.ID)
+			}
+
+		case cluster.WorkTypeFailover:
+			var p cluster.MigrateParams
+			if err := json.Unmarshal(work.Params, &p); err != nil {
+				slog.Error("pm: resumePendingWork: unmarshal failover params", "err", err)
+				continue
+			}
+			if rt != nil {
+				entry, ok := rt.LookupByPartition(p.PartitionID)
+				if !ok || entry.Node.ID == p.TargetNodeID {
+					_ = s.workJournal.Complete(ctx, work.ID)
+					continue
+				}
+				if entry.PartitionStatus == domain.PartitionStatusDraining {
+					// Failover also uses ResumeMigrate — source is dead so eviction is skipped.
+					s.opMu.Lock()
+					err := s.migrator.ResumeMigrate(ctx, p.ActorType, p.PartitionID, p.TargetNodeID)
+					s.opMu.Unlock()
+					if err != nil {
+						slog.Error("pm: resumePendingWork: ResumeMigrate (failover) failed", "partition", p.PartitionID, "err", err)
+					} else {
+						_ = s.workJournal.Complete(ctx, work.ID)
+					}
+					continue
+				}
+			}
+			s.opMu.Lock()
+			failoverErr := s.migrator.Failover(ctx, p.PartitionID, p.TargetNodeID)
+			s.opMu.Unlock()
+			if failoverErr != nil {
+				slog.Error("pm: resumePendingWork: failover failed", "partition", p.PartitionID, "err", failoverErr)
+			} else {
+				_ = s.workJournal.Complete(ctx, work.ID)
+			}
+
+		case cluster.WorkTypeMerge:
+			var p cluster.MergeParams
+			if err := json.Unmarshal(work.Params, &p); err != nil {
+				slog.Error("pm: resumePendingWork: unmarshal merge params", "err", err)
+				continue
+			}
+			if rt != nil {
+				lowerEntry, lowerOK := rt.LookupByPartition(p.LowerID)
+				_, upperOK := rt.LookupByPartition(p.UpperID)
+				if !upperOK {
+					// Upper partition gone → merge already completed.
+					_ = s.workJournal.Complete(ctx, work.ID)
+					continue
+				}
+				if lowerOK && lowerEntry.PartitionStatus == domain.PartitionStatusDraining {
+					// Both partitions stuck in Draining — use dedicated resume path.
+					s.opMu.Lock()
+					err := s.merger.ResumeMerge(ctx, p.ActorType, p.LowerID, p.UpperID)
+					s.opMu.Unlock()
+					if err != nil {
+						slog.Error("pm: resumePendingWork: ResumeMerge failed", "lower", p.LowerID, "upper", p.UpperID, "err", err)
+					} else {
+						_ = s.workJournal.Complete(ctx, work.ID)
+					}
+					continue
+				}
+			}
+			s.opMu.Lock()
+			mergeErr := s.merger.Merge(ctx, p.ActorType, p.LowerID, p.UpperID)
+			s.opMu.Unlock()
+			if mergeErr != nil {
+				slog.Error("pm: resumePendingWork: merge failed", "lower", p.LowerID, "upper", p.UpperID, "err", mergeErr)
+			} else {
+				_ = s.workJournal.Complete(ctx, work.ID)
+			}
+
+		default:
+			slog.Warn("pm: resumePendingWork: unknown work type", "type", work.Type, "work_id", work.ID)
+		}
+	}
 }

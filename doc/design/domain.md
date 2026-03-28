@@ -56,18 +56,18 @@ type NodeInfo struct {
 ### 노드 상태 머신
 
 ```
-[abctl node add] ──► Waiting ◄──────────────────────────────────┐
-                       │                                         │
-               PS가 RequestJoin RPC 호출                        │
-               PM이 Waiting 검증 후 Active 전이                 │
-                       │                                         │
-                       ▼                                         │
+[abctl node add] ──► Waiting ◄─────────────────────────────────────┐
+                       │                                           │
+               PS가 RequestJoin RPC 호출                             │
+               PM이 Waiting 검증 후 Active 전이                        │
+                       │                                            │
+                       ▼                                            │
                     Active ──SIGTERM──► Draining ──파티션 이전 완료 후 ─┤
-                       │                                         │
-                  TTL 만료/SIGKILL                               │
-                       │                                         │
-                       ▼                                         │
-                    Failed ──파티션 failover 후 Failed 유지 ────────┘
+                       │                                           │
+                  TTL 만료/SIGKILL                                  │
+                       │                                           │
+                       ▼                                           │
+                    Failed ──파티션 failover 후 Failed 유지 ──────────┘
                                                            (abctl node reset으로만 Waiting 복귀)
 ```
 

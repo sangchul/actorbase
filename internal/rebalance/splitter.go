@@ -14,14 +14,14 @@ import (
 // Splitter orchestrates partition splits.
 type Splitter struct {
 	routingStore cluster.RoutingTableStore
-	connPool     *transport.ConnPool
+	psFactory    transport.PSClientFactory
 }
 
 // NewSplitter creates a Splitter.
-func NewSplitter(routingStore cluster.RoutingTableStore, connPool *transport.ConnPool) *Splitter {
+func NewSplitter(routingStore cluster.RoutingTableStore, psFactory transport.PSClientFactory) *Splitter {
 	return &Splitter{
 		routingStore: routingStore,
-		connPool:     connPool,
+		psFactory:    psFactory,
 	}
 }
 
@@ -29,7 +29,9 @@ func NewSplitter(routingStore cluster.RoutingTableStore, connPool *transport.Con
 // actorType must match the actual actor type of partitionID; an error is
 // returned on mismatch. Returns the ID of the newly created partition
 // (the upper half). Both partitions remain on the same node after the split.
-func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey string) (string, error) {
+// newPartitionID is optional: if non-empty, it is used as the upper-half ID (for
+// idempotent resume after a PM crash). If empty, a new UUID is generated.
+func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey, newPartitionID string) (string, error) {
 	// 1. Load the current routing table.
 	rt, err := s.routingStore.Load(ctx)
 	if err != nil {
@@ -62,15 +64,16 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey s
 		}
 	}
 
-	// 5. Generate a new partition ID.
-	newPartitionID := uuid.New().String()
+	// 5. Use the provided new partition ID, or generate one.
+	if newPartitionID == "" {
+		newPartitionID = uuid.New().String()
+	}
 
 	// 6. Send ExecuteSplit to the source PS. If splitKey=="", the PS decides and returns the actual key.
-	conn, err := s.connPool.Get(entry.Node.Address)
+	psCtrl, err := s.psFactory.GetClient(entry.Node.Address)
 	if err != nil {
 		return "", fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
 	}
-	psCtrl := transport.NewPSControlClient(conn)
 	usedKey, err := psCtrl.ExecuteSplit(ctx, entry.Partition.ActorType, partitionID, splitKey, kr.Start, kr.End, newPartitionID)
 	if err != nil {
 		return "", fmt.Errorf("execute split on PS: %w", err)

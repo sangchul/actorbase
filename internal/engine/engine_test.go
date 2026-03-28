@@ -696,3 +696,377 @@ func (a *panicActor) Receive(_ provider.Context, _ kvReq) (kvResp, []byte, error
 func (a *panicActor) Replay(_ []byte) error              { return nil }
 func (a *panicActor) Export(_ string) ([]byte, error)    { return nil, nil }
 func (a *panicActor) Import(_ []byte) error              { return nil }
+
+// ── Error-path helpers ────────────────────────────────────────────────────────
+
+// errCheckpointStore: Load/Save 선택적 실패
+type errCheckpointStore struct {
+	*memCheckpointStore
+	loadErr error
+	saveErr error
+}
+
+func (s *errCheckpointStore) Load(ctx context.Context, id string) ([]byte, error) {
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+	return s.memCheckpointStore.Load(ctx, id)
+}
+
+func (s *errCheckpointStore) Save(ctx context.Context, id string, data []byte) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	return s.memCheckpointStore.Save(ctx, id, data)
+}
+
+func (s *errCheckpointStore) Delete(ctx context.Context, id string) error {
+	return s.memCheckpointStore.Delete(ctx, id)
+}
+
+// errWALStore: ReadFrom 선택적 실패
+type errWALStore struct {
+	*memWALStore
+	readErr error
+}
+
+func (s *errWALStore) ReadFrom(ctx context.Context, id string, from uint64) ([]provider.WALEntry, error) {
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
+	return s.memWALStore.ReadFrom(ctx, id, from)
+}
+
+// errExportActor: Export에서 에러 반환
+type errExportActor struct {
+	kvActor
+	exportErr error
+}
+
+func (a *errExportActor) Export(splitKey string) ([]byte, error) {
+	if a.exportErr != nil {
+		return nil, a.exportErr
+	}
+	return a.kvActor.Export(splitKey)
+}
+
+// errImportActor: Import에서 에러 반환
+type errImportActor struct {
+	kvActor
+	importErr error
+}
+
+func (a *errImportActor) Import(data []byte) error {
+	if a.importErr != nil {
+		return a.importErr
+	}
+	return a.kvActor.Import(data)
+}
+
+// errReplayActor: 특정 순번의 Replay 호출에서 에러 반환 (1-based)
+type errReplayActor struct {
+	kvActor
+	failAt    int
+	callCount int
+	replayErr error
+}
+
+func (a *errReplayActor) Replay(entry []byte) error {
+	a.callCount++
+	if a.callCount == a.failAt {
+		return a.replayErr
+	}
+	return a.kvActor.Replay(entry)
+}
+
+// ── doActivate error-path tests ───────────────────────────────────────────────
+
+func TestActorHost_doActivate_CheckpointLoadError(t *testing.T) {
+	loadErr := fmt.Errorf("store down")
+	cp := &errCheckpointStore{
+		memCheckpointStore: newMemCheckpointStore(),
+		loadErr:            loadErr,
+	}
+	h := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory:         newKVActor,
+		WALStore:        newMemWALStore(),
+		CheckpointStore: cp,
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := h.Send(ctx, "p1", kvReq{Op: "get", Key: "k"})
+	if err == nil {
+		t.Fatal("expected error from checkpoint load failure")
+	}
+}
+
+func TestActorHost_doActivate_WALReadError(t *testing.T) {
+	// First write some data and evict (saves checkpoint), then make ReadFrom fail on next activation.
+	wal := &errWALStore{memWALStore: newMemWALStore()}
+	cp := newMemCheckpointStore()
+	cfg := Config[kvReq, kvResp]{
+		Factory:         newKVActor,
+		WALStore:        wal,
+		CheckpointStore: cp,
+		FlushInterval:   5 * time.Millisecond,
+	}
+
+	ctx := context.Background()
+	h1 := NewActorHost[kvReq, kvResp](cfg)
+	put(t, h1, "p1", "k", "v")
+	time.Sleep(20 * time.Millisecond)
+	h1.EvictAll(ctx) //nolint:errcheck
+
+	// Now make ReadFrom fail.
+	wal.readErr = fmt.Errorf("WAL read failed")
+
+	h2 := NewActorHost[kvReq, kvResp](cfg)
+	ctxT, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_, err := h2.Send(ctxT, "p1", kvReq{Op: "get", Key: "k"})
+	if err == nil {
+		t.Fatal("expected error from WAL read failure")
+	}
+}
+
+func TestActorHost_doActivate_WALReplay_MiddleEntryError(t *testing.T) {
+	// Write 3 WAL entries, then evict. On re-activation fail at the 2nd Replay call.
+	wal := newMemWALStore()
+	cp := newMemCheckpointStore()
+	replayErr := fmt.Errorf("replay corruption")
+
+	ctx := context.Background()
+
+	// Write 3 entries.
+	h1 := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory:         newKVActor,
+		WALStore:        wal,
+		CheckpointStore: cp,
+		FlushInterval:   5 * time.Millisecond,
+	})
+	for _, k := range []string{"a", "b", "c"} {
+		put(t, h1, "p1", k, k)
+	}
+	time.Sleep(20 * time.Millisecond)
+	h1.EvictAll(ctx) //nolint:errcheck
+
+	// Remove checkpoint so all 3 WAL entries are replayed.
+	delete(cp.data, "p1")
+
+	// New host with errReplayActor that fails at the 2nd Replay call (middle entry).
+	h2 := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory: func(_ string) provider.Actor[kvReq, kvResp] {
+			return &errReplayActor{
+				kvActor:   kvActor{data: make(map[string]string)},
+				failAt:    2,
+				replayErr: replayErr,
+			}
+		},
+		WALStore:        wal,
+		CheckpointStore: cp,
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctxT, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_, err := h2.Send(ctxT, "p1", kvReq{Op: "get", Key: "a"})
+	if err == nil {
+		t.Fatal("expected error: middle WAL entry replay failure is fatal")
+	}
+}
+
+func TestActorHost_doActivate_WALReplay_LastEntryError_Ignored(t *testing.T) {
+	// Write 3 WAL entries, then evict. On re-activation fail at the 3rd (last) Replay call.
+	// The last entry is treated as a partial write and skipped — activation should succeed.
+	wal := newMemWALStore()
+	cp := newMemCheckpointStore()
+
+	ctx := context.Background()
+
+	h1 := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory:         newKVActor,
+		WALStore:        wal,
+		CheckpointStore: cp,
+		FlushInterval:   5 * time.Millisecond,
+	})
+	for _, k := range []string{"a", "b", "c"} {
+		put(t, h1, "p1", k, k)
+	}
+	time.Sleep(20 * time.Millisecond)
+	h1.EvictAll(ctx) //nolint:errcheck
+
+	// Remove checkpoint so WAL replay covers all entries.
+	delete(cp.data, "p1")
+
+	h2 := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory: func(_ string) provider.Actor[kvReq, kvResp] {
+			return &errReplayActor{
+				kvActor:   kvActor{data: make(map[string]string)},
+				failAt:    3, // last entry
+				replayErr: fmt.Errorf("partial write"),
+			}
+		},
+		WALStore:        wal,
+		CheckpointStore: cp,
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctxT, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	// Should succeed: last-entry replay failure is a warning, not an error.
+	_, err := h2.Send(ctxT, "p1", kvReq{Op: "get", Key: "a"})
+	if err != nil && err != provider.ErrNotFound {
+		t.Fatalf("expected success or ErrNotFound (partial data), got: %v", err)
+	}
+}
+
+// ── Context cancellation ──────────────────────────────────────────────────────
+
+func TestActorHost_Send_ContextAlreadyCancelled(t *testing.T) {
+	h := newTestHost(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := h.Send(ctx, "p1", kvReq{Op: "get", Key: "k"})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+}
+
+// ── Split error-path tests ────────────────────────────────────────────────────
+
+func TestActorHost_Split_ExportError(t *testing.T) {
+	exportErr := fmt.Errorf("export failed")
+	h := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory: func(id string) provider.Actor[kvReq, kvResp] {
+			return &errExportActor{
+				kvActor:   kvActor{data: make(map[string]string)},
+				exportErr: exportErr,
+			}
+		},
+		WALStore:        newMemWALStore(),
+		CheckpointStore: newMemCheckpointStore(),
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	put(t, h, "p1", "k", "v")
+	time.Sleep(20 * time.Millisecond)
+
+	_, err := h.Split(ctx, "p1", "m", "a", "z", "p2")
+	if err == nil {
+		t.Fatal("expected error from Export failure")
+	}
+}
+
+func TestActorHost_Split_SaveUpperCheckpointError(t *testing.T) {
+	saveErr := fmt.Errorf("checkpoint save failed")
+	cp := &errCheckpointStore{
+		memCheckpointStore: newMemCheckpointStore(),
+		saveErr:            saveErr,
+	}
+	h := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory:         newKVActor,
+		WALStore:        newMemWALStore(),
+		CheckpointStore: cp,
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	for _, k := range []string{"a", "n"} {
+		put(t, h, "p1", k, k)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	_, err := h.Split(ctx, "p1", "m", "a", "z", "p2")
+	if err == nil {
+		t.Fatal("expected error from checkpoint save failure")
+	}
+}
+
+// ── Merge error-path tests ────────────────────────────────────────────────────
+
+func TestActorHost_Merge_UpperExportError(t *testing.T) {
+	exportErr := fmt.Errorf("export failed")
+	h := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory: func(id string) provider.Actor[kvReq, kvResp] {
+			if id == "upper" {
+				return &errExportActor{
+					kvActor:   kvActor{data: make(map[string]string)},
+					exportErr: exportErr,
+				}
+			}
+			return newKVActor(id)
+		},
+		WALStore:        newMemWALStore(),
+		CheckpointStore: newMemCheckpointStore(),
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	put(t, h, "lower", "a", "a")
+	put(t, h, "upper", "z", "z")
+	time.Sleep(20 * time.Millisecond)
+
+	err := h.Merge(ctx, "lower", "upper")
+	if err == nil {
+		t.Fatal("expected error from upper Export failure")
+	}
+}
+
+func TestActorHost_Merge_LowerImportError(t *testing.T) {
+	importErr := fmt.Errorf("import failed")
+	h := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory: func(id string) provider.Actor[kvReq, kvResp] {
+			if id == "lower" {
+				return &errImportActor{
+					kvActor:   kvActor{data: make(map[string]string)},
+					importErr: importErr,
+				}
+			}
+			return newKVActor(id)
+		},
+		WALStore:        newMemWALStore(),
+		CheckpointStore: newMemCheckpointStore(),
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	put(t, h, "lower", "a", "a")
+	put(t, h, "upper", "z", "z")
+	time.Sleep(20 * time.Millisecond)
+
+	err := h.Merge(ctx, "lower", "upper")
+	if err == nil {
+		t.Fatal("expected error from lower Import failure")
+	}
+}
+
+func TestActorHost_Merge_CheckpointError(t *testing.T) {
+	saveErr := fmt.Errorf("checkpoint save failed")
+	cp := &errCheckpointStore{
+		memCheckpointStore: newMemCheckpointStore(),
+		saveErr:            saveErr,
+	}
+	h := NewActorHost[kvReq, kvResp](Config[kvReq, kvResp]{
+		Factory:         newKVActor,
+		WALStore:        newMemWALStore(),
+		CheckpointStore: cp,
+		FlushInterval:   5 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	put(t, h, "lower", "a", "a")
+	put(t, h, "upper", "z", "z")
+	time.Sleep(20 * time.Millisecond)
+
+	err := h.Merge(ctx, "lower", "upper")
+	if err == nil {
+		t.Fatal("expected error from checkpoint save failure during merge")
+	}
+}

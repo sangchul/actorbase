@@ -2,31 +2,33 @@ package rebalance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/sangchul/actorbase/internal/cluster"
 	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/internal/transport"
+	"github.com/sangchul/actorbase/provider"
 )
 
 // Migrator orchestrates partition migrations.
 type Migrator struct {
 	routingStore cluster.RoutingTableStore
 	nodeCatalog  cluster.NodeCatalog
-	connPool     *transport.ConnPool
+	psFactory    transport.PSClientFactory
 }
 
 // NewMigrator creates a Migrator.
 func NewMigrator(
 	routingStore cluster.RoutingTableStore,
 	nodeCatalog cluster.NodeCatalog,
-	connPool *transport.ConnPool,
+	psFactory transport.PSClientFactory,
 ) *Migrator {
 	return &Migrator{
 		routingStore: routingStore,
 		nodeCatalog:  nodeCatalog,
-		connPool:     connPool,
+		psFactory:    psFactory,
 	}
 }
 
@@ -81,27 +83,25 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 	}
 
 	// 4. Send ExecuteMigrateOut to the source PS.
-	sourceConn, err := m.connPool.Get(entry.Node.Address)
+	sourceCtrl, err := m.psFactory.GetClient(entry.Node.Address)
 	if err != nil {
 		// Revert the routing table on failure.
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
 	}
-	sourceCtrl := transport.NewPSControlClient(sourceConn)
 	if err := sourceCtrl.ExecuteMigrateOut(ctx, entry.Partition.ActorType, partitionID, targetNodeID, targetNode.Address); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("execute migrate out: %w", err)
 	}
 
 	// 5. Send PreparePartition to the target PS (with retry).
-	targetConn, err := m.connPool.Get(targetNode.Address)
+	targetCtrl, err := m.psFactory.GetClient(targetNode.Address)
 	if err != nil {
 		// Source has already been evicted — cannot recover. Revert routing to source only.
 		slog.Error("connect to target PS failed after migrate out", "target", targetNode.Address, "err", err)
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
 	}
-	targetCtrl := transport.NewPSControlClient(targetConn)
 	kr := entry.Partition.KeyRange
 	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End); err != nil {
 		slog.Error("prepare partition failed, reverting routing", "partition", partitionID, "err", err)
@@ -201,12 +201,11 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 	// 4. [ExecuteMigrateOut skipped — source PS is dead]
 
 	// 5. Send PreparePartition to the target PS (restores via checkpoint + WAL replay).
-	targetConn, err := m.connPool.Get(targetNode.Address)
+	targetCtrl, err := m.psFactory.GetClient(targetNode.Address)
 	if err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
 	}
-	targetCtrl := transport.NewPSControlClient(targetConn)
 	kr := entry.Partition.KeyRange
 	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End); err != nil {
 		m.revertToActive(ctx, rt)
@@ -223,6 +222,85 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 	}
 
 	return nil
+}
+
+// ResumeMigrate is called by a newly elected PM leader when the routing table
+// shows a partition stuck in Draining state due to a previous PM crash.
+//
+// It does not check PartitionStatusDraining and re-runs all remaining steps:
+// 1. ExecuteMigrateOut on source PS — source may have already evicted the partition;
+//    errors indicating "not found" or "not owned" are treated as already-done.
+// 2. PreparePartition on target PS.
+// 3. Final routing table update to Active on targetNode.
+func (m *Migrator) ResumeMigrate(ctx context.Context, actorType, partitionID, targetNodeID string) error {
+	rt, err := m.routingStore.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("load routing table: %w", err)
+	}
+	if rt == nil {
+		return fmt.Errorf("routing table is empty")
+	}
+
+	entry, ok := rt.LookupByPartition(partitionID)
+	if !ok {
+		return fmt.Errorf("partition %s not found", partitionID)
+	}
+
+	nodes, err := m.nodeCatalog.ListNodes(ctx)
+	if err != nil {
+		return fmt.Errorf("list nodes: %w", err)
+	}
+	targetNode, found := findNode(nodes, targetNodeID)
+	if !found {
+		return fmt.Errorf("target node %s not found", targetNodeID)
+	}
+	if targetNode.Status != domain.NodeStatusActive {
+		return fmt.Errorf("target node %s is not active", targetNodeID)
+	}
+
+	// Step 1: ExecuteMigrateOut on source PS.
+	// The source may have already evicted the partition (if PM crashed after step 4).
+	// ErrNotFound / ErrPartitionNotOwned from source → already evicted → continue.
+	sourceCtrl, err := m.psFactory.GetClient(entry.Node.Address)
+	if err != nil {
+		slog.Warn("rebalance: ResumeMigrate: cannot connect to source, assuming already evicted",
+			"source", entry.Node.Address, "err", err)
+	} else {
+		if evictErr := sourceCtrl.ExecuteMigrateOut(ctx, actorType, partitionID, targetNodeID, targetNode.Address); evictErr != nil {
+			if isGoneErr(evictErr) {
+				slog.Info("rebalance: ResumeMigrate: source already evicted partition", "partition", partitionID)
+			} else {
+				return fmt.Errorf("resume execute migrate out: %w", evictErr)
+			}
+		}
+	}
+
+	// Step 2: PreparePartition on target PS.
+	targetCtrl, err := m.psFactory.GetClient(targetNode.Address)
+	if err != nil {
+		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
+	}
+	kr := entry.Partition.KeyRange
+	if err := targetCtrl.PreparePartition(ctx, actorType, partitionID, kr.Start, kr.End); err != nil {
+		return fmt.Errorf("resume prepare partition: %w", err)
+	}
+
+	// Step 3: Update routing table to Active on target.
+	finalRT, err := buildMigratedTable(rt, partitionID, targetNode)
+	if err != nil {
+		return fmt.Errorf("build migrated routing table: %w", err)
+	}
+	if err := m.routingStore.Save(ctx, finalRT); err != nil {
+		return fmt.Errorf("save final routing table: %w", err)
+	}
+	return nil
+}
+
+// isGoneErr returns true when the error indicates the partition is no longer
+// present on the PS (already evicted or not found). Used during resume to
+// treat "already done" steps as success.
+func isGoneErr(err error) bool {
+	return errors.Is(err, provider.ErrNotFound) || errors.Is(err, provider.ErrPartitionNotOwned)
 }
 
 func findNode(nodes []domain.NodeInfo, nodeID string) (domain.NodeInfo, bool) {
