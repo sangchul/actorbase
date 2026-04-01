@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -374,14 +375,21 @@ func (s *Server) drainPartitions(ctx context.Context) {
 
 // requestJoin calls PM's RequestJoin RPC to gain cluster admission.
 // The node must be pre-registered with Waiting status via 'abctl node add'.
+// It passes the set of actor types this PS supports so PM can validate them.
 func (s *Server) requestJoin(ctx context.Context, pmAddr string) error {
+	actorTypes := make([]string, 0, len(s.dispatchers))
+	for t := range s.dispatchers {
+		actorTypes = append(actorTypes, t)
+	}
+	sort.Strings(actorTypes)
+
 	pool := transport.NewConnPool()
 	defer pool.Close() //nolint:errcheck
 	conn, err := pool.Get(pmAddr)
 	if err != nil {
 		return fmt.Errorf("connect to PM %s: %w", pmAddr, err)
 	}
-	return transport.NewPMClient(conn).RequestJoin(ctx, s.cfg.NodeID, s.cfg.Addr)
+	return transport.NewPMClient(conn).RequestJoin(ctx, s.cfg.NodeID, s.cfg.Addr, actorTypes)
 }
 
 // notifyDraining calls PM's SetNodeDraining RPC before starting drainPartitions.

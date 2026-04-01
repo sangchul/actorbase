@@ -17,7 +17,7 @@ func main() {
 	addr := flag.String("addr", ":7000", "gRPC listen address")
 	httpAddr := flag.String("http", "", "web console HTTP address (e.g. :8080, empty to disable)")
 	etcdAddrs := flag.String("etcd", "localhost:2379", "etcd endpoints (comma-separated)")
-	redisAddr := flag.String("redis", "localhost:6379", "Redis address for routing table and policy storage")
+	redisAddr := flag.String("redis", "", "Redis address for routing table and policy storage (optional; if omitted, etcd is used)")
 	actorTypes := flag.String("actor-types", "", "actor types to bootstrap (comma-separated, e.g. kv or bucket,object)")
 	flag.Parse()
 

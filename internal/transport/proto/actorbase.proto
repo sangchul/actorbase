@@ -257,6 +257,7 @@ message ClearPolicyResponse {}
 message RequestJoinRequest {
   string node_id = 1;
   string address = 2;
+  repeated string actor_types = 3; // actor types this PS supports; PM validates against cfg.ActorTypes
 }
 
 message RequestJoinResponse {}

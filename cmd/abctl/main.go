@@ -367,22 +367,24 @@ func cmdStats(cfg *Config, nodeID string) {
 		return
 	}
 
+	fmt.Printf("%-20s  %-20s  %8s  %-36s  %-12s  %10s  %8s\n",
+		"NODE-ID", "NODE-ADDR", "NODE-RPS", "PARTITION-ID", "ACTOR-TYPE", "KEY-COUNT", "PART-RPS")
+	fmt.Printf("%-20s  %-20s  %8s  %-36s  %-12s  %10s  %8s\n",
+		"--------------------", "--------------------", "--------",
+		"------------------------------------", "------------", "----------", "--------")
 	for _, n := range nodes {
-		fmt.Printf("Node: %s (%s)  rps=%.1f  partitions=%d\n",
-			n.NodeID, n.NodeAddr, n.NodeRPS, n.PartitionCount)
-		if len(n.Partitions) > 0 {
-			fmt.Printf("  %-36s  %-12s  %10s  %8s\n", "PARTITION-ID", "ACTOR-TYPE", "KEY-COUNT", "RPS")
-			fmt.Printf("  %-36s  %-12s  %10s  %8s\n",
-				"------------------------------------", "------------", "----------", "--------")
-			for _, p := range n.Partitions {
-				keyCount := fmt.Sprintf("%d", p.KeyCount)
-				if p.KeyCount < 0 {
-					keyCount = "n/a"
-				}
-				fmt.Printf("  %-36s  %-12s  %10s  %8.1f\n",
-					p.PartitionID, p.ActorType, keyCount, p.RPS)
-			}
+		if len(n.Partitions) == 0 {
+			fmt.Printf("%-20s  %-20s  %8.1f  %-36s  %-12s  %10s  %8s\n",
+				n.NodeID, n.NodeAddr, n.NodeRPS, "-", "-", "-", "-")
+			continue
 		}
-		fmt.Println()
+		for _, p := range n.Partitions {
+			keyCount := fmt.Sprintf("%d", p.KeyCount)
+			if p.KeyCount < 0 {
+				keyCount = "n/a"
+			}
+			fmt.Printf("%-20s  %-20s  %8.1f  %-36s  %-12s  %10s  %8.1f\n",
+				n.NodeID, n.NodeAddr, n.NodeRPS, p.PartitionID, p.ActorType, keyCount, p.RPS)
+		}
 	}
 }

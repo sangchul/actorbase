@@ -1597,6 +1597,7 @@ type RequestJoinRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	ActorTypes    []string               `protobuf:"bytes,3,rep,name=actor_types,json=actorTypes,proto3" json:"actor_types,omitempty"` // actor types this PS supports; PM validates against cfg.ActorTypes
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1643,6 +1644,13 @@ func (x *RequestJoinRequest) GetAddress() string {
 		return x.Address
 	}
 	return ""
+}
+
+func (x *RequestJoinRequest) GetActorTypes() []string {
+	if x != nil {
+		return x.ActorTypes
+	}
+	return nil
 }
 
 type RequestJoinResponse struct {
@@ -2440,10 +2448,12 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"policyYaml\x12\x16\n" +
 	"\x06active\x18\x02 \x01(\bR\x06active\"\x14\n" +
 	"\x12ClearPolicyRequest\"\x15\n" +
-	"\x13ClearPolicyResponse\"G\n" +
+	"\x13ClearPolicyResponse\"h\n" +
 	"\x12RequestJoinRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x18\n" +
-	"\aaddress\x18\x02 \x01(\tR\aaddress\"\x15\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x1f\n" +
+	"\vactor_types\x18\x03 \x03(\tR\n" +
+	"actorTypes\"\x15\n" +
 	"\x13RequestJoinResponse\"1\n" +
 	"\x16SetNodeDrainingRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"\x19\n" +

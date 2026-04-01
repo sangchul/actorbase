@@ -245,6 +245,7 @@ func (h *managerHandler) ListMembers(
 
 // RequestJoin is called by PS on startup to request cluster membership.
 // PM validates that the node is in Waiting state and transitions it to Active.
+// If the PS declares actor types, PM checks each is in cfg.ActorTypes.
 func (h *managerHandler) RequestJoin(
 	ctx context.Context,
 	req *pb.RequestJoinRequest,
@@ -260,6 +261,20 @@ func (h *managerHandler) RequestJoin(
 	if entry.Status != domain.NodeStatusWaiting {
 		return nil, status.Errorf(codes.PermissionDenied,
 			"node %q is in %v state, expected Waiting", req.NodeId, entry.Status)
+	}
+	// Validate actor types against PM's configured set.
+	if len(req.ActorTypes) > 0 {
+		allowed := make(map[string]struct{}, len(h.server.cfg.ActorTypes))
+		for _, t := range h.server.cfg.ActorTypes {
+			allowed[t] = struct{}{}
+		}
+		for _, t := range req.ActorTypes {
+			if _, ok := allowed[t]; !ok {
+				return nil, status.Errorf(codes.PermissionDenied,
+					"node %q declares actor type %q which is not configured in this PM (allowed: %v)",
+					req.NodeId, t, h.server.cfg.ActorTypes)
+			}
+		}
 	}
 	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusActive); err != nil {
 		return nil, transport.ToGRPCStatus(err)

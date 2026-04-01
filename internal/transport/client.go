@@ -254,8 +254,9 @@ func (c *PMClient) ListMembers(ctx context.Context) ([]MemberInfo, error) {
 
 // RequestJoin asks the PM to admit this node into the cluster.
 // The node must be pre-registered with Waiting status via AddNode.
-func (c *PMClient) RequestJoin(ctx context.Context, nodeID, addr string) error {
-	_, err := c.client.RequestJoin(ctx, &pb.RequestJoinRequest{NodeId: nodeID, Address: addr})
+// actorTypes lists the actor types this PS supports; PM validates them against cfg.ActorTypes.
+func (c *PMClient) RequestJoin(ctx context.Context, nodeID, addr string, actorTypes []string) error {
+	_, err := c.client.RequestJoin(ctx, &pb.RequestJoinRequest{NodeId: nodeID, Address: addr, ActorTypes: actorTypes})
 	return fromGRPCStatus(err)
 }
 

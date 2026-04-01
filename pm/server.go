@@ -103,15 +103,21 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("pm: create etcd client: %w", err)
 	}
 
-	redisCli := goredis.NewUniversalClient(&goredis.UniversalOptions{
-		Addrs: []string{cfg.RedisAddr},
-	})
-
 	nodeRegistry := cluster.NewNodeRegistry(etcdCli, 10*time.Second)
 	nodeCatalog := cluster.NewNodeCatalog(etcdCli)
 	membership := cluster.NewMembershipWatcher(etcdCli)
 	workJournal := cluster.NewWorkJournal(etcdCli)
-	routingStore := cluster.NewRedisRoutingTableStore(redisCli)
+
+	var redisCli goredis.UniversalClient
+	var routingStore cluster.RoutingTableStore
+	if cfg.RedisAddr != "" {
+		redisCli = goredis.NewUniversalClient(&goredis.UniversalOptions{
+			Addrs: []string{cfg.RedisAddr},
+		})
+		routingStore = cluster.NewRedisRoutingTableStore(redisCli)
+	} else {
+		routingStore = cluster.NewRoutingTableStore(etcdCli)
+	}
 	connPool := transport.NewConnPool()
 	psFactory := transport.NewConnPoolFactory(connPool)
 	splitter := rebalance.NewSplitter(routingStore, psFactory)
@@ -126,7 +132,7 @@ func NewServer(cfg Config) (*Server, error) {
 	s := &Server{
 		cfg:          cfg,
 		etcdCli:      etcdCli,
-		redisCli:     redisCli,
+		redisCli:     redisCli, // nil if RedisAddr is empty (etcd mode)
 		routingStore: routingStore,
 		nodeRegistry: nodeRegistry,
 		nodeCatalog:  nodeCatalog,
@@ -159,9 +165,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	defer sess.Close() //nolint:errcheck — resign on shutdown
 
-	// 2. Restore YAML policy from Redis.
-	if yamlStr, err := cluster.LoadRedisPolicy(ctx, s.redisCli); err != nil {
-		slog.Warn("pm: load policy from redis failed", "err", err)
+	// 2. Restore YAML policy from Redis or etcd.
+	if yamlStr, err := s.loadPolicy(ctx); err != nil {
+		slog.Warn("pm: load policy failed", "err", err)
 	} else if yamlStr != "" {
 		if pol, runnerCfg, parseErr := policy.ParsePolicy([]byte(yamlStr)); parseErr != nil {
 			slog.Warn("pm: stored policy parse failed", "err", parseErr)
@@ -634,7 +640,7 @@ func (s *Server) isAutoActive() bool {
 // applyPolicy applies a YAML-based policy and restarts the balancerRunner.
 // pol and runnerCfg are obtained from policy.ParsePolicy.
 func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.BalancePolicy, runnerCfg *policy.RunnerConfig) error {
-	if err := cluster.SaveRedisPolicy(ctx, s.redisCli, yamlStr); err != nil {
+	if err := s.savePolicy(ctx, yamlStr); err != nil {
 		return err
 	}
 	s.policyMu.Lock()
@@ -655,7 +661,7 @@ func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.B
 
 // clearPolicy removes the YAML policy and reverts to cfg.BalancePolicy (the code-injected policy).
 func (s *Server) clearPolicy(ctx context.Context) error {
-	if err := cluster.ClearRedisPolicy(ctx, s.redisCli); err != nil {
+	if err := s.clearPolicyStore(ctx); err != nil {
 		return err
 	}
 	s.policyMu.Lock()
@@ -945,4 +951,27 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 			slog.Warn("pm: resumePendingWork: unknown work type", "type", work.Type, "work_id", work.ID)
 		}
 	}
+}
+
+// ── Policy store helpers (Redis or etcd depending on cfg.RedisAddr) ──────────
+
+func (s *Server) loadPolicy(ctx context.Context) (string, error) {
+	if s.redisCli != nil {
+		return cluster.LoadRedisPolicy(ctx, s.redisCli)
+	}
+	return cluster.LoadPolicy(ctx, s.etcdCli)
+}
+
+func (s *Server) savePolicy(ctx context.Context, yamlStr string) error {
+	if s.redisCli != nil {
+		return cluster.SaveRedisPolicy(ctx, s.redisCli, yamlStr)
+	}
+	return cluster.SavePolicy(ctx, s.etcdCli, yamlStr)
+}
+
+func (s *Server) clearPolicyStore(ctx context.Context) error {
+	if s.redisCli != nil {
+		return cluster.ClearRedisPolicy(ctx, s.redisCli)
+	}
+	return cluster.ClearPolicy(ctx, s.etcdCli)
 }
