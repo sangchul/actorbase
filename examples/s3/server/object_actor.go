@@ -6,43 +6,9 @@ import (
 	"sort"
 	"time"
 
+	s3common "github.com/sangchul/actorbase/examples/s3/common"
 	"github.com/sangchul/actorbase/provider"
 )
-
-// ObjectRequest is an object metadata request.
-// The routing key is in the form "{bucket}/{key}".
-type ObjectRequest struct {
-	Op           string `json:"op"`            // "put", "get", "delete", "list"
-	Bucket       string `json:"bucket"`        // bucket name
-	Key          string `json:"key"`           // object key
-	Size         int64  `json:"size"`          // used only for "put" (bytes)
-	ETag         string `json:"etag"`          // used only for "put"
-	StorageClass string `json:"storage_class"` // used only for "put" (STANDARD, etc.)
-	StartKey     string `json:"start_key"`     // used for "list" (inclusive)
-	EndKey       string `json:"end_key"`       // used for "list" (exclusive, ""=unbounded)
-}
-
-// ObjectItem is a single item in a list result.
-type ObjectItem struct {
-	Bucket       string    `json:"bucket"`
-	Key          string    `json:"key"`
-	Size         int64     `json:"size"`
-	ETag         string    `json:"etag"`
-	StorageClass string    `json:"storage_class"`
-	LastModified time.Time `json:"last_modified"`
-}
-
-// ObjectResponse is an object metadata response.
-type ObjectResponse struct {
-	Bucket       string       `json:"bucket"`
-	Key          string       `json:"key"`
-	Size         int64        `json:"size"`
-	ETag         string       `json:"etag"`
-	StorageClass string       `json:"storage_class"`
-	LastModified time.Time    `json:"last_modified"`
-	Found        bool         `json:"found"`
-	Items        []ObjectItem `json:"items"` // "list" results
-}
 
 type objectMeta struct {
 	Size         int64     `json:"size"`
@@ -66,7 +32,7 @@ func objKey(bucket, key string) string {
 	return bucket + "/" + key
 }
 
-func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResponse, []byte, error) {
+func (a *objectActor) Receive(_ provider.Context, req s3common.ObjectRequest) (s3common.ObjectResponse, []byte, error) {
 	k := objKey(req.Bucket, req.Key)
 	a.accessCt[k]++ // called only within the mailbox goroutine, so no separate synchronization needed
 	switch req.Op {
@@ -79,7 +45,7 @@ func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResp
 		}
 		a.objects[k] = meta
 		entry, _ := json.Marshal(objectWALOp{Op: "put", ObjKey: k, Meta: meta})
-		return ObjectResponse{
+		return s3common.ObjectResponse{
 			Bucket: req.Bucket, Key: req.Key,
 			Size: meta.Size, ETag: meta.ETag,
 			StorageClass: meta.StorageClass, LastModified: meta.LastModified,
@@ -89,9 +55,9 @@ func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResp
 	case "get":
 		meta, ok := a.objects[k]
 		if !ok {
-			return ObjectResponse{Found: false}, nil, nil
+			return s3common.ObjectResponse{Found: false}, nil, nil
 		}
-		return ObjectResponse{
+		return s3common.ObjectResponse{
 			Bucket: req.Bucket, Key: req.Key,
 			Size: meta.Size, ETag: meta.ETag,
 			StorageClass: meta.StorageClass, LastModified: meta.LastModified,
@@ -101,15 +67,15 @@ func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResp
 	case "delete":
 		delete(a.objects, k)
 		entry, _ := json.Marshal(objectWALOp{Op: "delete", ObjKey: k})
-		return ObjectResponse{Found: true}, entry, nil
+		return s3common.ObjectResponse{Found: true}, entry, nil
 
 	case "list":
-		var items []ObjectItem
+		var items []s3common.ObjectItem
 		for objK, meta := range a.objects {
 			if objK >= req.StartKey && (req.EndKey == "" || objK < req.EndKey) {
 				// routing key is in the form "{bucket}/{key}" — split into bucket and key
 				bucket, key := parseBucketKey(objK)
-				items = append(items, ObjectItem{
+				items = append(items, s3common.ObjectItem{
 					Bucket:       bucket,
 					Key:          key,
 					Size:         meta.Size,
@@ -122,10 +88,10 @@ func (a *objectActor) Receive(_ provider.Context, req ObjectRequest) (ObjectResp
 		sort.Slice(items, func(i, j int) bool {
 			return objKey(items[i].Bucket, items[i].Key) < objKey(items[j].Bucket, items[j].Key)
 		})
-		return ObjectResponse{Items: items}, nil, nil
+		return s3common.ObjectResponse{Items: items}, nil, nil
 
 	default:
-		return ObjectResponse{}, nil, fmt.Errorf("unknown object op: %s", req.Op)
+		return s3common.ObjectResponse{}, nil, fmt.Errorf("unknown object op: %s", req.Op)
 	}
 }
 

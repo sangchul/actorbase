@@ -1,4 +1,4 @@
-// examples/s3_server is an example of running an actorbase Partition Server as an S3 metadata server.
+// examples/s3/server is an example of running an actorbase Partition Server as an S3 metadata server.
 //
 // It registers two actor types — bucketActor and objectActor — on a single PS to manage
 // S3 bucket and object metadata using the actorbase cluster.
@@ -20,6 +20,7 @@ import (
 
 	"github.com/sangchul/actorbase/adapter/fs"
 	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	s3common "github.com/sangchul/actorbase/examples/s3/common"
 	"github.com/sangchul/actorbase/provider"
 	"github.com/sangchul/actorbase/ps"
 )
@@ -59,9 +60,9 @@ func main() {
 		EtcdEndpoints: strings.Split(*etcdAddrs, ","),
 	})
 
-	if err := ps.Register(builder, ps.TypeConfig[BucketRequest, BucketResponse]{
+	if err := ps.Register(builder, ps.TypeConfig[s3common.BucketRequest, s3common.BucketResponse]{
 		TypeID: "bucket",
-		Factory: func(_ string) provider.Actor[BucketRequest, BucketResponse] {
+		Factory: func(_ string) provider.Actor[s3common.BucketRequest, s3common.BucketResponse] {
 			return &bucketActor{buckets: make(map[string]bucketMeta)}
 		},
 		Codec:           adapterjson.New(),
@@ -72,9 +73,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := ps.Register(builder, ps.TypeConfig[ObjectRequest, ObjectResponse]{
+	if err := ps.Register(builder, ps.TypeConfig[s3common.ObjectRequest, s3common.ObjectResponse]{
 		TypeID: "object",
-		Factory: func(_ string) provider.Actor[ObjectRequest, ObjectResponse] {
+		Factory: func(_ string) provider.Actor[s3common.ObjectRequest, s3common.ObjectResponse] {
 			return &objectActor{objects: make(map[string]objectMeta), accessCt: make(map[string]int64)}
 		},
 		Codec:           adapterjson.New(),

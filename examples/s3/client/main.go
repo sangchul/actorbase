@@ -1,6 +1,6 @@
-// examples/s3_client is an example S3 metadata client using the actorbase SDK.
+// examples/s3/client is an example S3 metadata client using the actorbase SDK.
 //
-// Used together with s3_server, it allows bucket/object CRUD operations via CLI.
+// Used together with s3/server, it allows bucket/object CRUD operations via CLI.
 //
 // Usage:
 //
@@ -26,65 +26,9 @@ import (
 	"time"
 
 	adapterjson "github.com/sangchul/actorbase/adapter/json"
+	s3common "github.com/sangchul/actorbase/examples/s3/common"
 	"github.com/sangchul/actorbase/sdk"
 )
-
-// BucketRequest / BucketResponse — must match the types used by s3_server.
-
-type BucketRequest struct {
-	Op       string `json:"op"`
-	Name     string `json:"name"`
-	Region   string `json:"region"`
-	StartKey string `json:"start_key"`
-	EndKey   string `json:"end_key"`
-}
-
-type BucketItem struct {
-	Name      string    `json:"name"`
-	Region    string    `json:"region"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-type BucketResponse struct {
-	Name      string       `json:"name"`
-	Region    string       `json:"region"`
-	CreatedAt time.Time    `json:"created_at"`
-	Found     bool         `json:"found"`
-	Items     []BucketItem `json:"items"`
-}
-
-// ObjectRequest / ObjectResponse — must match the types used by s3_server.
-
-type ObjectRequest struct {
-	Op           string `json:"op"`
-	Bucket       string `json:"bucket"`
-	Key          string `json:"key"`
-	Size         int64  `json:"size"`
-	ETag         string `json:"etag"`
-	StorageClass string `json:"storage_class"`
-	StartKey     string `json:"start_key"`
-	EndKey       string `json:"end_key"`
-}
-
-type ObjectItem struct {
-	Bucket       string    `json:"bucket"`
-	Key          string    `json:"key"`
-	Size         int64     `json:"size"`
-	ETag         string    `json:"etag"`
-	StorageClass string    `json:"storage_class"`
-	LastModified time.Time `json:"last_modified"`
-}
-
-type ObjectResponse struct {
-	Bucket       string       `json:"bucket"`
-	Key          string       `json:"key"`
-	Size         int64        `json:"size"`
-	ETag         string       `json:"etag"`
-	StorageClass string       `json:"storage_class"`
-	LastModified time.Time    `json:"last_modified"`
-	Found        bool         `json:"found"`
-	Items        []ObjectItem `json:"items"`
-}
 
 func main() {
 	pmAddr := flag.String("pm", "localhost:8000", "PM gRPC address")
@@ -131,7 +75,7 @@ Resources:
 }
 
 func runBucket(ctx context.Context, pmAddr string) {
-	client, err := sdk.NewClient(sdk.Config[BucketRequest, BucketResponse]{
+	client, err := sdk.NewClient(sdk.Config[s3common.BucketRequest, s3common.BucketResponse]{
 		PMAddr: pmAddr,
 		TypeID: "bucket",
 		Codec:  adapterjson.New(),
@@ -153,7 +97,7 @@ func runBucket(ctx context.Context, pmAddr string) {
 			os.Exit(1)
 		}
 		name, region := flag.Arg(2), flag.Arg(3)
-		resp, err := client.Send(ctx, name, BucketRequest{Op: "create", Name: name, Region: region})
+		resp, err := client.Send(ctx, name, s3common.BucketRequest{Op: "create", Name: name, Region: region})
 		if err != nil {
 			slog.Error("bucket create failed", "err", err)
 			os.Exit(1)
@@ -167,7 +111,7 @@ func runBucket(ctx context.Context, pmAddr string) {
 			os.Exit(1)
 		}
 		name := flag.Arg(2)
-		resp, err := client.Send(ctx, name, BucketRequest{Op: "get", Name: name})
+		resp, err := client.Send(ctx, name, s3common.BucketRequest{Op: "get", Name: name})
 		if err != nil {
 			slog.Error("bucket get failed", "err", err)
 			os.Exit(1)
@@ -185,7 +129,7 @@ func runBucket(ctx context.Context, pmAddr string) {
 			os.Exit(1)
 		}
 		name := flag.Arg(2)
-		_, err := client.Send(ctx, name, BucketRequest{Op: "delete", Name: name})
+		_, err := client.Send(ctx, name, s3common.BucketRequest{Op: "delete", Name: name})
 		if err != nil {
 			slog.Error("bucket delete failed", "err", err)
 			os.Exit(1)
@@ -202,7 +146,7 @@ func runBucket(ctx context.Context, pmAddr string) {
 			// prefix range: [prefix, prefix with last byte incremented by 1)
 			endKey = prefixEnd(prefix)
 		}
-		req := BucketRequest{Op: "list", StartKey: prefix, EndKey: endKey}
+		req := s3common.BucketRequest{Op: "list", StartKey: prefix, EndKey: endKey}
 		partResults, err := client.Scan(ctx, prefix, endKey, req)
 		if err != nil {
 			slog.Error("bucket list failed", "err", err)
@@ -239,7 +183,7 @@ func prefixEnd(prefix string) string {
 }
 
 func runObject(ctx context.Context, pmAddr string) {
-	client, err := sdk.NewClient(sdk.Config[ObjectRequest, ObjectResponse]{
+	client, err := sdk.NewClient(sdk.Config[s3common.ObjectRequest, s3common.ObjectResponse]{
 		PMAddr: pmAddr,
 		TypeID: "object",
 		Codec:  adapterjson.New(),
@@ -269,7 +213,7 @@ func runObject(ctx context.Context, pmAddr string) {
 		etag := flag.Arg(5)
 		// routing key: "{bucket}/{key}"
 		routingKey := bucket + "/" + key
-		resp, err := client.Send(ctx, routingKey, ObjectRequest{
+		resp, err := client.Send(ctx, routingKey, s3common.ObjectRequest{
 			Op: "put", Bucket: bucket, Key: key,
 			Size: size, ETag: etag, StorageClass: "STANDARD",
 		})
@@ -287,7 +231,7 @@ func runObject(ctx context.Context, pmAddr string) {
 		}
 		bucket, key := flag.Arg(2), flag.Arg(3)
 		routingKey := bucket + "/" + key
-		resp, err := client.Send(ctx, routingKey, ObjectRequest{Op: "get", Bucket: bucket, Key: key})
+		resp, err := client.Send(ctx, routingKey, s3common.ObjectRequest{Op: "get", Bucket: bucket, Key: key})
 		if err != nil {
 			slog.Error("object get failed", "err", err)
 			os.Exit(1)
@@ -306,7 +250,7 @@ func runObject(ctx context.Context, pmAddr string) {
 		}
 		bucket, key := flag.Arg(2), flag.Arg(3)
 		routingKey := bucket + "/" + key
-		_, err := client.Send(ctx, routingKey, ObjectRequest{Op: "delete", Bucket: bucket, Key: key})
+		_, err := client.Send(ctx, routingKey, s3common.ObjectRequest{Op: "delete", Bucket: bucket, Key: key})
 		if err != nil {
 			slog.Error("object delete failed", "err", err)
 			os.Exit(1)
@@ -326,7 +270,7 @@ func runObject(ctx context.Context, pmAddr string) {
 		// object routing key: "{bucket}/{key}" — covers the range of all objects within the bucket
 		startKey := bucket + "/" + objPrefix
 		endKey := prefixEnd(bucket + "/" + objPrefix)
-		req := ObjectRequest{Op: "list", Bucket: bucket, StartKey: startKey, EndKey: endKey}
+		req := s3common.ObjectRequest{Op: "list", Bucket: bucket, StartKey: startKey, EndKey: endKey}
 		partResults, err := client.Scan(ctx, startKey, endKey, req)
 		if err != nil {
 			slog.Error("object list failed", "err", err)

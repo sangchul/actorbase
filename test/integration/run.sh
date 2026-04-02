@@ -8,7 +8,7 @@
 #   bash test/integration/run.sh 12 13     # 시나리오 12, 13만 실행
 #
 # 사전 요건:
-#   - etcd 실행 중 (localhost:2379)
+#   - etcd 바이너리가 PATH에 존재할 것 (스크립트가 직접 기동/종료)
 #   - go build 완료 (bin/ 디렉토리에 바이너리 존재)
 #     go build -o bin/pm ./cmd/pm
 #     go build -o bin/abctl ./cmd/abctl
@@ -58,6 +58,7 @@ BIN_DIR="$ROOT_DIR/bin"
 PM_ADDR="localhost:8000"
 PM2_ADDR="localhost:8003"
 ETCD_ADDR="localhost:2379"
+ETCD_DATA_DIR="/tmp/actorbase-itest/etcd"
 WAL_DIR="/tmp/actorbase-itest/wal"
 CKPT_DIR="/tmp/actorbase-itest/checkpoint"
 
@@ -81,6 +82,7 @@ PM2_LOG="$LOG_DIR/pm2.log"
 PS1_LOG="$LOG_DIR/ps1.log"
 PS2_LOG="$LOG_DIR/ps2.log"
 
+ETCD_PID=""
 PM_PID=""
 PM2_PID=""
 PM3_PID=""
@@ -176,6 +178,7 @@ cleanup() {
   [[ -n "$PM2_PID"  ]] && kill "$PM2_PID"  2>/dev/null || true
   [[ -n "$PM_PID"   ]] && kill "$PM_PID"   2>/dev/null || true
   pkill -f "kv_stress" 2>/dev/null || true
+  [[ -n "$ETCD_PID" ]] && kill "$ETCD_PID" 2>/dev/null || true
   if [[ "$WAL_BACKEND" == "redis" ]]; then
     redis-cli -u "redis://$REDIS_ADDR" FLUSHDB >/dev/null 2>&1 || true
   fi
@@ -200,12 +203,38 @@ for bin in pm abctl kv_server kv_client kv_stress; do
   fi
 done
 
-# ── etcd 확인 ─────────────────────────────────────────────────────────────────
+# ── etcd 기동 ─────────────────────────────────────────────────────────────────
 
-if ! etcdctl --endpoints="$ETCD_ADDR" endpoint health >/dev/null 2>&1; then
-  echo "ERROR: etcd is not running at $ETCD_ADDR"
+if ! command -v etcd >/dev/null 2>&1; then
+  echo "ERROR: etcd binary not found in PATH"
   exit 1
 fi
+
+rm -rf "$ETCD_DATA_DIR"
+mkdir -p "$ETCD_DATA_DIR"
+log "Starting etcd (data-dir: $ETCD_DATA_DIR)..."
+etcd \
+  --data-dir "$ETCD_DATA_DIR" \
+  --listen-client-urls "http://$ETCD_ADDR" \
+  --advertise-client-urls "http://$ETCD_ADDR" \
+  --listen-peer-urls "http://localhost:2380" \
+  --initial-advertise-peer-urls "http://localhost:2380" \
+  --log-level warn \
+  >"$LOG_DIR/etcd.log" 2>&1 &
+ETCD_PID=$!
+
+# etcd가 준비될 때까지 대기 (최대 10초)
+for i in $(seq 1 20); do
+  if etcdctl --endpoints="$ETCD_ADDR" endpoint health >/dev/null 2>&1; then
+    log "etcd ready (pid=$ETCD_PID)"
+    break
+  fi
+  sleep 0.5
+  if [[ $i -eq 20 ]]; then
+    echo "ERROR: etcd failed to start within 10s. See $LOG_DIR/etcd.log"
+    exit 1
+  fi
+done
 
 # ── Redis 확인 (WAL_BACKEND=redis 시) ─────────────────────────────────────────
 
@@ -257,8 +286,7 @@ fi
 
 # ── 환경 초기화 ───────────────────────────────────────────────────────────────
 
-log "Cleaning old data (etcd, WAL, checkpoint)..."
-etcdctl --endpoints="$ETCD_ADDR" del /actorbase/ --prefix >/dev/null 2>&1 || true
+log "Cleaning old data (WAL, checkpoint)..."
 if [[ "$WAL_BACKEND" == "redis" ]]; then
   redis-cli -u "redis://$REDIS_ADDR" FLUSHDB >/dev/null 2>&1 || true
 else
@@ -423,8 +451,8 @@ scenario_5() {
   sleep 15
 
   members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
-  assert_not_contains "ps-1이 members에서 제거됨" "ps-1" "$members"
-  assert_contains     "ps-2가 active 상태"        "ps-2" "$members"
+  assert_contains "ps-1이 Failed 상태 (SIGKILL)" "Failed" "$(echo "$members" | grep ps-1 || true)"
+  assert_contains "ps-2가 active 상태"           "ps-2"   "$members"
 
   assert_eq "failover 후 Version=4"         "4"  "$(routing_version)"
   assert_eq "하위 파티션이 ps-2로 이동됨"   "2"  "$(partitions_on_node ps-2)"
@@ -506,7 +534,7 @@ scenario_7() {
   assert_contains "drain 완료 로그 출력됨" "drain: partition migrated" "$drain_log"
 
   members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
-  assert_not_contains "ps-1이 members에서 제거됨 (SIGTERM)" "ps-1" "$members"
+  assert_contains "ps-1이 Waiting 상태 (SIGTERM 후 drain)" "Waiting" "$(echo "$members" | grep ps-1 || true)"
 
   # drain 후 ps-1 파티션이 ps-2로 이전되었는지
   assert_eq "drain 후 ps-2에 모든 파티션" "$(partition_count)" "$(partitions_on_node ps-2)"
@@ -671,8 +699,10 @@ scenario_10() {
   sleep 1
 
   # set 직후 stats → 활성 partition 1개 이상
+  # 새 테이블 형식: 파티션 있는 줄은 ps-2로 시작하며 파티션ID(UUID)가 4번째 컬럼
+  # 파티션 없는 노드는 ps-2 ... - - - - 형태
   stats_after_set=$("$BIN_DIR/abctl" -pm "$PM_ADDR" stats 2>/dev/null)
-  ps2_active_set=$(echo "$stats_after_set" | grep "Node: ps-2" | grep -oE 'partitions=[0-9]+' | grep -oE '[0-9]+' || echo "0")
+  ps2_active_set=$(echo "$stats_after_set" | awk '/^ps-2/ && $4 != "-" {count++} END {print count+0}')
   if [[ "$ps2_active_set" -gt 0 ]]; then
     pass "set 직후 actor active (ps-2 partitions=$ps2_active_set)"
   else
@@ -683,9 +713,9 @@ scenario_10() {
   log "EvictionScheduler 대기 (10s)..."
   sleep 10
 
-  # eviction 확인 → partitions=0
+  # eviction 확인 → partitions=0 (모든 줄에 파티션ID가 "-")
   stats_after_evict=$("$BIN_DIR/abctl" -pm "$PM_ADDR" stats 2>/dev/null)
-  ps2_active_evict=$(echo "$stats_after_evict" | grep "Node: ps-2" | grep -oE 'partitions=[0-9]+' | grep -oE '[0-9]+' || echo "0")
+  ps2_active_evict=$(echo "$stats_after_evict" | awk '/^ps-2/ && $4 != "-" {count++} END {print count+0}')
   assert_eq "EvictionScheduler 동작: actor evict됨 (partitions=0)" "0" "$ps2_active_evict"
 
   # re-activation: get 요청 → getOrActivate → checkpoint+WAL replay
@@ -695,7 +725,7 @@ scenario_10() {
 
   # re-activation 후 stats → partitions>0
   stats_after_get=$("$BIN_DIR/abctl" -pm "$PM_ADDR" stats 2>/dev/null)
-  ps2_active_get=$(echo "$stats_after_get" | grep "Node: ps-2" | grep -oE 'partitions=[0-9]+' | grep -oE '[0-9]+' || echo "0")
+  ps2_active_get=$(echo "$stats_after_get" | awk '/^ps-2/ && $4 != "-" {count++} END {print count+0}')
   if [[ "$ps2_active_get" -gt 0 ]]; then
     pass "re-activation 후 actor active 복원 (ps-2 partitions=$ps2_active_get)"
   else
@@ -760,7 +790,7 @@ scenario_11() {
   wait "$STRESS_PID" 2>/dev/null || true
 
   # 결과 파싱
-  stress_result=$(grep "완료:" "$STRESS_LOG" 2>/dev/null | tail -1 || true)
+  stress_result=$(grep "done:" "$STRESS_LOG" 2>/dev/null | tail -1 || true)
   log "kv_stress 결과: $stress_result"
   stress_fail=$(echo "$stress_result" | grep -oE 'fail=[0-9]+' | grep -oE '[0-9]+' || echo "999")
   stress_success=$(echo "$stress_result" | grep -oE 'success=[0-9]+' | grep -oE '[0-9]+' || echo "0")

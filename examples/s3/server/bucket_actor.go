@@ -6,33 +6,9 @@ import (
 	"sort"
 	"time"
 
+	s3common "github.com/sangchul/actorbase/examples/s3/common"
 	"github.com/sangchul/actorbase/provider"
 )
-
-// BucketRequest is a bucket metadata request.
-type BucketRequest struct {
-	Op       string `json:"op"`        // "create", "get", "delete", "list"
-	Name     string `json:"name"`      // bucket name (= routing key)
-	Region   string `json:"region"`    // used only for "create"
-	StartKey string `json:"start_key"` // used for "list" (inclusive)
-	EndKey   string `json:"end_key"`   // used for "list" (exclusive, ""=unbounded)
-}
-
-// BucketItem is a single item in a list result.
-type BucketItem struct {
-	Name      string    `json:"name"`
-	Region    string    `json:"region"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// BucketResponse is a bucket metadata response.
-type BucketResponse struct {
-	Name      string       `json:"name"`
-	Region    string       `json:"region"`
-	CreatedAt time.Time    `json:"created_at"`
-	Found     bool         `json:"found"`
-	Items     []BucketItem `json:"items"` // "list" results
-}
 
 type bucketMeta struct {
 	Region    string    `json:"region"`
@@ -49,38 +25,38 @@ type bucketActor struct {
 	buckets map[string]bucketMeta // name → meta
 }
 
-func (a *bucketActor) Receive(_ provider.Context, req BucketRequest) (BucketResponse, []byte, error) {
+func (a *bucketActor) Receive(_ provider.Context, req s3common.BucketRequest) (s3common.BucketResponse, []byte, error) {
 	switch req.Op {
 	case "create":
 		meta := bucketMeta{Region: req.Region, CreatedAt: time.Now().UTC()}
 		a.buckets[req.Name] = meta
 		entry, _ := json.Marshal(bucketWALOp{Op: "create", Name: req.Name, Meta: meta})
-		return BucketResponse{Name: req.Name, Region: meta.Region, CreatedAt: meta.CreatedAt, Found: true}, entry, nil
+		return s3common.BucketResponse{Name: req.Name, Region: meta.Region, CreatedAt: meta.CreatedAt, Found: true}, entry, nil
 
 	case "get":
 		meta, ok := a.buckets[req.Name]
 		if !ok {
-			return BucketResponse{Found: false}, nil, nil
+			return s3common.BucketResponse{Found: false}, nil, nil
 		}
-		return BucketResponse{Name: req.Name, Region: meta.Region, CreatedAt: meta.CreatedAt, Found: true}, nil, nil
+		return s3common.BucketResponse{Name: req.Name, Region: meta.Region, CreatedAt: meta.CreatedAt, Found: true}, nil, nil
 
 	case "delete":
 		delete(a.buckets, req.Name)
 		entry, _ := json.Marshal(bucketWALOp{Op: "delete", Name: req.Name})
-		return BucketResponse{Found: true}, entry, nil
+		return s3common.BucketResponse{Found: true}, entry, nil
 
 	case "list":
-		var items []BucketItem
+		var items []s3common.BucketItem
 		for name, meta := range a.buckets {
 			if name >= req.StartKey && (req.EndKey == "" || name < req.EndKey) {
-				items = append(items, BucketItem{Name: name, Region: meta.Region, CreatedAt: meta.CreatedAt})
+				items = append(items, s3common.BucketItem{Name: name, Region: meta.Region, CreatedAt: meta.CreatedAt})
 			}
 		}
 		sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-		return BucketResponse{Items: items}, nil, nil
+		return s3common.BucketResponse{Items: items}, nil, nil
 
 	default:
-		return BucketResponse{}, nil, fmt.Errorf("unknown bucket op: %s", req.Op)
+		return s3common.BucketResponse{}, nil, fmt.Errorf("unknown bucket op: %s", req.Op)
 	}
 }
 
