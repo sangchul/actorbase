@@ -185,6 +185,7 @@ const (
 	PartitionManagerService_AddNode_FullMethodName         = "/actorbase.v1.PartitionManagerService/AddNode"
 	PartitionManagerService_RemoveNode_FullMethodName      = "/actorbase.v1.PartitionManagerService/RemoveNode"
 	PartitionManagerService_ResetNode_FullMethodName       = "/actorbase.v1.PartitionManagerService/ResetNode"
+	PartitionManagerService_GetQueueStatus_FullMethodName  = "/actorbase.v1.PartitionManagerService/GetQueueStatus"
 )
 
 // PartitionManagerServiceClient is the client API for PartitionManagerService service.
@@ -229,6 +230,9 @@ type PartitionManagerServiceClient interface {
 	// ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
 	// Called by abctl node reset after the operator has diagnosed the failure.
 	ResetNode(ctx context.Context, in *ResetNodeRequest, opts ...grpc.CallOption) (*ResetNodeResponse, error)
+	// GetQueueStatus returns the current state of the PM task queue:
+	// the running task (if any), all pending tasks, and recent history.
+	GetQueueStatus(ctx context.Context, in *GetQueueStatusRequest, opts ...grpc.CallOption) (*GetQueueStatusResponse, error)
 }
 
 type partitionManagerServiceClient struct {
@@ -388,6 +392,16 @@ func (c *partitionManagerServiceClient) ResetNode(ctx context.Context, in *Reset
 	return out, nil
 }
 
+func (c *partitionManagerServiceClient) GetQueueStatus(ctx context.Context, in *GetQueueStatusRequest, opts ...grpc.CallOption) (*GetQueueStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetQueueStatusResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_GetQueueStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PartitionManagerServiceServer is the server API for PartitionManagerService service.
 // All implementations must embed UnimplementedPartitionManagerServiceServer
 // for forward compatibility.
@@ -430,6 +444,9 @@ type PartitionManagerServiceServer interface {
 	// ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
 	// Called by abctl node reset after the operator has diagnosed the failure.
 	ResetNode(context.Context, *ResetNodeRequest) (*ResetNodeResponse, error)
+	// GetQueueStatus returns the current state of the PM task queue:
+	// the running task (if any), all pending tasks, and recent history.
+	GetQueueStatus(context.Context, *GetQueueStatusRequest) (*GetQueueStatusResponse, error)
 	mustEmbedUnimplementedPartitionManagerServiceServer()
 }
 
@@ -481,6 +498,9 @@ func (UnimplementedPartitionManagerServiceServer) RemoveNode(context.Context, *R
 }
 func (UnimplementedPartitionManagerServiceServer) ResetNode(context.Context, *ResetNodeRequest) (*ResetNodeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResetNode not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) GetQueueStatus(context.Context, *GetQueueStatusRequest) (*GetQueueStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetQueueStatus not implemented")
 }
 func (UnimplementedPartitionManagerServiceServer) mustEmbedUnimplementedPartitionManagerServiceServer() {
 }
@@ -749,6 +769,24 @@ func _PartitionManagerService_ResetNode_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PartitionManagerService_GetQueueStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetQueueStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).GetQueueStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_GetQueueStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).GetQueueStatus(ctx, req.(*GetQueueStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PartitionManagerService_ServiceDesc is the grpc.ServiceDesc for PartitionManagerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -807,6 +845,10 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResetNode",
 			Handler:    _PartitionManagerService_ResetNode_Handler,
+		},
+		{
+			MethodName: "GetQueueStatus",
+			Handler:    _PartitionManagerService_GetQueueStatus_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

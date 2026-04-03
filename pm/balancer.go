@@ -3,7 +3,6 @@ package pm
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -12,12 +11,14 @@ import (
 	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/internal/transport"
 	pb "github.com/sangchul/actorbase/internal/transport/proto"
+	"github.com/sangchul/actorbase/pm/taskqueue"
 	"github.com/sangchul/actorbase/policy"
 	"github.com/sangchul/actorbase/provider"
 )
 
-// balancerRunner calls policy.Evaluate on every check_interval and executes the returned actions.
-// The load-balancing decision logic is delegated to the provider.BalancePolicy implementation.
+
+// balancerRunner calls policy.Evaluate on every check_interval and submits the returned actions
+// to the shared task queue. The load-balancing decision logic is delegated to provider.BalancePolicy.
 type balancerRunner struct {
 	cfg          *policy.RunnerConfig
 	pol          provider.BalancePolicy
@@ -27,13 +28,12 @@ type balancerRunner struct {
 	nodeCatalog  cluster.NodeCatalog
 	routingStore cluster.RoutingTableStore
 	psFactory    transport.PSClientFactory
-	opMu         *sync.Mutex
+	queue        *taskqueue.Queue
 
 	mu                  sync.Mutex
 	globalLastAction    time.Time
 	partitionLastAction map[string]time.Time
 }
-
 
 func newBalancerRunner(
 	cfg *policy.RunnerConfig,
@@ -41,10 +41,10 @@ func newBalancerRunner(
 	splitter pmSplitter,
 	migrator pmMigrator,
 	merger pmMerger,
-	nodeCatalog  cluster.NodeCatalog,
+	nodeCatalog cluster.NodeCatalog,
 	routingStore cluster.RoutingTableStore,
 	psFactory transport.PSClientFactory,
-	opMu *sync.Mutex,
+	queue *taskqueue.Queue,
 ) *balancerRunner {
 	return &balancerRunner{
 		cfg:                 cfg,
@@ -55,7 +55,7 @@ func newBalancerRunner(
 		nodeCatalog:         nodeCatalog,
 		routingStore:        routingStore,
 		psFactory:           psFactory,
-		opMu:                opMu,
+		queue:               queue,
 		partitionLastAction: make(map[string]time.Time),
 	}
 }
@@ -207,61 +207,36 @@ func (r *balancerRunner) buildClusterStats(ctx context.Context, nodes []domain.N
 	return provider.ClusterStats{Nodes: nodeStats}
 }
 
-// executeActions executes the list of actions returned by the policy in order.
-func (r *balancerRunner) executeActions(ctx context.Context, actions []provider.BalanceAction) {
+// executeActions submits the list of actions returned by the policy to the task queue.
+// Actions are fire-and-forget (PriorityAuto); cooldown is marked on submit time.
+func (r *balancerRunner) executeActions(_ context.Context, actions []provider.BalanceAction) {
 	for _, action := range actions {
 		switch action.Type {
 		case provider.ActionSplit:
 			slog.Info("autoBalancer: split triggered",
 				"partition", action.PartitionID, "actor_type", action.ActorType)
-			r.opMu.Lock()
-			newID, err := r.splitter.Split(ctx, action.ActorType, action.PartitionID, "", "")
-			r.opMu.Unlock()
-			if err != nil {
-				slog.Error("autoBalancer: split failed", "partition", action.PartitionID, "err", err)
-				continue
-			}
-			slog.Info("autoBalancer: split done", "partition", action.PartitionID, "new_partition", newID)
+			r.queue.Submit(taskqueue.PriorityAuto, "split", action.ActorType, action.PartitionID,
+				splitTaskParams{ActorType: action.ActorType, PartitionID: action.PartitionID})
 			r.markAction(action.PartitionID)
 
 		case provider.ActionMigrate:
 			slog.Info("autoBalancer: migrate triggered",
 				"partition", action.PartitionID, "target", action.TargetNode)
-			r.opMu.Lock()
-			err := r.migrator.Migrate(ctx, action.ActorType, action.PartitionID, action.TargetNode)
-			r.opMu.Unlock()
-			if err != nil {
-				slog.Error("autoBalancer: migrate failed", "partition", action.PartitionID, "err", err)
-				continue
-			}
-			slog.Info("autoBalancer: migrate done", "partition", action.PartitionID, "to", action.TargetNode)
+			r.queue.Submit(taskqueue.PriorityAuto, "migrate", action.ActorType, action.PartitionID,
+				migrateTaskParams{ActorType: action.ActorType, PartitionID: action.PartitionID, TargetNodeID: action.TargetNode})
 			r.markAction(action.PartitionID)
 
 		case provider.ActionFailover:
 			slog.Info("autoBalancer: failover triggered",
 				"partition", action.PartitionID, "target", action.TargetNode)
-			r.opMu.Lock()
-			err := r.migrator.Failover(ctx, action.PartitionID, action.TargetNode)
-			r.opMu.Unlock()
-			if err != nil {
-				slog.Error("autoBalancer: failover failed", "partition", action.PartitionID, "err", err)
-				continue
-			}
-			slog.Info("autoBalancer: failover done", "partition", action.PartitionID, "to", action.TargetNode)
+			r.queue.Submit(taskqueue.PriorityFailover, "failover", action.ActorType, action.PartitionID,
+				failoverTaskParams{PartitionID: action.PartitionID, TargetNodeID: action.TargetNode})
 
 		case provider.ActionMerge:
 			slog.Info("autoBalancer: merge triggered",
 				"lower", action.PartitionID, "upper", action.MergeTarget, "actor_type", action.ActorType)
-			r.opMu.Lock()
-			err := r.ensureSameNodeAndMerge(ctx, action)
-			r.opMu.Unlock()
-			if err != nil {
-				slog.Error("autoBalancer: merge failed",
-					"lower", action.PartitionID, "upper", action.MergeTarget, "err", err)
-				continue
-			}
-			slog.Info("autoBalancer: merge done",
-				"lower", action.PartitionID, "upper", action.MergeTarget)
+			r.queue.Submit(taskqueue.PriorityAuto, "merge", action.ActorType, action.PartitionID,
+				mergeTaskParams{ActorType: action.ActorType, LowerID: action.PartitionID, UpperID: action.MergeTarget, AutoMigrate: true})
 			r.markAction(action.PartitionID)
 		}
 	}
@@ -280,36 +255,6 @@ func (r *balancerRunner) isPartitionCooldown(partitionID string) bool {
 	defer r.mu.Unlock()
 	t, ok := r.partitionLastAction[partitionID]
 	return ok && time.Since(t) < r.cfg.Cooldown.Partition
-}
-
-// ensureSameNodeAndMerge checks whether lower and upper are on the same node;
-// if not, migrates upper to the lower's node before executing the merge.
-// opMu must be held by the caller.
-func (r *balancerRunner) ensureSameNodeAndMerge(ctx context.Context, action provider.BalanceAction) error {
-	rt, err := r.routingStore.Load(ctx)
-	if err != nil || rt == nil {
-		return fmt.Errorf("load routing table: %w", err)
-	}
-
-	lowerEntry, ok := rt.LookupByPartition(action.PartitionID)
-	if !ok {
-		return fmt.Errorf("lower partition %s not found", action.PartitionID)
-	}
-	upperEntry, ok := rt.LookupByPartition(action.MergeTarget)
-	if !ok {
-		return fmt.Errorf("upper partition %s not found", action.MergeTarget)
-	}
-
-	// If they are on different nodes, migrate upper to the lower's node.
-	if lowerEntry.Node.ID != upperEntry.Node.ID {
-		slog.Info("autoBalancer: merge: migrating upper to lower's node",
-			"upper", action.MergeTarget, "from", upperEntry.Node.ID, "to", lowerEntry.Node.ID)
-		if err := r.migrator.Migrate(ctx, action.ActorType, action.MergeTarget, lowerEntry.Node.ID); err != nil {
-			return fmt.Errorf("migrate upper to same node: %w", err)
-		}
-	}
-
-	return r.merger.Merge(ctx, action.ActorType, action.PartitionID, action.MergeTarget)
 }
 
 // errDeadNode is a sentinel error used inside buildClusterStats to mark a dead node.

@@ -349,6 +349,16 @@ func (c *PMClient) GetClusterStats(ctx context.Context, nodeID string) ([]NodeSt
 	return result, nil
 }
 
+// GetQueueStatus retrieves the PM task queue state: running task, pending
+// tasks, and recent history.
+func (c *PMClient) GetQueueStatus(ctx context.Context) (*pb.GetQueueStatusResponse, error) {
+	resp, err := c.client.GetQueueStatus(ctx, &pb.GetQueueStatusRequest{})
+	if err != nil {
+		return nil, fromGRPCStatus(err)
+	}
+	return resp, nil
+}
+
 // ── PSController interface (PM → PS, control plane) ──────────────────────────
 
 // PSController is the interface for PM → PS control-plane operations.

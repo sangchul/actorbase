@@ -12,6 +12,8 @@
 //	migrate <actor-type> <partition-id> <node-id>                      Request a partition migrate
 //	merge <actor-type> <lower-partition-id> <upper-partition-id>       Request a merge of adjacent partitions
 //	stats [node-id]                                                    Print cluster (or specific node) statistics
+//	queue                                                              Show running/pending/history tasks
+//	queue history                                                      Show full task history
 //	node add <node-id> <addr>                                          Pre-register a node (Waiting)
 //	node remove <node-id>                                              Remove a Waiting or Failed node
 //	node reset <node-id>                                               Reset a Failed node to Waiting
@@ -27,6 +29,7 @@ import (
 
 	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/pm"
+	"github.com/sangchul/actorbase/pm/taskqueue"
 )
 
 func main() {
@@ -90,6 +93,9 @@ func main() {
 			os.Exit(1)
 		}
 		cmdMerge(cfg, flag.Arg(1), flag.Arg(2), flag.Arg(3))
+	case "queue":
+		historyOnly := flag.NArg() >= 2 && flag.Arg(1) == "history"
+		cmdQueue(cfg, historyOnly)
 	case "node":
 		if flag.NArg() < 2 {
 			fmt.Fprintln(os.Stderr, "usage: abctl node <add <node-id> <addr>|remove <node-id>|reset <node-id>>")
@@ -138,6 +144,8 @@ Commands:
   migrate <actor-type> <partition-id> <node-id>    Migrate a partition to the target node
   merge <actor-type> <lower-id> <upper-id>         Merge two adjacent partitions
   stats [node-id]                                  Show cluster stats (or specific node)
+  queue                                            Show running/pending tasks + recent history
+  queue history                                    Show full task history (up to 100 entries)
   policy apply <file>                              Apply policy YAML (activate AutoPolicy)
   policy get                                       Show current policy
   policy clear                                     Remove policy (revert to ManualPolicy)
@@ -348,6 +356,127 @@ func nodeStatusLabel(s domain.NodeStatus) string {
 		return "Failed"
 	default:
 		return fmt.Sprintf("Unknown(%d)", s)
+	}
+}
+
+func cmdQueue(cfg *Config, historyOnly bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	resp, err := client.GetQueueStatus(ctx)
+	if err != nil {
+		slog.Error("get queue status failed", "err", err)
+		os.Exit(1)
+	}
+
+	if resp.Running == nil && len(resp.Pending) == 0 && len(resp.History) == 0 {
+		fmt.Println("queue is empty (no running, pending, or history tasks)")
+		return
+	}
+
+	if !historyOnly {
+		// Running task
+		fmt.Println("RUNNING:")
+		if resp.Running == nil {
+			fmt.Println("  (idle)")
+		} else {
+			t := resp.Running
+			fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %s\n",
+				"TASK-ID", "TYPE", "PRIORITY", "ACTOR-TYPE", "PARTITION-ID", "ELAPSED")
+			fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %s\n",
+				"------------------------------------", "--------", "--------",
+				"------------", "------------------------------------", "-------")
+			elapsed := ""
+			if t.StartedAt != 0 {
+				elapsed = time.Since(time.Unix(0, t.StartedAt)).Round(time.Millisecond).String()
+			}
+			fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %s\n",
+				t.TaskId, t.Type, priorityLabel(t.Priority), t.ActorType, t.PartitionId, elapsed)
+		}
+		fmt.Println()
+
+		// Pending tasks
+		fmt.Printf("PENDING (%d):\n", len(resp.Pending))
+		if len(resp.Pending) == 0 {
+			fmt.Println("  (none)")
+		} else {
+			fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %s\n",
+				"TASK-ID", "TYPE", "PRIORITY", "ACTOR-TYPE", "PARTITION-ID", "SUBMITTED")
+			fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %s\n",
+				"------------------------------------", "--------", "--------",
+				"------------", "------------------------------------", "-------------------")
+			for _, t := range resp.Pending {
+				submitted := time.Unix(0, t.SubmittedAt).Format("15:04:05.000")
+				fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %s\n",
+					t.TaskId, t.Type, priorityLabel(t.Priority), t.ActorType, t.PartitionId, submitted)
+			}
+		}
+		fmt.Println()
+	}
+
+	// History
+	histSlice := resp.History
+	limit := 20
+	if historyOnly {
+		limit = 100
+	}
+	if len(histSlice) > limit {
+		histSlice = histSlice[:limit]
+	}
+
+	if historyOnly {
+		fmt.Printf("HISTORY (last %d):\n", len(histSlice))
+	} else {
+		fmt.Printf("HISTORY (last %d):\n", len(histSlice))
+	}
+	if len(histSlice) == 0 {
+		fmt.Println("  (none)")
+	} else {
+		fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %-6s  %-8s  %s\n",
+			"TASK-ID", "TYPE", "PRIORITY", "ACTOR-TYPE", "PARTITION-ID", "STATUS", "DURATION", "ERROR")
+		fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %-6s  %-8s  %s\n",
+			"------------------------------------", "--------", "--------",
+			"------------", "------------------------------------", "------", "--------", "-----")
+		for _, t := range histSlice {
+			statusLabel := queueStatusLabel(t.Status)
+			duration := ""
+			if t.StartedAt != 0 && t.FinishedAt != 0 {
+				d := time.Duration(t.FinishedAt - t.StartedAt)
+				duration = d.Round(time.Millisecond).String()
+			}
+			errStr := t.Error
+			if len(errStr) > 40 {
+				errStr = errStr[:37] + "..."
+			}
+			fmt.Printf("  %-36s  %-8s  %-8s  %-12s  %-36s  %-6s  %-8s  %s\n",
+				t.TaskId, t.Type, priorityLabel(t.Priority), t.ActorType, t.PartitionId,
+				statusLabel, duration, errStr)
+		}
+	}
+}
+
+func priorityLabel(p int32) string {
+	switch taskqueue.Priority(p) {
+	case taskqueue.PriorityFailover:
+		return "failover"
+	case taskqueue.PriorityManual:
+		return "manual"
+	case taskqueue.PriorityAuto:
+		return "auto"
+	default:
+		return fmt.Sprintf("pri%d", p)
+	}
+}
+
+func queueStatusLabel(s string) string {
+	switch s {
+	case "done":
+		return "OK"
+	case "failed":
+		return "FAIL"
+	default:
+		return s
 	}
 }
 

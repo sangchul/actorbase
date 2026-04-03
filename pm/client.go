@@ -8,6 +8,7 @@ import (
 
 	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/internal/transport"
+	pb "github.com/sangchul/actorbase/internal/transport/proto"
 )
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -166,6 +167,11 @@ func (c *Client) GetPolicy(ctx context.Context) (yamlStr string, active bool, er
 // ClearPolicy removes AutoPolicy and reverts to the default policy.
 func (c *Client) ClearPolicy(ctx context.Context) error {
 	return c.inner.ClearPolicy(ctx)
+}
+
+// GetQueueStatus returns the current PM task queue state (running, pending, history).
+func (c *Client) GetQueueStatus(ctx context.Context) (*pb.GetQueueStatusResponse, error) {
+	return c.inner.GetQueueStatus(ctx)
 }
 
 // GetClusterStats returns statistics for the entire cluster (or a specific node).

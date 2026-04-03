@@ -11,6 +11,7 @@ import (
 	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/internal/transport"
 	pb "github.com/sangchul/actorbase/internal/transport/proto"
+	"github.com/sangchul/actorbase/pm/taskqueue"
 	"github.com/sangchul/actorbase/policy"
 )
 
@@ -64,13 +65,13 @@ func (h *managerHandler) RequestSplit(
 		return nil, status.Error(codes.PermissionDenied,
 			"manual split not allowed while AutoPolicy is active (use abctl policy clear to disable)")
 	}
-	h.server.opMu.Lock()
-	defer h.server.opMu.Unlock()
-
-	newPartitionID, err := h.server.doSplit(ctx, req.ActorType, req.PartitionId, req.SplitKey)
-	if err != nil {
+	taskID := h.server.queue.Submit(taskqueue.PriorityManual, "split", req.ActorType, req.PartitionId,
+		splitTaskParams{ActorType: req.ActorType, PartitionID: req.PartitionId, SplitKey: req.SplitKey})
+	if err := h.server.queue.Wait(ctx, taskID); err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
+	// Retrieve the new partition ID from the task output stored by executeTask.
+	newPartitionID, _ := h.server.queue.TaskByID(taskID).Output.(string)
 	return &pb.SplitResponse{NewPartitionId: newPartitionID}, nil
 }
 
@@ -84,10 +85,9 @@ func (h *managerHandler) RequestMigrate(
 		return nil, status.Error(codes.PermissionDenied,
 			"manual migrate not allowed while AutoPolicy is active (use abctl policy clear to disable)")
 	}
-	h.server.opMu.Lock()
-	defer h.server.opMu.Unlock()
-
-	if err := h.server.doMigrate(ctx, req.ActorType, req.PartitionId, req.TargetNodeId); err != nil {
+	taskID := h.server.queue.Submit(taskqueue.PriorityManual, "migrate", req.ActorType, req.PartitionId,
+		migrateTaskParams{ActorType: req.ActorType, PartitionID: req.PartitionId, TargetNodeID: req.TargetNodeId})
+	if err := h.server.queue.Wait(ctx, taskID); err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
 	return &pb.MigrateResponse{}, nil
@@ -103,10 +103,9 @@ func (h *managerHandler) RequestMerge(
 		return nil, status.Error(codes.PermissionDenied,
 			"manual merge not allowed while AutoPolicy is active (use abctl policy clear to disable)")
 	}
-	h.server.opMu.Lock()
-	defer h.server.opMu.Unlock()
-
-	if err := h.server.doMerge(ctx, req.ActorType, req.LowerPartitionId, req.UpperPartitionId); err != nil {
+	taskID := h.server.queue.Submit(taskqueue.PriorityManual, "merge", req.ActorType, req.LowerPartitionId,
+		mergeTaskParams{ActorType: req.ActorType, LowerID: req.LowerPartitionId, UpperID: req.UpperPartitionId})
+	if err := h.server.queue.Wait(ctx, taskID); err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
 	return &pb.MergeResponse{}, nil
@@ -366,6 +365,50 @@ func (h *managerHandler) ResetNode(
 		return nil, transport.ToGRPCStatus(err)
 	}
 	return &pb.ResetNodeResponse{}, nil
+}
+
+// GetQueueStatus returns the current PM task queue state.
+func (h *managerHandler) GetQueueStatus(
+	_ context.Context,
+	_ *pb.GetQueueStatusRequest,
+) (*pb.GetQueueStatusResponse, error) {
+	s := h.server.queue.Status()
+	resp := &pb.GetQueueStatusResponse{
+		Pending: make([]*pb.QueueTaskInfo, 0, len(s.Pending)),
+		History: make([]*pb.QueueTaskInfo, 0, len(s.History)),
+	}
+	if s.Running != nil {
+		resp.Running = taskToProto(s.Running)
+	}
+	for i := range s.Pending {
+		resp.Pending = append(resp.Pending, taskToProto(&s.Pending[i]))
+	}
+	for i := range s.History {
+		resp.History = append(resp.History, taskToProto(&s.History[i]))
+	}
+	return resp, nil
+}
+
+func taskToProto(t *taskqueue.Task) *pb.QueueTaskInfo {
+	info := &pb.QueueTaskInfo{
+		TaskId:      t.ID,
+		Type:        t.Type,
+		ActorType:   t.ActorType,
+		PartitionId: t.PartitionID,
+		Priority:    int32(t.Priority),
+		Status:      t.Status,
+		SubmittedAt: t.SubmittedAt.UnixNano(),
+	}
+	if t.StartedAt != nil {
+		info.StartedAt = t.StartedAt.UnixNano()
+	}
+	if t.FinishedAt != nil {
+		info.FinishedAt = t.FinishedAt.UnixNano()
+	}
+	if t.Err != nil {
+		info.Error = t.Err.Error()
+	}
+	return info
 }
 
 // domainStatusToProto converts domain.NodeStatus to pb.NodeStatus.

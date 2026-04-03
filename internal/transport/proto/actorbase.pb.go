@@ -2017,6 +2017,218 @@ func (*ResetNodeResponse) Descriptor() ([]byte, []int) {
 	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{39}
 }
 
+type GetQueueStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetQueueStatusRequest) Reset() {
+	*x = GetQueueStatusRequest{}
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetQueueStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetQueueStatusRequest) ProtoMessage() {}
+
+func (x *GetQueueStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetQueueStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetQueueStatusRequest) Descriptor() ([]byte, []int) {
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{40}
+}
+
+type QueueTaskInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"` // "split" | "migrate" | "merge" | "failover"
+	ActorType     string                 `protobuf:"bytes,3,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"`
+	PartitionId   string                 `protobuf:"bytes,4,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
+	Priority      int32                  `protobuf:"varint,5,opt,name=priority,proto3" json:"priority,omitempty"`                          // 0=auto 1=manual 2=failover
+	Status        string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`                               // "pending" | "running" | "done" | "failed"
+	SubmittedAt   int64                  `protobuf:"varint,7,opt,name=submitted_at,json=submittedAt,proto3" json:"submitted_at,omitempty"` // unix nanoseconds
+	StartedAt     int64                  `protobuf:"varint,8,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`       // 0 if not started
+	FinishedAt    int64                  `protobuf:"varint,9,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`    // 0 if not finished
+	Error         string                 `protobuf:"bytes,10,opt,name=error,proto3" json:"error,omitempty"`                                // non-empty on failure
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueueTaskInfo) Reset() {
+	*x = QueueTaskInfo{}
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueueTaskInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueueTaskInfo) ProtoMessage() {}
+
+func (x *QueueTaskInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueueTaskInfo.ProtoReflect.Descriptor instead.
+func (*QueueTaskInfo) Descriptor() ([]byte, []int) {
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *QueueTaskInfo) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *QueueTaskInfo) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *QueueTaskInfo) GetActorType() string {
+	if x != nil {
+		return x.ActorType
+	}
+	return ""
+}
+
+func (x *QueueTaskInfo) GetPartitionId() string {
+	if x != nil {
+		return x.PartitionId
+	}
+	return ""
+}
+
+func (x *QueueTaskInfo) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *QueueTaskInfo) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *QueueTaskInfo) GetSubmittedAt() int64 {
+	if x != nil {
+		return x.SubmittedAt
+	}
+	return 0
+}
+
+func (x *QueueTaskInfo) GetStartedAt() int64 {
+	if x != nil {
+		return x.StartedAt
+	}
+	return 0
+}
+
+func (x *QueueTaskInfo) GetFinishedAt() int64 {
+	if x != nil {
+		return x.FinishedAt
+	}
+	return 0
+}
+
+func (x *QueueTaskInfo) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+type GetQueueStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Running       *QueueTaskInfo         `protobuf:"bytes,1,opt,name=running,proto3" json:"running,omitempty"` // null if idle
+	Pending       []*QueueTaskInfo       `protobuf:"bytes,2,rep,name=pending,proto3" json:"pending,omitempty"`
+	History       []*QueueTaskInfo       `protobuf:"bytes,3,rep,name=history,proto3" json:"history,omitempty"` // most-recent first
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetQueueStatusResponse) Reset() {
+	*x = GetQueueStatusResponse{}
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetQueueStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetQueueStatusResponse) ProtoMessage() {}
+
+func (x *GetQueueStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetQueueStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetQueueStatusResponse) Descriptor() ([]byte, []int) {
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *GetQueueStatusResponse) GetRunning() *QueueTaskInfo {
+	if x != nil {
+		return x.Running
+	}
+	return nil
+}
+
+func (x *GetQueueStatusResponse) GetPending() []*QueueTaskInfo {
+	if x != nil {
+		return x.Pending
+	}
+	return nil
+}
+
+func (x *GetQueueStatusResponse) GetHistory() []*QueueTaskInfo {
+	if x != nil {
+		return x.History
+	}
+	return nil
+}
+
 type PartitionStatsProto struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PartitionId   string                 `protobuf:"bytes,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
@@ -2029,7 +2241,7 @@ type PartitionStatsProto struct {
 
 func (x *PartitionStatsProto) Reset() {
 	*x = PartitionStatsProto{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[40]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2041,7 +2253,7 @@ func (x *PartitionStatsProto) String() string {
 func (*PartitionStatsProto) ProtoMessage() {}
 
 func (x *PartitionStatsProto) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[40]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2054,7 +2266,7 @@ func (x *PartitionStatsProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartitionStatsProto.ProtoReflect.Descriptor instead.
 func (*PartitionStatsProto) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{40}
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *PartitionStatsProto) GetPartitionId() string {
@@ -2093,7 +2305,7 @@ type GetStatsRequest struct {
 
 func (x *GetStatsRequest) Reset() {
 	*x = GetStatsRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[41]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2105,7 +2317,7 @@ func (x *GetStatsRequest) String() string {
 func (*GetStatsRequest) ProtoMessage() {}
 
 func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[41]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2118,7 +2330,7 @@ func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetStatsRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{41}
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{44}
 }
 
 type GetStatsResponse struct {
@@ -2132,7 +2344,7 @@ type GetStatsResponse struct {
 
 func (x *GetStatsResponse) Reset() {
 	*x = GetStatsResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[42]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2144,7 +2356,7 @@ func (x *GetStatsResponse) String() string {
 func (*GetStatsResponse) ProtoMessage() {}
 
 func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[42]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2157,7 +2369,7 @@ func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetStatsResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{42}
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *GetStatsResponse) GetPartitions() []*PartitionStatsProto {
@@ -2194,7 +2406,7 @@ type NodeStatsProto struct {
 
 func (x *NodeStatsProto) Reset() {
 	*x = NodeStatsProto{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[43]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2206,7 +2418,7 @@ func (x *NodeStatsProto) String() string {
 func (*NodeStatsProto) ProtoMessage() {}
 
 func (x *NodeStatsProto) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[43]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2219,7 +2431,7 @@ func (x *NodeStatsProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeStatsProto.ProtoReflect.Descriptor instead.
 func (*NodeStatsProto) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{43}
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *NodeStatsProto) GetNodeId() string {
@@ -2266,7 +2478,7 @@ type GetClusterStatsRequest struct {
 
 func (x *GetClusterStatsRequest) Reset() {
 	*x = GetClusterStatsRequest{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[44]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2278,7 +2490,7 @@ func (x *GetClusterStatsRequest) String() string {
 func (*GetClusterStatsRequest) ProtoMessage() {}
 
 func (x *GetClusterStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[44]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2291,7 +2503,7 @@ func (x *GetClusterStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetClusterStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetClusterStatsRequest) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{44}
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *GetClusterStatsRequest) GetNodeId() string {
@@ -2310,7 +2522,7 @@ type GetClusterStatsResponse struct {
 
 func (x *GetClusterStatsResponse) Reset() {
 	*x = GetClusterStatsResponse{}
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[45]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2322,7 +2534,7 @@ func (x *GetClusterStatsResponse) String() string {
 func (*GetClusterStatsResponse) ProtoMessage() {}
 
 func (x *GetClusterStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[45]
+	mi := &file_internal_transport_proto_actorbase_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2335,7 +2547,7 @@ func (x *GetClusterStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetClusterStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetClusterStatsResponse) Descriptor() ([]byte, []int) {
-	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{45}
+	return file_internal_transport_proto_actorbase_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *GetClusterStatsResponse) GetNodes() []*NodeStatsProto {
@@ -2467,7 +2679,27 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\x12RemoveNodeResponse\"+\n" +
 	"\x10ResetNodeRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"\x13\n" +
-	"\x11ResetNodeResponse\"\x86\x01\n" +
+	"\x11ResetNodeResponse\"\x17\n" +
+	"\x15GetQueueStatusRequest\"\xab\x02\n" +
+	"\rQueueTaskInfo\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x03 \x01(\tR\tactorType\x12!\n" +
+	"\fpartition_id\x18\x04 \x01(\tR\vpartitionId\x12\x1a\n" +
+	"\bpriority\x18\x05 \x01(\x05R\bpriority\x12\x16\n" +
+	"\x06status\x18\x06 \x01(\tR\x06status\x12!\n" +
+	"\fsubmitted_at\x18\a \x01(\x03R\vsubmittedAt\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\b \x01(\x03R\tstartedAt\x12\x1f\n" +
+	"\vfinished_at\x18\t \x01(\x03R\n" +
+	"finishedAt\x12\x14\n" +
+	"\x05error\x18\n" +
+	" \x01(\tR\x05error\"\xbd\x01\n" +
+	"\x16GetQueueStatusResponse\x125\n" +
+	"\arunning\x18\x01 \x01(\v2\x1b.actorbase.v1.QueueTaskInfoR\arunning\x125\n" +
+	"\apending\x18\x02 \x03(\v2\x1b.actorbase.v1.QueueTaskInfoR\apending\x125\n" +
+	"\ahistory\x18\x03 \x03(\v2\x1b.actorbase.v1.QueueTaskInfoR\ahistory\"\x86\x01\n" +
 	"\x13PartitionStatsProto\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12\x1d\n" +
 	"\n" +
@@ -2501,7 +2733,7 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\x12NODE_STATUS_FAILED\x10\x032\x90\x01\n" +
 	"\x10PartitionService\x12=\n" +
 	"\x04Send\x12\x19.actorbase.v1.SendRequest\x1a\x1a.actorbase.v1.SendResponse\x12=\n" +
-	"\x04Scan\x12\x19.actorbase.v1.ScanRequest\x1a\x1a.actorbase.v1.ScanResponse2\x95\t\n" +
+	"\x04Scan\x12\x19.actorbase.v1.ScanRequest\x1a\x1a.actorbase.v1.ScanResponse2\xf2\t\n" +
 	"\x17PartitionManagerService\x12T\n" +
 	"\fWatchRouting\x12!.actorbase.v1.WatchRoutingRequest\x1a\x1f.actorbase.v1.RoutingTableProto0\x01\x12G\n" +
 	"\fRequestSplit\x12\x1a.actorbase.v1.SplitRequest\x1a\x1b.actorbase.v1.SplitResponse\x12M\n" +
@@ -2517,7 +2749,8 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\aAddNode\x12\x1c.actorbase.v1.AddNodeRequest\x1a\x1d.actorbase.v1.AddNodeResponse\x12O\n" +
 	"\n" +
 	"RemoveNode\x12\x1f.actorbase.v1.RemoveNodeRequest\x1a .actorbase.v1.RemoveNodeResponse\x12L\n" +
-	"\tResetNode\x12\x1e.actorbase.v1.ResetNodeRequest\x1a\x1f.actorbase.v1.ResetNodeResponse2\xdb\x03\n" +
+	"\tResetNode\x12\x1e.actorbase.v1.ResetNodeRequest\x1a\x1f.actorbase.v1.ResetNodeResponse\x12[\n" +
+	"\x0eGetQueueStatus\x12#.actorbase.v1.GetQueueStatusRequest\x1a$.actorbase.v1.GetQueueStatusResponse2\xdb\x03\n" +
 	"\x17PartitionControlService\x12I\n" +
 	"\bGetStats\x12\x1d.actorbase.v1.GetStatsRequest\x1a\x1e.actorbase.v1.GetStatsResponse\x12U\n" +
 	"\fExecuteSplit\x12!.actorbase.v1.ExecuteSplitRequest\x1a\".actorbase.v1.ExecuteSplitResponse\x12d\n" +
@@ -2538,7 +2771,7 @@ func file_internal_transport_proto_actorbase_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_transport_proto_actorbase_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_transport_proto_actorbase_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_internal_transport_proto_actorbase_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_internal_transport_proto_actorbase_proto_goTypes = []any{
 	(NodeStatus)(0),                   // 0: actorbase.v1.NodeStatus
 	(*SendRequest)(nil),               // 1: actorbase.v1.SendRequest
@@ -2581,68 +2814,76 @@ var file_internal_transport_proto_actorbase_proto_goTypes = []any{
 	(*RemoveNodeResponse)(nil),        // 38: actorbase.v1.RemoveNodeResponse
 	(*ResetNodeRequest)(nil),          // 39: actorbase.v1.ResetNodeRequest
 	(*ResetNodeResponse)(nil),         // 40: actorbase.v1.ResetNodeResponse
-	(*PartitionStatsProto)(nil),       // 41: actorbase.v1.PartitionStatsProto
-	(*GetStatsRequest)(nil),           // 42: actorbase.v1.GetStatsRequest
-	(*GetStatsResponse)(nil),          // 43: actorbase.v1.GetStatsResponse
-	(*NodeStatsProto)(nil),            // 44: actorbase.v1.NodeStatsProto
-	(*GetClusterStatsRequest)(nil),    // 45: actorbase.v1.GetClusterStatsRequest
-	(*GetClusterStatsResponse)(nil),   // 46: actorbase.v1.GetClusterStatsResponse
+	(*GetQueueStatusRequest)(nil),     // 41: actorbase.v1.GetQueueStatusRequest
+	(*QueueTaskInfo)(nil),             // 42: actorbase.v1.QueueTaskInfo
+	(*GetQueueStatusResponse)(nil),    // 43: actorbase.v1.GetQueueStatusResponse
+	(*PartitionStatsProto)(nil),       // 44: actorbase.v1.PartitionStatsProto
+	(*GetStatsRequest)(nil),           // 45: actorbase.v1.GetStatsRequest
+	(*GetStatsResponse)(nil),          // 46: actorbase.v1.GetStatsResponse
+	(*NodeStatsProto)(nil),            // 47: actorbase.v1.NodeStatsProto
+	(*GetClusterStatsRequest)(nil),    // 48: actorbase.v1.GetClusterStatsRequest
+	(*GetClusterStatsResponse)(nil),   // 49: actorbase.v1.GetClusterStatsResponse
 }
 var file_internal_transport_proto_actorbase_proto_depIdxs = []int32{
 	0,  // 0: actorbase.v1.MemberInfo.status:type_name -> actorbase.v1.NodeStatus
 	13, // 1: actorbase.v1.ListMembersResponse.members:type_name -> actorbase.v1.MemberInfo
 	24, // 2: actorbase.v1.RoutingTableProto.entries:type_name -> actorbase.v1.RouteEntryProto
 	0,  // 3: actorbase.v1.RouteEntryProto.node_status:type_name -> actorbase.v1.NodeStatus
-	41, // 4: actorbase.v1.GetStatsResponse.partitions:type_name -> actorbase.v1.PartitionStatsProto
-	41, // 5: actorbase.v1.NodeStatsProto.partitions:type_name -> actorbase.v1.PartitionStatsProto
-	44, // 6: actorbase.v1.GetClusterStatsResponse.nodes:type_name -> actorbase.v1.NodeStatsProto
-	1,  // 7: actorbase.v1.PartitionService.Send:input_type -> actorbase.v1.SendRequest
-	3,  // 8: actorbase.v1.PartitionService.Scan:input_type -> actorbase.v1.ScanRequest
-	5,  // 9: actorbase.v1.PartitionManagerService.WatchRouting:input_type -> actorbase.v1.WatchRoutingRequest
-	6,  // 10: actorbase.v1.PartitionManagerService.RequestSplit:input_type -> actorbase.v1.SplitRequest
-	8,  // 11: actorbase.v1.PartitionManagerService.RequestMigrate:input_type -> actorbase.v1.MigrateRequest
-	10, // 12: actorbase.v1.PartitionManagerService.RequestMerge:input_type -> actorbase.v1.MergeRequest
-	12, // 13: actorbase.v1.PartitionManagerService.ListMembers:input_type -> actorbase.v1.ListMembersRequest
-	45, // 14: actorbase.v1.PartitionManagerService.GetClusterStats:input_type -> actorbase.v1.GetClusterStatsRequest
-	25, // 15: actorbase.v1.PartitionManagerService.ApplyPolicy:input_type -> actorbase.v1.ApplyPolicyRequest
-	27, // 16: actorbase.v1.PartitionManagerService.GetPolicy:input_type -> actorbase.v1.GetPolicyRequest
-	29, // 17: actorbase.v1.PartitionManagerService.ClearPolicy:input_type -> actorbase.v1.ClearPolicyRequest
-	31, // 18: actorbase.v1.PartitionManagerService.RequestJoin:input_type -> actorbase.v1.RequestJoinRequest
-	33, // 19: actorbase.v1.PartitionManagerService.SetNodeDraining:input_type -> actorbase.v1.SetNodeDrainingRequest
-	35, // 20: actorbase.v1.PartitionManagerService.AddNode:input_type -> actorbase.v1.AddNodeRequest
-	37, // 21: actorbase.v1.PartitionManagerService.RemoveNode:input_type -> actorbase.v1.RemoveNodeRequest
-	39, // 22: actorbase.v1.PartitionManagerService.ResetNode:input_type -> actorbase.v1.ResetNodeRequest
-	42, // 23: actorbase.v1.PartitionControlService.GetStats:input_type -> actorbase.v1.GetStatsRequest
-	15, // 24: actorbase.v1.PartitionControlService.ExecuteSplit:input_type -> actorbase.v1.ExecuteSplitRequest
-	17, // 25: actorbase.v1.PartitionControlService.ExecuteMigrateOut:input_type -> actorbase.v1.ExecuteMigrateOutRequest
-	19, // 26: actorbase.v1.PartitionControlService.PreparePartition:input_type -> actorbase.v1.PreparePartitionRequest
-	21, // 27: actorbase.v1.PartitionControlService.ExecuteMerge:input_type -> actorbase.v1.ExecuteMergeRequest
-	2,  // 28: actorbase.v1.PartitionService.Send:output_type -> actorbase.v1.SendResponse
-	4,  // 29: actorbase.v1.PartitionService.Scan:output_type -> actorbase.v1.ScanResponse
-	23, // 30: actorbase.v1.PartitionManagerService.WatchRouting:output_type -> actorbase.v1.RoutingTableProto
-	7,  // 31: actorbase.v1.PartitionManagerService.RequestSplit:output_type -> actorbase.v1.SplitResponse
-	9,  // 32: actorbase.v1.PartitionManagerService.RequestMigrate:output_type -> actorbase.v1.MigrateResponse
-	11, // 33: actorbase.v1.PartitionManagerService.RequestMerge:output_type -> actorbase.v1.MergeResponse
-	14, // 34: actorbase.v1.PartitionManagerService.ListMembers:output_type -> actorbase.v1.ListMembersResponse
-	46, // 35: actorbase.v1.PartitionManagerService.GetClusterStats:output_type -> actorbase.v1.GetClusterStatsResponse
-	26, // 36: actorbase.v1.PartitionManagerService.ApplyPolicy:output_type -> actorbase.v1.ApplyPolicyResponse
-	28, // 37: actorbase.v1.PartitionManagerService.GetPolicy:output_type -> actorbase.v1.GetPolicyResponse
-	30, // 38: actorbase.v1.PartitionManagerService.ClearPolicy:output_type -> actorbase.v1.ClearPolicyResponse
-	32, // 39: actorbase.v1.PartitionManagerService.RequestJoin:output_type -> actorbase.v1.RequestJoinResponse
-	34, // 40: actorbase.v1.PartitionManagerService.SetNodeDraining:output_type -> actorbase.v1.SetNodeDrainingResponse
-	36, // 41: actorbase.v1.PartitionManagerService.AddNode:output_type -> actorbase.v1.AddNodeResponse
-	38, // 42: actorbase.v1.PartitionManagerService.RemoveNode:output_type -> actorbase.v1.RemoveNodeResponse
-	40, // 43: actorbase.v1.PartitionManagerService.ResetNode:output_type -> actorbase.v1.ResetNodeResponse
-	43, // 44: actorbase.v1.PartitionControlService.GetStats:output_type -> actorbase.v1.GetStatsResponse
-	16, // 45: actorbase.v1.PartitionControlService.ExecuteSplit:output_type -> actorbase.v1.ExecuteSplitResponse
-	18, // 46: actorbase.v1.PartitionControlService.ExecuteMigrateOut:output_type -> actorbase.v1.ExecuteMigrateOutResponse
-	20, // 47: actorbase.v1.PartitionControlService.PreparePartition:output_type -> actorbase.v1.PreparePartitionResponse
-	22, // 48: actorbase.v1.PartitionControlService.ExecuteMerge:output_type -> actorbase.v1.ExecuteMergeResponse
-	28, // [28:49] is the sub-list for method output_type
-	7,  // [7:28] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	42, // 4: actorbase.v1.GetQueueStatusResponse.running:type_name -> actorbase.v1.QueueTaskInfo
+	42, // 5: actorbase.v1.GetQueueStatusResponse.pending:type_name -> actorbase.v1.QueueTaskInfo
+	42, // 6: actorbase.v1.GetQueueStatusResponse.history:type_name -> actorbase.v1.QueueTaskInfo
+	44, // 7: actorbase.v1.GetStatsResponse.partitions:type_name -> actorbase.v1.PartitionStatsProto
+	44, // 8: actorbase.v1.NodeStatsProto.partitions:type_name -> actorbase.v1.PartitionStatsProto
+	47, // 9: actorbase.v1.GetClusterStatsResponse.nodes:type_name -> actorbase.v1.NodeStatsProto
+	1,  // 10: actorbase.v1.PartitionService.Send:input_type -> actorbase.v1.SendRequest
+	3,  // 11: actorbase.v1.PartitionService.Scan:input_type -> actorbase.v1.ScanRequest
+	5,  // 12: actorbase.v1.PartitionManagerService.WatchRouting:input_type -> actorbase.v1.WatchRoutingRequest
+	6,  // 13: actorbase.v1.PartitionManagerService.RequestSplit:input_type -> actorbase.v1.SplitRequest
+	8,  // 14: actorbase.v1.PartitionManagerService.RequestMigrate:input_type -> actorbase.v1.MigrateRequest
+	10, // 15: actorbase.v1.PartitionManagerService.RequestMerge:input_type -> actorbase.v1.MergeRequest
+	12, // 16: actorbase.v1.PartitionManagerService.ListMembers:input_type -> actorbase.v1.ListMembersRequest
+	48, // 17: actorbase.v1.PartitionManagerService.GetClusterStats:input_type -> actorbase.v1.GetClusterStatsRequest
+	25, // 18: actorbase.v1.PartitionManagerService.ApplyPolicy:input_type -> actorbase.v1.ApplyPolicyRequest
+	27, // 19: actorbase.v1.PartitionManagerService.GetPolicy:input_type -> actorbase.v1.GetPolicyRequest
+	29, // 20: actorbase.v1.PartitionManagerService.ClearPolicy:input_type -> actorbase.v1.ClearPolicyRequest
+	31, // 21: actorbase.v1.PartitionManagerService.RequestJoin:input_type -> actorbase.v1.RequestJoinRequest
+	33, // 22: actorbase.v1.PartitionManagerService.SetNodeDraining:input_type -> actorbase.v1.SetNodeDrainingRequest
+	35, // 23: actorbase.v1.PartitionManagerService.AddNode:input_type -> actorbase.v1.AddNodeRequest
+	37, // 24: actorbase.v1.PartitionManagerService.RemoveNode:input_type -> actorbase.v1.RemoveNodeRequest
+	39, // 25: actorbase.v1.PartitionManagerService.ResetNode:input_type -> actorbase.v1.ResetNodeRequest
+	41, // 26: actorbase.v1.PartitionManagerService.GetQueueStatus:input_type -> actorbase.v1.GetQueueStatusRequest
+	45, // 27: actorbase.v1.PartitionControlService.GetStats:input_type -> actorbase.v1.GetStatsRequest
+	15, // 28: actorbase.v1.PartitionControlService.ExecuteSplit:input_type -> actorbase.v1.ExecuteSplitRequest
+	17, // 29: actorbase.v1.PartitionControlService.ExecuteMigrateOut:input_type -> actorbase.v1.ExecuteMigrateOutRequest
+	19, // 30: actorbase.v1.PartitionControlService.PreparePartition:input_type -> actorbase.v1.PreparePartitionRequest
+	21, // 31: actorbase.v1.PartitionControlService.ExecuteMerge:input_type -> actorbase.v1.ExecuteMergeRequest
+	2,  // 32: actorbase.v1.PartitionService.Send:output_type -> actorbase.v1.SendResponse
+	4,  // 33: actorbase.v1.PartitionService.Scan:output_type -> actorbase.v1.ScanResponse
+	23, // 34: actorbase.v1.PartitionManagerService.WatchRouting:output_type -> actorbase.v1.RoutingTableProto
+	7,  // 35: actorbase.v1.PartitionManagerService.RequestSplit:output_type -> actorbase.v1.SplitResponse
+	9,  // 36: actorbase.v1.PartitionManagerService.RequestMigrate:output_type -> actorbase.v1.MigrateResponse
+	11, // 37: actorbase.v1.PartitionManagerService.RequestMerge:output_type -> actorbase.v1.MergeResponse
+	14, // 38: actorbase.v1.PartitionManagerService.ListMembers:output_type -> actorbase.v1.ListMembersResponse
+	49, // 39: actorbase.v1.PartitionManagerService.GetClusterStats:output_type -> actorbase.v1.GetClusterStatsResponse
+	26, // 40: actorbase.v1.PartitionManagerService.ApplyPolicy:output_type -> actorbase.v1.ApplyPolicyResponse
+	28, // 41: actorbase.v1.PartitionManagerService.GetPolicy:output_type -> actorbase.v1.GetPolicyResponse
+	30, // 42: actorbase.v1.PartitionManagerService.ClearPolicy:output_type -> actorbase.v1.ClearPolicyResponse
+	32, // 43: actorbase.v1.PartitionManagerService.RequestJoin:output_type -> actorbase.v1.RequestJoinResponse
+	34, // 44: actorbase.v1.PartitionManagerService.SetNodeDraining:output_type -> actorbase.v1.SetNodeDrainingResponse
+	36, // 45: actorbase.v1.PartitionManagerService.AddNode:output_type -> actorbase.v1.AddNodeResponse
+	38, // 46: actorbase.v1.PartitionManagerService.RemoveNode:output_type -> actorbase.v1.RemoveNodeResponse
+	40, // 47: actorbase.v1.PartitionManagerService.ResetNode:output_type -> actorbase.v1.ResetNodeResponse
+	43, // 48: actorbase.v1.PartitionManagerService.GetQueueStatus:output_type -> actorbase.v1.GetQueueStatusResponse
+	46, // 49: actorbase.v1.PartitionControlService.GetStats:output_type -> actorbase.v1.GetStatsResponse
+	16, // 50: actorbase.v1.PartitionControlService.ExecuteSplit:output_type -> actorbase.v1.ExecuteSplitResponse
+	18, // 51: actorbase.v1.PartitionControlService.ExecuteMigrateOut:output_type -> actorbase.v1.ExecuteMigrateOutResponse
+	20, // 52: actorbase.v1.PartitionControlService.PreparePartition:output_type -> actorbase.v1.PreparePartitionResponse
+	22, // 53: actorbase.v1.PartitionControlService.ExecuteMerge:output_type -> actorbase.v1.ExecuteMergeResponse
+	32, // [32:54] is the sub-list for method output_type
+	10, // [10:32] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_internal_transport_proto_actorbase_proto_init() }
@@ -2656,7 +2897,7 @@ func file_internal_transport_proto_actorbase_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_transport_proto_actorbase_proto_rawDesc), len(file_internal_transport_proto_actorbase_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   46,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

@@ -98,6 +98,10 @@ service PartitionManagerService {
   // ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
   // Called by abctl node reset after the operator has diagnosed the failure.
   rpc ResetNode(ResetNodeRequest) returns (ResetNodeResponse);
+
+  // GetQueueStatus returns the current state of the PM task queue:
+  // the running task (if any), all pending tasks, and recent history.
+  rpc GetQueueStatus(GetQueueStatusRequest) returns (GetQueueStatusResponse);
 }
 
 message WatchRoutingRequest {
@@ -286,6 +290,31 @@ message ResetNodeRequest {
 }
 
 message ResetNodeResponse {}
+
+// ─────────────────────────────────────────────────────────
+// Queue Messages
+// ─────────────────────────────────────────────────────────
+
+message GetQueueStatusRequest {}
+
+message QueueTaskInfo {
+  string task_id      = 1;
+  string type         = 2;  // "split" | "migrate" | "merge" | "failover"
+  string actor_type   = 3;
+  string partition_id = 4;
+  int32  priority     = 5;  // 0=auto 1=manual 2=failover
+  string status       = 6;  // "pending" | "running" | "done" | "failed"
+  int64  submitted_at = 7;  // unix nanoseconds
+  int64  started_at   = 8;  // 0 if not started
+  int64  finished_at  = 9;  // 0 if not finished
+  string error        = 10; // non-empty on failure
+}
+
+message GetQueueStatusResponse {
+  QueueTaskInfo         running = 1;  // null if idle
+  repeated QueueTaskInfo pending = 2;
+  repeated QueueTaskInfo history = 3; // most-recent first
+}
 
 // ─────────────────────────────────────────────────────────
 // Stats Messages

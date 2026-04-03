@@ -21,6 +21,7 @@ import (
 	"github.com/sangchul/actorbase/internal/transport"
 	pb "github.com/sangchul/actorbase/internal/transport/proto"
 	"github.com/sangchul/actorbase/pm/console"
+	"github.com/sangchul/actorbase/pm/taskqueue"
 	"github.com/sangchul/actorbase/policy"
 	"github.com/sangchul/actorbase/provider"
 )
@@ -60,6 +61,7 @@ type Server struct {
 	connPool     *transport.ConnPool
 	psFactory    transport.PSClientFactory
 	grpcSrv      *grpc.Server
+	queue        *taskqueue.Queue
 
 	// Current routing table. Delivered immediately when a new WatchRouting stream connects.
 	routing atomic.Pointer[domain.RoutingTable]
@@ -67,9 +69,6 @@ type Server struct {
 	// WatchRouting subscriber management.
 	subsMu      sync.RWMutex
 	subscribers map[string]*subscriber // clientID → subscriber
-
-	// Serializes split/migrate operations. The PM is a single instance, but concurrent RPC requests must be guarded.
-	opMu sync.Mutex
 
 	// YAML-based policy state. nil means AutoPolicy is inactive.
 	policyMu         sync.RWMutex
@@ -144,6 +143,7 @@ func NewServer(cfg Config) (*Server, error) {
 		connPool:     connPool,
 		psFactory:    psFactory,
 		grpcSrv:      grpcSrv,
+		queue:        taskqueue.New(),
 		subscribers:  make(map[string]*subscriber),
 	}
 
@@ -165,7 +165,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	defer sess.Close() //nolint:errcheck — resign on shutdown
 
-	// 2. Restore YAML policy from Redis or etcd.
+	// 2. Start the task queue worker (before balancer and resumePendingWork so they can submit tasks).
+	go s.queue.Start(ctx, s.executeTask)
+
+	// 3. Restore YAML policy from Redis or etcd.
 	if yamlStr, err := s.loadPolicy(ctx); err != nil {
 		slog.Warn("pm: load policy failed", "err", err)
 	} else if yamlStr != "" {
@@ -173,7 +176,7 @@ func (s *Server) Start(ctx context.Context) error {
 			slog.Warn("pm: stored policy parse failed", "err", parseErr)
 		} else {
 			balancerCtx, cancel := context.WithCancel(ctx)
-			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.psFactory, &s.opMu)
+			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.psFactory, s.queue)
 			go b.start(balancerCtx)
 			s.policyMu.Lock()
 			s.activePolicy = pol
@@ -185,38 +188,38 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
-	// 3. Reconcile catalog: Active/Draining nodes with no live heartbeat → Waiting.
+	// 4. Reconcile catalog: Active/Draining nodes with no live heartbeat → Waiting.
 	// This handles the case where PM crashed while PS was gracefully shutting down.
 	s.reconcileCatalog(ctx)
 
-	// 4. Load the initial routing table.
+	// 5. Load the initial routing table.
 	currentRT, err := s.routingStore.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("pm: load routing table: %w", err)
 	}
 	s.routing.Store(currentRT)
 
-	// 5. Watch routing store and broadcast updates to subscribers.
+	// 6. Watch routing store and broadcast updates to subscribers.
 	go s.watchRouting(ctx)
 
-	// 6. Watch node join/leave events and invoke BalancePolicy.
+	// 7. Watch node join/leave events and invoke BalancePolicy.
 	go s.watchMembership(ctx)
 
-	// 7. Resume any in-progress work that was interrupted by a PM crash.
+	// 8. Resume any in-progress work that was interrupted by a PM crash.
 	s.resumePendingWork(ctx)
 
-	// 8. If the cluster is empty, wait for the first PS to register and create the initial routing table.
+	// 9. If the cluster is empty, wait for the first PS to register and create the initial routing table.
 	if currentRT == nil {
 		go s.bootstrap(ctx)
 	}
 
-	// 9. Start the web console HTTP server if configured.
+	// 10. Start the web console HTTP server if configured.
 	if s.cfg.HTTPAddr != "" {
 		consoleSrv := console.NewServer(s.cfg.HTTPAddr, s.cfg.ListenAddr)
 		go consoleSrv.Start(ctx)
 	}
 
-	// 10. Start accepting gRPC connections.
+	// 11. Start accepting gRPC connections.
 	lis, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("pm: listen %s: %w", s.cfg.ListenAddr, err)
@@ -439,9 +442,9 @@ func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
 		target := targets[i%len(targets)]
 		slog.Info("pm: failoverDeadNode: failing over partition",
 			"partition", entry.Partition.ID, "actor_type", entry.Partition.ActorType, "target", target.ID)
-		s.opMu.Lock()
-		ferr := s.doFailover(ctx, entry.Partition.ID, target.ID)
-		s.opMu.Unlock()
+		taskID := s.queue.Submit(taskqueue.PriorityFailover, "failover", entry.Partition.ActorType, entry.Partition.ID,
+			failoverTaskParams{PartitionID: entry.Partition.ID, TargetNodeID: target.ID})
+		ferr := s.queue.Wait(ctx, taskID)
 		if ferr != nil {
 			slog.Error("pm: failoverDeadNode: failover failed",
 				"partition", entry.Partition.ID, "target", target.ID, "err", ferr)
@@ -525,56 +528,34 @@ func (s *Server) quickClusterStats(ctx context.Context, nodes []domain.NodeInfo,
 	return provider.ClusterStats{Nodes: nodeStats}
 }
 
-// executeBalanceActions executes the actions returned by BalancePolicy.
+// executeBalanceActions executes the actions returned by BalancePolicy via the task queue.
+// Failover actions are submitted at PriorityFailover; others at PriorityAuto.
+// Each action blocks until completion to preserve ordering within a single event handler call.
 func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.BalanceAction) {
 	for _, action := range actions {
+		var taskID string
 		switch action.Type {
 		case provider.ActionSplit:
 			slog.Info("pm: executing split", "actor_type", action.ActorType, "partition", action.PartitionID)
-			s.opMu.Lock()
-			_, err := s.doSplit(ctx, action.ActorType, action.PartitionID, "")
-			s.opMu.Unlock()
-			if err != nil {
-				slog.Error("pm: policy split failed", "partition", action.PartitionID, "err", err)
-			} else {
-				slog.Info("pm: split complete", "partition", action.PartitionID)
-			}
-
+			taskID = s.queue.Submit(taskqueue.PriorityAuto, "split", action.ActorType, action.PartitionID,
+				splitTaskParams{ActorType: action.ActorType, PartitionID: action.PartitionID})
 		case provider.ActionMigrate:
 			slog.Info("pm: executing migrate", "actor_type", action.ActorType, "partition", action.PartitionID, "target", action.TargetNode)
-			s.opMu.Lock()
-			err := s.doMigrate(ctx, action.ActorType, action.PartitionID, action.TargetNode)
-			s.opMu.Unlock()
-			if err != nil {
-				slog.Error("pm: policy migrate failed", "partition", action.PartitionID, "target", action.TargetNode, "err", err)
-			} else {
-				slog.Info("pm: migrate complete", "partition", action.PartitionID, "target", action.TargetNode)
-			}
-
+			taskID = s.queue.Submit(taskqueue.PriorityAuto, "migrate", action.ActorType, action.PartitionID,
+				migrateTaskParams{ActorType: action.ActorType, PartitionID: action.PartitionID, TargetNodeID: action.TargetNode})
 		case provider.ActionFailover:
 			slog.Info("pm: executing failover", "partition", action.PartitionID, "target", action.TargetNode)
-			s.opMu.Lock()
-			err := s.doFailover(ctx, action.PartitionID, action.TargetNode)
-			s.opMu.Unlock()
-			if err != nil {
-				slog.Error("pm: policy failover failed", "partition", action.PartitionID, "target", action.TargetNode, "err", err)
-			} else {
-				slog.Info("pm: failover complete", "partition", action.PartitionID, "to", action.TargetNode)
-			}
-
+			taskID = s.queue.Submit(taskqueue.PriorityFailover, "failover", action.ActorType, action.PartitionID,
+				failoverTaskParams{PartitionID: action.PartitionID, TargetNodeID: action.TargetNode})
 		case provider.ActionMerge:
-			slog.Info("pm: executing merge", "actor_type", action.ActorType,
-				"lower", action.PartitionID, "upper", action.MergeTarget)
-			s.opMu.Lock()
-			err := s.doMerge(ctx, action.ActorType, action.PartitionID, action.MergeTarget)
-			s.opMu.Unlock()
-			if err != nil {
-				slog.Error("pm: policy merge failed",
-					"lower", action.PartitionID, "upper", action.MergeTarget, "err", err)
-			} else {
-				slog.Info("pm: merge complete",
-					"lower", action.PartitionID, "upper", action.MergeTarget)
-			}
+			slog.Info("pm: executing merge", "actor_type", action.ActorType, "lower", action.PartitionID, "upper", action.MergeTarget)
+			taskID = s.queue.Submit(taskqueue.PriorityAuto, "merge", action.ActorType, action.PartitionID,
+				mergeTaskParams{ActorType: action.ActorType, LowerID: action.PartitionID, UpperID: action.MergeTarget})
+		default:
+			continue
+		}
+		if err := s.queue.Wait(ctx, taskID); err != nil {
+			slog.Error("pm: balance action failed", "type", action.Type, "partition", action.PartitionID, "err", err)
 		}
 	}
 }
@@ -652,7 +633,7 @@ func (s *Server) applyPolicy(ctx context.Context, yamlStr string, pol provider.B
 	s.activePolicyYAML = yamlStr
 	balancerCtx, cancel := context.WithCancel(s.serverCtx)
 	s.balancerCancel = cancel
-	b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.psFactory, &s.opMu)
+	b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.psFactory, s.queue)
 	go b.start(balancerCtx)
 	s.policyMu.Unlock()
 	slog.Info("pm: AutoPolicy applied", "check_interval", runnerCfg.CheckInterval)
@@ -687,6 +668,81 @@ func (s *Server) unsubscribe(clientID string) {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
 	delete(s.subscribers, clientID)
+}
+
+// ── Task queue params and executor ───────────────────────────────────────────
+
+// Task parameter types used with the task queue.
+// These are type-switched in executeTask to dispatch to the right do* method.
+
+type splitTaskParams struct {
+	ActorType   string
+	PartitionID string
+	SplitKey    string
+}
+
+type migrateTaskParams struct {
+	ActorType    string
+	PartitionID  string
+	TargetNodeID string
+}
+
+type mergeTaskParams struct {
+	ActorType   string
+	LowerID     string
+	UpperID     string
+	AutoMigrate bool // if true, migrate upper to lower's node first if they differ
+}
+
+type failoverTaskParams struct {
+	PartitionID  string
+	TargetNodeID string
+}
+
+// executeTask is the task queue executor — called by the single worker goroutine.
+func (s *Server) executeTask(ctx context.Context, t *taskqueue.Task) error {
+	switch p := t.Params.(type) {
+	case splitTaskParams:
+		newID, err := s.doSplit(ctx, p.ActorType, p.PartitionID, p.SplitKey)
+		t.Output = newID
+		return err
+	case migrateTaskParams:
+		return s.doMigrate(ctx, p.ActorType, p.PartitionID, p.TargetNodeID)
+	case mergeTaskParams:
+		if p.AutoMigrate {
+			return s.ensureSameNodeAndMerge(ctx, p.ActorType, p.LowerID, p.UpperID)
+		}
+		return s.doMerge(ctx, p.ActorType, p.LowerID, p.UpperID)
+	case failoverTaskParams:
+		return s.doFailover(ctx, p.PartitionID, p.TargetNodeID)
+	default:
+		return fmt.Errorf("pm: unknown task params type: %T", t.Params)
+	}
+}
+
+// ensureSameNodeAndMerge migrates upper to the lower's node if they differ, then merges.
+// Used by auto-balancer merge tasks. Called from inside the queue worker (no opMu needed).
+func (s *Server) ensureSameNodeAndMerge(ctx context.Context, actorType, lowerID, upperID string) error {
+	rt, err := s.routingStore.Load(ctx)
+	if err != nil || rt == nil {
+		return fmt.Errorf("ensureSameNodeAndMerge: load routing table: %w", err)
+	}
+	lowerEntry, ok := rt.LookupByPartition(lowerID)
+	if !ok {
+		return fmt.Errorf("ensureSameNodeAndMerge: lower partition %s not found", lowerID)
+	}
+	upperEntry, ok := rt.LookupByPartition(upperID)
+	if !ok {
+		return fmt.Errorf("ensureSameNodeAndMerge: upper partition %s not found", upperID)
+	}
+	if lowerEntry.Node.ID != upperEntry.Node.ID {
+		slog.Info("pm: merge: migrating upper to lower's node",
+			"upper", upperID, "from", upperEntry.Node.ID, "to", lowerEntry.Node.ID)
+		if err := s.migrator.Migrate(ctx, actorType, upperID, lowerEntry.Node.ID); err != nil {
+			return fmt.Errorf("ensureSameNodeAndMerge: migrate upper: %w", err)
+		}
+	}
+	return s.merger.Merge(ctx, actorType, lowerID, upperID)
 }
 
 // ── WorkJournal-wrapped operation methods ────────────────────────────────────
@@ -834,9 +890,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 				}
 			}
 			// Retry with the same newPartitionID to avoid orphan partitions on PS.
-			s.opMu.Lock()
 			_, splitErr := s.splitter.Split(ctx, p.ActorType, p.PartitionID, p.SplitKey, p.NewPartitionID)
-			s.opMu.Unlock()
 			if splitErr != nil {
 				slog.Error("pm: resumePendingWork: split failed", "partition", p.PartitionID, "err", splitErr)
 			} else {
@@ -857,9 +911,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 				}
 				if entry.PartitionStatus == domain.PartitionStatusDraining {
 					// Partition stuck in Draining — use dedicated resume path that skips the check.
-					s.opMu.Lock()
 					err := s.migrator.ResumeMigrate(ctx, p.ActorType, p.PartitionID, p.TargetNodeID)
-					s.opMu.Unlock()
 					if err != nil {
 						slog.Error("pm: resumePendingWork: ResumeMigrate failed", "partition", p.PartitionID, "err", err)
 					} else {
@@ -868,9 +920,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 					continue
 				}
 			}
-			s.opMu.Lock()
 			migrateErr := s.migrator.Migrate(ctx, p.ActorType, p.PartitionID, p.TargetNodeID)
-			s.opMu.Unlock()
 			if migrateErr != nil {
 				slog.Error("pm: resumePendingWork: migrate failed", "partition", p.PartitionID, "err", migrateErr)
 			} else {
@@ -891,9 +941,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 				}
 				if entry.PartitionStatus == domain.PartitionStatusDraining {
 					// Failover also uses ResumeMigrate — source is dead so eviction is skipped.
-					s.opMu.Lock()
 					err := s.migrator.ResumeMigrate(ctx, p.ActorType, p.PartitionID, p.TargetNodeID)
-					s.opMu.Unlock()
 					if err != nil {
 						slog.Error("pm: resumePendingWork: ResumeMigrate (failover) failed", "partition", p.PartitionID, "err", err)
 					} else {
@@ -902,9 +950,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 					continue
 				}
 			}
-			s.opMu.Lock()
 			failoverErr := s.migrator.Failover(ctx, p.PartitionID, p.TargetNodeID)
-			s.opMu.Unlock()
 			if failoverErr != nil {
 				slog.Error("pm: resumePendingWork: failover failed", "partition", p.PartitionID, "err", failoverErr)
 			} else {
@@ -927,9 +973,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 				}
 				if lowerOK && lowerEntry.PartitionStatus == domain.PartitionStatusDraining {
 					// Both partitions stuck in Draining — use dedicated resume path.
-					s.opMu.Lock()
 					err := s.merger.ResumeMerge(ctx, p.ActorType, p.LowerID, p.UpperID)
-					s.opMu.Unlock()
 					if err != nil {
 						slog.Error("pm: resumePendingWork: ResumeMerge failed", "lower", p.LowerID, "upper", p.UpperID, "err", err)
 					} else {
@@ -938,9 +982,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 					continue
 				}
 			}
-			s.opMu.Lock()
 			mergeErr := s.merger.Merge(ctx, p.ActorType, p.LowerID, p.UpperID)
-			s.opMu.Unlock()
 			if mergeErr != nil {
 				slog.Error("pm: resumePendingWork: merge failed", "lower", p.LowerID, "upper", p.UpperID, "err", mergeErr)
 			} else {
