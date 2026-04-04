@@ -210,6 +210,11 @@ if ! command -v etcd >/dev/null 2>&1; then
   exit 1
 fi
 
+# 포트 2379/2380을 점유 중인 프로세스를 정리한다 (이전 테스트 잔류 etcd 포함).
+lsof -ti:2379 -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+lsof -ti:2380 -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+sleep 0.5
+
 rm -rf "$ETCD_DATA_DIR"
 mkdir -p "$ETCD_DATA_DIR"
 log "Starting etcd (data-dir: $ETCD_DATA_DIR)..."
