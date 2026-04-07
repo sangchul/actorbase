@@ -6,6 +6,7 @@ import (
 )
 
 // atomicTime is an atomic wrapper for time.Time.
+// Provides a typed Load() over atomic.Value to avoid repeated type assertions at call sites.
 type atomicTime struct {
 	v atomic.Value
 }
@@ -20,17 +21,4 @@ func (a *atomicTime) Load() time.Time {
 		return time.Time{}
 	}
 	return v.(time.Time)
-}
-
-// atomicUint64 is an atomic wrapper for uint64.
-type atomicUint64 struct {
-	v atomic.Uint64
-}
-
-func (a *atomicUint64) Store(val uint64) {
-	a.v.Store(val)
-}
-
-func (a *atomicUint64) Load() uint64 {
-	return a.v.Load()
 }

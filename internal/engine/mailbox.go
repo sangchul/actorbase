@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"sync/atomic"
-	"time"
 
 	"github.com/sangchul/actorbase/provider"
 )
@@ -79,19 +78,14 @@ type mailbox[Req, Resp any] struct {
 	walThreshold int // 0 disables WAL-accumulation-based automatic checkpoint
 	onWALError   func()
 
-	lastMsg      atomic_time // referenced by EvictionScheduler
-	confirmedLSN atomic_uint64
+	lastMsg      atomicTime   // referenced by EvictionScheduler
+	confirmedLSN atomic.Uint64
 
 	rps      rpsCounter   // RPS sliding window
 	keyCount atomic.Int64 // updated if actor implements Countable; otherwise stays -1.
 
 	doneCh chan struct{} // closed when run() exits
 }
-
-// atomic_time / atomic_uint64: wrappers to use sync/atomic types inline without separate type declarations.
-// Uses atomic.Value/atomic.Uint64 directly (Go 1.19+).
-type atomic_time = atomicTime
-type atomic_uint64 = atomicUint64
 
 func newMailbox[Req, Resp any](
 	inSize int,
@@ -212,150 +206,6 @@ func (m *mailbox[Req, Resp]) close() {
 // stats returns the current statistics of the mailbox.
 func (m *mailbox[Req, Resp]) stats() (keyCount int64, rps float64) {
 	return m.keyCount.Load(), m.rps.rps(60)
-}
-
-// run is the mailbox event loop. Executed in a separate goroutine.
-//
-// Termination conditions: inCh is closed (ok=false) or a WAL error occurs.
-// doneCh is always closed on exit.
-func (m *mailbox[Req, Resp]) run(actor provider.Actor[Req, Resp], actCtx actorCtx) {
-	defer close(m.doneCh)
-
-	pendingWAL := 0          // number of writes submitted to WALFlusher but not yet confirmed
-	walsSinceCheckpoint := 0 // number of confirmed WAL entries since the last checkpoint
-	dirty := false           // state was changed without a WAL entry (e.g. split); prevents skipping checkpoint
-
-	draining := false          // when true, inCh/splitCh are paused (waiting for checkpoint drain)
-	var drainDone chan<- error // completion channel for the current drain; nil means auto-triggered
-
-	doCheckpoint := func(lsn uint64) error {
-		err := m.checkpointFn(lsn)
-		walsSinceCheckpoint = 0
-		dirty = false
-		return err
-	}
-
-	for {
-		// while draining, stop receiving new messages/exports/imports
-		var inCh <-chan envelope[Req, Resp]
-		var exportCh <-chan exportReq
-		var importCh <-chan importReq
-		if !draining {
-			inCh = m.inCh
-			exportCh = m.exportCh
-			importCh = m.importCh
-		}
-
-		select {
-		case env, ok := <-inCh:
-			if !ok {
-				return // terminated via close()
-			}
-			resp, walEntry, err := safeReceive(actor, actCtx, env.req)
-			m.rps.inc()
-
-			if walEntry == nil || err != nil {
-				env.replyCh <- result[Resp]{resp: resp, err: err}
-				m.lastMsg.Store(time.Now())
-				continue
-			}
-
-			// write operation: delegate to WALFlusher and immediately process next message
-			pendingWAL++
-			replyCh := env.replyCh
-			walConfirmedCh := m.walConfirmedCh
-			m.submitCh <- walPending{
-				partitionID: actCtx.partitionID,
-				entry:       walEntry,
-				reply: func(lsn uint64, flushErr error) {
-					if flushErr != nil {
-						replyCh <- result[Resp]{err: flushErr}
-					} else {
-						replyCh <- result[Resp]{resp: resp}
-					}
-					walConfirmedCh <- lsn // 0 on error (error sentinel)
-				},
-			}
-			m.lastMsg.Store(time.Now())
-
-		case req := <-exportCh:
-			splitKey := req.splitKey
-			if splitKey == "" {
-				// snapshot mode: export full state (read-only)
-				data, err := safeExport(actor, actCtx, "")
-				req.done <- exportResult{data: data, err: err}
-			} else {
-				// split mode: SplitHinter → midpoint fallback chain
-				if hinter, ok := any(actor).(provider.SplitHinter); ok {
-					if hint := hinter.SplitHint(); hint != "" {
-						splitKey = hint
-					}
-				}
-				if splitKey == splitKeyAuto {
-					splitKey = KeyRangeMidpoint(req.keyRangeStart, req.keyRangeEnd)
-				}
-				data, err := safeExport(actor, actCtx, splitKey)
-				req.done <- exportResult{splitKey: splitKey, data: data, err: err}
-				if err == nil {
-					dirty = true // actor state changed without WAL → prevent checkpoint skip
-				}
-			}
-
-		case req := <-importCh:
-			err := safeImport(actor, actCtx, req.data)
-			req.done <- err
-			if err == nil {
-				dirty = true // actor state changed without WAL → prevent checkpoint skip
-			}
-
-		case lsn := <-m.walConfirmedCh:
-			pendingWAL--
-			if c, ok := any(actor).(provider.Countable); ok {
-				m.keyCount.Store(c.KeyCount())
-			}
-
-			if lsn == 0 {
-				// WAL flush failed: in-memory state and WAL are inconsistent → evict Actor
-				m.onWALError()
-				return
-			}
-			m.confirmedLSN.Store(lsn)
-			walsSinceCheckpoint++
-
-			if draining && pendingWAL == 0 {
-				err := doCheckpoint(m.confirmedLSN.Load())
-				if drainDone != nil {
-					drainDone <- err
-				}
-				draining = false
-				drainDone = nil
-			} else if !draining && m.walThreshold > 0 && walsSinceCheckpoint >= m.walThreshold {
-				// WAL accumulation-based automatic checkpoint trigger
-				if pendingWAL == 0 {
-					doCheckpoint(m.confirmedLSN.Load()) //nolint:errcheck
-				} else {
-					draining = true
-					drainDone = nil // no completion notification needed (auto-triggered)
-				}
-			}
-
-		case req := <-m.checkpointCh:
-			if walsSinceCheckpoint == 0 && !dirty {
-				// no changes since last checkpoint → skip
-				req.done <- nil
-				continue
-			}
-			if pendingWAL == 0 {
-				req.done <- doCheckpoint(m.confirmedLSN.Load())
-			} else if draining {
-				// already draining: upgrade to external request (connect completion channel)
-				drainDone = req.done
-			} else {
-				draining = true
-				drainDone = req.done
-			}
-		}
-	}
 }
 
 // safeReceive calls Actor.Receive and converts any panic to ErrActorPanicked.

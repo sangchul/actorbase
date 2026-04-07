@@ -5,9 +5,35 @@ import (
 	"time"
 )
 
+// evictionTarget is the subset of ActorHost required by EvictionScheduler.
+type evictionTarget interface {
+	IdleActors(idleSince time.Time) []string
+	Evict(ctx context.Context, partitionID string) error
+}
+
+// checkpointTarget is the subset of ActorHost required by CheckpointScheduler.
+type checkpointTarget interface {
+	ActivePartitions() []string
+	Checkpoint(ctx context.Context, partitionID string) error
+}
+
+// runPeriodic calls fn on every interval tick until ctx is cancelled.
+func runPeriodic(ctx context.Context, interval time.Duration, fn func()) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			fn()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // EvictionScheduler periodically evicts idle Actors.
 type EvictionScheduler[Req, Resp any] struct {
-	host        *ActorHost[Req, Resp]
+	host        evictionTarget
 	idleTimeout time.Duration
 	interval    time.Duration
 }
@@ -27,29 +53,18 @@ func NewEvictionScheduler[Req, Resp any](
 
 // Start begins the eviction loop. Exits when ctx is cancelled.
 func (s *EvictionScheduler[Req, Resp]) Start(ctx context.Context) {
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			idleSince := time.Now().Add(-s.idleTimeout)
-			for _, id := range s.host.IdleActors(idleSince) {
-				if err := s.host.Evict(ctx, id); err != nil {
-					// eviction failure will be retried on the next cycle
-					_ = err
-				}
-			}
-		case <-ctx.Done():
-			return
+	runPeriodic(ctx, s.interval, func() {
+		idleSince := time.Now().Add(-s.idleTimeout)
+		for _, id := range s.host.IdleActors(idleSince) {
+			s.host.Evict(ctx, id) //nolint:errcheck
 		}
-	}
+	})
 }
 
 // CheckpointScheduler periodically checkpoints active Actors.
 // Serves as a supplement to WAL-accumulation-based automatic checkpointing.
 type CheckpointScheduler[Req, Resp any] struct {
-	host     *ActorHost[Req, Resp]
+	host     checkpointTarget
 	interval time.Duration
 }
 
@@ -66,19 +81,9 @@ func NewCheckpointScheduler[Req, Resp any](
 
 // Start begins the checkpoint loop. Exits when ctx is cancelled.
 func (s *CheckpointScheduler[Req, Resp]) Start(ctx context.Context) {
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			for _, id := range s.host.ActivePartitions() {
-				if err := s.host.Checkpoint(ctx, id); err != nil {
-					_ = err
-				}
-			}
-		case <-ctx.Done():
-			return
+	runPeriodic(ctx, s.interval, func() {
+		for _, id := range s.host.ActivePartitions() {
+			s.host.Checkpoint(ctx, id) //nolint:errcheck
 		}
-	}
+	})
 }

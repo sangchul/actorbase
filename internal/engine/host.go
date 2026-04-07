@@ -42,10 +42,35 @@ func (c *Config[Req, Resp]) setDefaults() {
 	}
 }
 
+// checkpointRecord is the on-disk format for a checkpoint: [8-byte big-endian LSN][snapshot bytes].
+// Keeping encode/decode together prevents format drift between the two sites.
+type checkpointRecord struct {
+	LSN      uint64
+	Snapshot []byte
+}
+
+func (r checkpointRecord) marshal() []byte {
+	data := make([]byte, 8+len(r.Snapshot))
+	binary.BigEndian.PutUint64(data[:8], r.LSN)
+	copy(data[8:], r.Snapshot)
+	return data
+}
+
+func unmarshalCheckpoint(b []byte) checkpointRecord {
+	if len(b) < 8 {
+		return checkpointRecord{}
+	}
+	return checkpointRecord{
+		LSN:      binary.BigEndian.Uint64(b[:8]),
+		Snapshot: b[8:],
+	}
+}
+
 // actorEntry holds the state of a single activated Actor.
 type actorEntry[Req, Resp any] struct {
 	mailbox *mailbox[Req, Resp]
-	ready   chan struct{} // closed when activation is complete
+	ready   chan struct{} // closed when activation is complete (or failed)
+	err     error        // non-nil if activation failed; set before closing ready
 }
 
 // ActorHost manages the lifecycle of all Actors within a partition server.
@@ -232,48 +257,6 @@ func (h *ActorHost[Req, Resp]) Merge(ctx context.Context, lowerPartitionID, uppe
 	return nil
 }
 
-// KeyRangeMidpoint computes the midpoint of the [start, end) key range.
-// Used to determine the split key for Actors that do not implement SplitHinter.
-func KeyRangeMidpoint(start, end string) string {
-	if start == "" && end == "" {
-		return "m"
-	}
-	if end == "" {
-		return start + "m"
-	}
-	sb := []byte(start)
-	eb := []byte(end)
-	maxLen := len(eb)
-	if len(sb) > maxLen {
-		maxLen = len(sb)
-	}
-	for len(sb) < maxLen {
-		sb = append(sb, 0)
-	}
-	for len(eb) < maxLen {
-		eb = append(eb, 0)
-	}
-	result := make([]byte, maxLen)
-	carry := 0
-	for i := maxLen - 1; i >= 0; i-- {
-		sum := int(sb[i]) + int(eb[i]) + carry*256
-		result[i] = byte(sum / 2)
-		carry = sum % 2
-	}
-	n := len(result)
-	for n > 0 && result[n-1] == 0 {
-		n--
-	}
-	if n == 0 {
-		n = 1
-	}
-	mid := string(result[:n])
-	if mid <= start {
-		return start + "m"
-	}
-	return mid
-}
-
 // GetStats returns statistics for all currently active partitions.
 func (h *ActorHost[Req, Resp]) GetStats() []PartitionStats {
 	h.mu.Lock()
@@ -348,22 +331,26 @@ func (h *ActorHost[Req, Resp]) getOrActivate(ctx context.Context, partitionID st
 		h.mu.Unlock()
 		select {
 		case <-entry.ready:
+			if entry.err != nil {
+				return nil, entry.err
+			}
 			return entry, nil
 		case <-ctx.Done():
 			return nil, provider.ErrTimeout
 		}
 	}
 
-	// this goroutine is responsible for activation: register placeholder then release lock
+	// This goroutine is responsible for activation: register placeholder then release lock.
 	entry = &actorEntry[Req, Resp]{ready: make(chan struct{})}
 	h.actors[partitionID] = entry
 	h.mu.Unlock()
 
 	if err := h.doActivate(ctx, partitionID, entry); err != nil {
+		entry.err = err // set before closing so waiters observe the error
 		h.mu.Lock()
 		delete(h.actors, partitionID)
 		h.mu.Unlock()
-		close(entry.ready) // unblock any waiting goroutines
+		close(entry.ready)
 		return nil, err
 	}
 
@@ -375,32 +362,53 @@ func (h *ActorHost[Req, Resp]) getOrActivate(ctx context.Context, partitionID st
 func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID string, entry *actorEntry[Req, Resp]) error {
 	slog.Info("activating actor", "partition_id", partitionID)
 
-	// 1. load checkpoint
+	actor := h.cfg.Factory(partitionID)
+
+	lsn, err := h.restoreFromCheckpoint(ctx, actor, partitionID)
+	if err != nil {
+		return err
+	}
+	if err := h.replayWAL(ctx, actor, partitionID, lsn); err != nil {
+		return err
+	}
+
+	logger := slog.Default().With("partition_id", partitionID)
+	mb := newMailbox[Req, Resp](
+		h.cfg.MailboxSize,
+		h.flusher.submitCh,
+		h.makeCheckpointFn(actor, partitionID),
+		h.cfg.CheckpointWALThreshold,
+		h.makeOnWALError(partitionID),
+	)
+	entry.mailbox = mb
+	go mb.run(actor, actorCtx{partitionID: partitionID, logger: logger})
+	slog.Info("actor activated", "partition_id", partitionID)
+	return nil
+}
+
+// restoreFromCheckpoint loads the latest checkpoint and applies it to actor.
+// Returns the LSN recorded in the checkpoint (WAL replay should start from LSN+1).
+func (h *ActorHost[Req, Resp]) restoreFromCheckpoint(ctx context.Context, actor provider.Actor[Req, Resp], partitionID string) (uint64, error) {
 	raw, err := h.cfg.CheckpointStore.Load(ctx, partitionID)
 	if err != nil {
 		slog.Error("activate: load checkpoint failed", "partition_id", partitionID, "err", err)
-		return fmt.Errorf("load checkpoint: %w", err)
+		return 0, fmt.Errorf("load checkpoint: %w", err)
 	}
 
-	var fromLSN uint64
-	var snapshotData []byte
-	if len(raw) >= 8 {
-		fromLSN = binary.BigEndian.Uint64(raw[:8])
-		snapshotData = raw[8:]
-	}
-	slog.Info("activate: checkpoint loaded", "partition_id", partitionID, "lsn", fromLSN, "snapshot_bytes", len(snapshotData))
+	rec := unmarshalCheckpoint(raw)
+	slog.Info("activate: checkpoint loaded", "partition_id", partitionID, "lsn", rec.LSN, "snapshot_bytes", len(rec.Snapshot))
 
-	// 2. create Actor and restore from snapshot
-	actor := h.cfg.Factory(partitionID)
-	if len(snapshotData) > 0 {
-		if err := actor.Import(snapshotData); err != nil {
+	if len(rec.Snapshot) > 0 {
+		if err := actor.Import(rec.Snapshot); err != nil {
 			slog.Error("activate: restore snapshot failed", "partition_id", partitionID, "err", err)
-			return fmt.Errorf("restore snapshot: %w", err)
+			return 0, fmt.Errorf("restore snapshot: %w", err)
 		}
 	}
+	return rec.LSN, nil
+}
 
-	// 3. WAL replay: apply entries after the checkpoint.
-	// Even if fromLSN=0 (no checkpoint), entries in the WAL must be replayed.
+// replayWAL applies WAL entries after fromLSN to actor.
+func (h *ActorHost[Req, Resp]) replayWAL(ctx context.Context, actor provider.Actor[Req, Resp], partitionID string, fromLSN uint64) error {
 	entries, err := h.cfg.WALStore.ReadFrom(ctx, partitionID, fromLSN+1)
 	if err != nil {
 		slog.Error("activate: read WAL failed", "partition_id", partitionID, "from_lsn", fromLSN+1, "err", err)
@@ -420,59 +428,46 @@ func (h *ActorHost[Req, Resp]) doActivate(ctx context.Context, partitionID strin
 			return fmt.Errorf("replay WAL entry LSN=%d: %w", e.LSN, err)
 		}
 	}
+	return nil
+}
 
-	// 4. checkpointFn closure: called from within the mailbox goroutine, so actor access is thread-safe.
-	// Capturing the activation request ctx would cause future checkpoints to fail once that request completes.
-	// The mailbox is a long-running goroutine, so context.Background() is used instead.
+// makeCheckpointFn returns the checkpoint function used by the mailbox goroutine.
+// It captures actor and stores by value so the closure remains valid after doActivate returns.
+// context.Background() is used intentionally: the mailbox outlives any activation request context.
+func (h *ActorHost[Req, Resp]) makeCheckpointFn(actor provider.Actor[Req, Resp], partitionID string) checkpointFn {
 	wal := h.cfg.WALStore
 	cpStore := h.cfg.CheckpointStore
-	fn := checkpointFn(func(lsn uint64) error {
+	return func(lsn uint64) error {
 		snap, err := actor.Export("")
 		if err != nil {
 			return fmt.Errorf("snapshot: %w", err)
 		}
 		bgCtx := context.Background()
-		if err := saveCheckpoint(bgCtx, cpStore, partitionID, lsn, snap); err != nil {
+		if err := saveCheckpoint(bgCtx, cpStore, partitionID, checkpointRecord{LSN: lsn, Snapshot: snap}); err != nil {
 			return err
 		}
 		return wal.TrimBefore(bgCtx, partitionID, lsn)
-	})
+	}
+}
 
-	// 5. onWALError: on WAL flush failure, remove the actor from the actors map without checkpointing
-	onWALError := func() {
-		slog.Error("WAL flush failed, actor evicted without checkpoint",
-			"partition_id", partitionID)
+// makeOnWALError returns the WAL error callback used by the mailbox goroutine.
+// On WAL flush failure the actor is removed from the map without checkpointing.
+func (h *ActorHost[Req, Resp]) makeOnWALError(partitionID string) func() {
+	return func() {
+		slog.Error("WAL flush failed, actor evicted without checkpoint", "partition_id", partitionID)
 		h.mu.Lock()
 		delete(h.actors, partitionID)
 		h.mu.Unlock()
 	}
-
-	// 6. create mailbox and start goroutine
-	logger := slog.Default().With("partition_id", partitionID)
-	mb := newMailbox[Req, Resp](
-		h.cfg.MailboxSize,
-		h.flusher.submitCh,
-		fn,
-		h.cfg.CheckpointWALThreshold,
-		onWALError,
-	)
-	entry.mailbox = mb
-
-	go mb.run(actor, actorCtx{partitionID: partitionID, logger: logger})
-	slog.Info("actor activated", "partition_id", partitionID, "wal_replayed", len(entries))
-	return nil
 }
 
 // saveRawCheckpoint saves already-serialized snapshot data to the CheckpointStore.
 // Used in Split to save the upper partition's checkpoint.
 func (h *ActorHost[Req, Resp]) saveRawCheckpoint(ctx context.Context, partitionID string, lsn uint64, snap []byte) error {
-	return saveCheckpoint(ctx, h.cfg.CheckpointStore, partitionID, lsn, snap)
+	return saveCheckpoint(ctx, h.cfg.CheckpointStore, partitionID, checkpointRecord{LSN: lsn, Snapshot: snap})
 }
 
-// saveCheckpoint combines lsn and snap and saves them to the CheckpointStore.
-func saveCheckpoint(ctx context.Context, store provider.CheckpointStore, partitionID string, lsn uint64, snap []byte) error {
-	data := make([]byte, 8+len(snap))
-	binary.BigEndian.PutUint64(data[:8], lsn)
-	copy(data[8:], snap)
-	return store.Save(ctx, partitionID, data)
+// saveCheckpoint serializes rec and persists it to the CheckpointStore.
+func saveCheckpoint(ctx context.Context, store provider.CheckpointStore, partitionID string, rec checkpointRecord) error {
+	return store.Save(ctx, partitionID, rec.marshal())
 }
