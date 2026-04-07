@@ -346,6 +346,21 @@ func (s *Server) handleNodeJoined(ctx context.Context, node domain.NodeInfo) {
 }
 
 func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reason cluster.NodeLeaveReason) {
+	// Verify the node is actually dead before proceeding.
+	// etcd lease expiry can be a false positive when etcd itself is overloaded.
+	if node.Address != "" {
+		pingCtx, cancel := context.WithTimeout(ctx, s.cfg.PingTimeout)
+		alive := s.pingPS(pingCtx, node.Address)
+		cancel()
+		if alive {
+			slog.Warn("pm: handleNodeLeft: PS responded to ping — lease expiry was false positive, aborting failover",
+				"node", node.ID, "addr", node.Address)
+			return
+		}
+		slog.Info("pm: handleNodeLeft: PS did not respond to ping, proceeding with failover",
+			"node", node.ID, "addr", node.Address)
+	}
+
 	// Determine the catalog state to decide how to handle the departure.
 	catalogEntry, found, _ := s.nodeCatalog.GetNode(ctx, node.ID)
 	wasDraining := found && catalogEntry.Status == domain.NodeStatusDraining
@@ -398,6 +413,16 @@ func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reaso
 		s.failoverDeadNode(ctx, node.ID)
 		slog.Info("pm: node marked Failed; run 'abctl node reset' to allow rejoin", "node", node.ID)
 	}
+}
+
+// pingPS sends a single gRPC Ping to the PS at addr.
+// Returns true if the PS is alive (responded successfully within the deadline set by the caller).
+func (s *Server) pingPS(ctx context.Context, addr string) bool {
+	ctrl, err := s.psFactory.GetClient(addr)
+	if err != nil {
+		return false
+	}
+	return ctrl.Ping(ctx) == nil
 }
 
 // failoverDeadNode failovers any remaining partitions of the dead node to active nodes, regardless of policy.

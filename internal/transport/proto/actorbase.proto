@@ -166,7 +166,14 @@ service PartitionControlService {
   // ExecuteMerge는 PM이 PS에게 두 파티션의 merge를 명령한다.
   // lower 파티션이 upper 파티션의 상태를 흡수한다. 두 파티션 모두 같은 PS에 있어야 한다.
   rpc ExecuteMerge(ExecuteMergeRequest) returns (ExecuteMergeResponse);
+
+  // Ping checks whether the PS is alive.
+  // Used by PM after lease expiry to avoid false-positive failovers caused by etcd overload.
+  rpc Ping(PingRequest) returns (PingResponse);
 }
+
+message PingRequest {}
+message PingResponse {}
 
 message ExecuteSplitRequest {
   string partition_id     = 1;

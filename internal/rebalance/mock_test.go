@@ -118,6 +118,8 @@ func (m *mockPSController) GetStats(_ context.Context) (*pb.GetStatsResponse, er
 	return m.statsResp, m.statsErr
 }
 
+func (m *mockPSController) Ping(_ context.Context) error { return nil }
+
 // ─── mock PSClientFactory ─────────────────────────────────────────────────────
 
 type mockPSClientFactory struct {

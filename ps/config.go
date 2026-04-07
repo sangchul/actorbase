@@ -12,7 +12,7 @@ const (
 	defaultEvictInterval          = 1 * time.Minute
 	defaultCheckpointInterval     = 1 * time.Minute
 	defaultCheckpointWALThreshold = 100
-	defaultEtcdLeaseTTL           = 10 * time.Second
+	defaultEtcdLeaseTTL           = 3 * time.Second
 	defaultDrainTimeout           = 60 * time.Second
 	defaultShutdownTimeout        = 30 * time.Second
 )
@@ -29,7 +29,7 @@ type BaseConfig struct {
 
 	Metrics provider.Metrics // If nil, metrics collection is skipped.
 
-	EtcdLeaseTTL time.Duration // Node lease TTL. Default: 10s.
+	EtcdLeaseTTL time.Duration // Node lease TTL. Default: 3s.
 
 	// EvictionScheduler settings (shared across all actor types)
 	IdleTimeout   time.Duration // Evict an actor if it receives no messages for this duration. Default: 5m.

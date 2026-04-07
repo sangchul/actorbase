@@ -867,6 +867,7 @@ const (
 	PartitionControlService_ExecuteMigrateOut_FullMethodName = "/actorbase.v1.PartitionControlService/ExecuteMigrateOut"
 	PartitionControlService_PreparePartition_FullMethodName  = "/actorbase.v1.PartitionControlService/PreparePartition"
 	PartitionControlService_ExecuteMerge_FullMethodName      = "/actorbase.v1.PartitionControlService/ExecuteMerge"
+	PartitionControlService_Ping_FullMethodName              = "/actorbase.v1.PartitionControlService/Ping"
 )
 
 // PartitionControlServiceClient is the client API for PartitionControlService service.
@@ -884,6 +885,9 @@ type PartitionControlServiceClient interface {
 	// ExecuteMerge는 PM이 PS에게 두 파티션의 merge를 명령한다.
 	// lower 파티션이 upper 파티션의 상태를 흡수한다. 두 파티션 모두 같은 PS에 있어야 한다.
 	ExecuteMerge(ctx context.Context, in *ExecuteMergeRequest, opts ...grpc.CallOption) (*ExecuteMergeResponse, error)
+	// Ping checks whether the PS is alive.
+	// Used by PM after lease expiry to avoid false-positive failovers caused by etcd overload.
+	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
 }
 
 type partitionControlServiceClient struct {
@@ -944,6 +948,16 @@ func (c *partitionControlServiceClient) ExecuteMerge(ctx context.Context, in *Ex
 	return out, nil
 }
 
+func (c *partitionControlServiceClient) Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PingResponse)
+	err := c.cc.Invoke(ctx, PartitionControlService_Ping_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PartitionControlServiceServer is the server API for PartitionControlService service.
 // All implementations must embed UnimplementedPartitionControlServiceServer
 // for forward compatibility.
@@ -959,6 +973,9 @@ type PartitionControlServiceServer interface {
 	// ExecuteMerge는 PM이 PS에게 두 파티션의 merge를 명령한다.
 	// lower 파티션이 upper 파티션의 상태를 흡수한다. 두 파티션 모두 같은 PS에 있어야 한다.
 	ExecuteMerge(context.Context, *ExecuteMergeRequest) (*ExecuteMergeResponse, error)
+	// Ping checks whether the PS is alive.
+	// Used by PM after lease expiry to avoid false-positive failovers caused by etcd overload.
+	Ping(context.Context, *PingRequest) (*PingResponse, error)
 	mustEmbedUnimplementedPartitionControlServiceServer()
 }
 
@@ -983,6 +1000,9 @@ func (UnimplementedPartitionControlServiceServer) PreparePartition(context.Conte
 }
 func (UnimplementedPartitionControlServiceServer) ExecuteMerge(context.Context, *ExecuteMergeRequest) (*ExecuteMergeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExecuteMerge not implemented")
+}
+func (UnimplementedPartitionControlServiceServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Ping not implemented")
 }
 func (UnimplementedPartitionControlServiceServer) mustEmbedUnimplementedPartitionControlServiceServer() {
 }
@@ -1096,6 +1116,24 @@ func _PartitionControlService_ExecuteMerge_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PartitionControlService_Ping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionControlServiceServer).Ping(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionControlService_Ping_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionControlServiceServer).Ping(ctx, req.(*PingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PartitionControlService_ServiceDesc is the grpc.ServiceDesc for PartitionControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1122,6 +1160,10 @@ var PartitionControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ExecuteMerge",
 			Handler:    _PartitionControlService_ExecuteMerge_Handler,
+		},
+		{
+			MethodName: "Ping",
+			Handler:    _PartitionControlService_Ping_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

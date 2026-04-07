@@ -133,6 +133,12 @@ func (h *controlHandler) GetStats(
 	}, nil
 }
 
+// Ping responds to a liveness check from the PM.
+// Used by PM after lease expiry to distinguish real failures from etcd overload false positives.
+func (h *controlHandler) Ping(_ context.Context, _ *pb.PingRequest) (*pb.PingResponse, error) {
+	return &pb.PingResponse{}, nil
+}
+
 // PreparePartition handles a partition-load command from the PM.
 func (h *controlHandler) PreparePartition(
 	ctx context.Context,

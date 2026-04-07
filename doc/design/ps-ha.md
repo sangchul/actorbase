@@ -28,16 +28,23 @@ TTL을 줄이면 감지 시간이 단축된다.
 | 3~5초 | 3~5초 | 짧은 네트워크 순단 시 오탐 가능 |
 | 1~2초 | 1~2초 | etcd에 heartbeat 부하 증가 |
 
-### 보완책: PS 간 직접 헬스체크
+### 보완책: lease 만료 시 직접 헬스체크 (오탐 방지)
 
-etcd lease 만료를 기다리지 않고, PM이 PS에 직접 ping을 보내 장애를 조기 감지하는
-방식을 병행할 수 있다. lease TTL은 안전망으로 유지하고, 직접 헬스체크로 감지 시간을
-단축한다.
+TTL을 줄이면 etcd 과부하 시 PS heartbeat 갱신이 실패해 정상 PS가 죽은 것으로
+오판될 수 있다. lease 만료 이벤트가 발생할 때 PM이 PS에 gRPC ping을 1회 보내
+진짜 장애인지 확인하면 이 오탐을 방지할 수 있다.
+
+평소에는 ping을 보내지 않으므로 추가 오버헤드가 없다.
 
 ```
-PM → PS gRPC ping (1초 주기)
-  응답 없음 3회 연속 → 장애로 판정 → failover 시작
-  (lease 만료 전에 선제 대응)
+Normal operation:
+  PS → etcd heartbeat (TTL renewed) → PM does nothing
+
+On lease expiry:
+  PM detects lease expired
+    → gRPC ping to PS (1 attempt)
+        → response: etcd overload false positive → cancel failover
+        → no response: real failure → proceed with failover
 ```
 
 ---

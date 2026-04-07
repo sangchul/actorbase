@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/sangchul/actorbase/internal/domain"
@@ -29,19 +30,31 @@ func NewConnPool() *ConnPool {
 }
 
 // Get returns the connection for addr, creating one if it does not exist.
+// If the cached connection is in TransientFailure or Shutdown state, it is
+// replaced with a fresh connection so that a restarted server is reachable.
 func (p *ConnPool) Get(addr string) (*grpc.ClientConn, error) {
 	p.mu.RLock()
 	conn, ok := p.conns[addr]
 	p.mu.RUnlock()
 	if ok {
-		return conn, nil
+		state := conn.GetState()
+		if state != connectivity.TransientFailure && state != connectivity.Shutdown {
+			return conn, nil
+		}
+		// Stale connection: log and fall through to replace it.
+		slog.Info("transport: ConnPool: replacing stale connection", "addr", addr, "state", state)
+		_ = conn.Close()
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// double-check
+	// Double-check: another goroutine may have replaced it already.
 	if conn, ok = p.conns[addr]; ok {
-		return conn, nil
+		state := conn.GetState()
+		if state != connectivity.TransientFailure && state != connectivity.Shutdown {
+			return conn, nil
+		}
+		_ = conn.Close()
 	}
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -370,6 +383,7 @@ type PSController interface {
 	PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string) error
 	ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error
 	GetStats(ctx context.Context) (*pb.GetStatsResponse, error)
+	Ping(ctx context.Context) error
 }
 
 // PSClientFactory creates PSController instances for a given PS address.
@@ -440,13 +454,21 @@ func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, actorType, part
 }
 
 // PreparePartition instructs the target PS to load a partition from the CheckpointStore.
+// Uses WaitForReady so that a freshly restarted PS (IDLE connection) is reached even
+// when the gRPC client's reconnect backoff has not yet elapsed.
 func (c *PSControlClient) PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string) error {
+	slog.Info("transport: PreparePartition → PS", "partition", partitionID, "actor_type", actorType,
+		"conn_state", c.conn.GetState())
 	_, err := c.client.PreparePartition(ctx, &pb.PreparePartitionRequest{
 		PartitionId:   partitionID,
 		KeyRangeStart: keyRangeStart,
 		KeyRangeEnd:   keyRangeEnd,
 		ActorType:     actorType,
-	})
+	}, grpc.WaitForReady(true))
+	if err != nil {
+		slog.Error("transport: PreparePartition RPC error", "partition", partitionID,
+			"raw_err", err, "conn_state", c.conn.GetState())
+	}
 	return fromGRPCStatus(err)
 }
 
@@ -481,6 +503,12 @@ func (c *PSControlClient) ExecuteMerge(ctx context.Context, actorType, lowerPart
 // GetStats retrieves overall node statistics from the PS.
 func (c *PSControlClient) GetStats(ctx context.Context) (*pb.GetStatsResponse, error) {
 	return c.client.GetStats(ctx, &pb.GetStatsRequest{})
+}
+
+// Ping checks whether the PS is alive. Used by PM after lease expiry to detect false positives.
+func (c *PSControlClient) Ping(ctx context.Context) error {
+	_, err := c.client.Ping(ctx, &pb.PingRequest{})
+	return fromGRPCStatus(err)
 }
 
 // ── Conversion helpers ────────────────────────────────────────────────────────

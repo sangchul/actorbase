@@ -2,10 +2,13 @@ package pm
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/sangchul/actorbase/policy"
 	"github.com/sangchul/actorbase/provider"
 )
+
+const defaultPingTimeout = 2 * time.Second
 
 // Config holds all settings and dependencies required to create a PM.
 type Config struct {
@@ -30,6 +33,11 @@ type Config struct {
 
 	Metrics provider.Metrics // If nil, a no-op implementation is used.
 
+	// PingTimeout is the timeout for the liveness ping sent to a PS after lease expiry.
+	// If the PS responds within this duration, the lease expiry is treated as a false positive.
+	// Default: 2s.
+	PingTimeout time.Duration
+
 	// BalancePolicy is the load-balancing strategy implementation.
 	// If nil, NoopBalancePolicy (does nothing) is used.
 	// Users can inject their own provider.BalancePolicy implementation,
@@ -40,6 +48,9 @@ type Config struct {
 func (c *Config) setDefaults() {
 	if c.BalancePolicy == nil {
 		c.BalancePolicy = &policy.NoopBalancePolicy{}
+	}
+	if c.PingTimeout <= 0 {
+		c.PingTimeout = defaultPingTimeout
 	}
 }
 
