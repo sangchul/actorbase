@@ -11,7 +11,7 @@ import (
 
 func TestSplitter_Split_Success(t *testing.T) {
 	entry := makeEntry("p1", "kv", "a", "z", "node1", "addr1", domain.PartitionStatusActive)
-	store := newMockRoutingStore(makeRT(1, []domain.RouteEntry{entry}))
+	store := newMockRoutingStore(makeRT(1, []domain.RouteEntry{entry}, map[string]string{"node1": "addr1"}))
 	ctrl := &mockPSController{executeSplitKey: "m"}
 	factory := newMockPSClientFactory(ctrl)
 
@@ -48,7 +48,7 @@ func TestSplitter_Split_Success(t *testing.T) {
 
 func TestSplitter_Split_PresetNewPartitionID(t *testing.T) {
 	entry := makeEntry("p1", "kv", "a", "z", "node1", "addr1", domain.PartitionStatusActive)
-	store := newMockRoutingStore(makeRT(1, []domain.RouteEntry{entry}))
+	store := newMockRoutingStore(makeRT(1, []domain.RouteEntry{entry}, map[string]string{"node1": "addr1"}))
 	ctrl := &mockPSController{executeSplitKey: "m"}
 	factory := newMockPSClientFactory(ctrl)
 

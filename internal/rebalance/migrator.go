@@ -56,7 +56,7 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 	if entry.PartitionStatus == domain.PartitionStatusDraining {
 		return fmt.Errorf("partition %s is already draining", partitionID)
 	}
-	if entry.Node.ID == targetNodeID {
+	if entry.NodeID == targetNodeID {
 		return fmt.Errorf("partition %s is already on node %s", partitionID, targetNodeID)
 	}
 
@@ -83,11 +83,16 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 	}
 
 	// 4. Send ExecuteMigrateOut to the source PS.
-	sourceCtrl, err := m.psFactory.GetClient(entry.Node.Address)
+	sourceAddr, ok := rt.NodeAddress(entry.NodeID)
+	if !ok {
+		m.revertToActive(ctx, rt)
+		return fmt.Errorf("no address known for source node %s", entry.NodeID)
+	}
+	sourceCtrl, err := m.psFactory.GetClient(sourceAddr)
 	if err != nil {
 		// Revert the routing table on failure.
 		m.revertToActive(ctx, rt)
-		return fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
+		return fmt.Errorf("connect to source PS %s: %w", sourceAddr, err)
 	}
 	if err := sourceCtrl.ExecuteMigrateOut(ctx, entry.Partition.ActorType, partitionID, targetNodeID, targetNode.Address); err != nil {
 		m.revertToActive(ctx, rt)
@@ -103,14 +108,15 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
 	}
 	kr := entry.Partition.KeyRange
-	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End); err != nil {
+	nextEpoch := entry.Epoch + 1
+	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End, nextEpoch); err != nil {
 		slog.Error("prepare partition failed, reverting routing", "partition", partitionID, "err", err)
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("prepare partition on target PS: %w", err)
 	}
 
 	// 6. Update the routing table: move the partition to targetNode (Active).
-	finalRT, err := buildMigratedTable(rt, partitionID, targetNode)
+	finalRT, err := buildMigratedTable(rt, partitionID, targetNode.ID, targetNode.Address, nextEpoch)
 	if err != nil {
 		return fmt.Errorf("build migrated routing table: %w", err)
 	}
@@ -139,21 +145,37 @@ func buildDrainingTable(rt *domain.RoutingTable, partitionID string) (*domain.Ro
 			break
 		}
 	}
-	return domain.NewRoutingTable(rt.Version()+1, entries)
+	newRT, err := domain.NewRoutingTable(rt.Version()+1, entries)
+	if err != nil {
+		return nil, err
+	}
+	return newRT.WithNodeAddrs(rt.NodeAddrs()), nil
 }
 
-// buildMigratedTable returns a new RoutingTable with partitionID's node
-// updated to targetNode and its status set to Active.
-func buildMigratedTable(rt *domain.RoutingTable, partitionID string, targetNode domain.NodeInfo) (*domain.RoutingTable, error) {
+// buildMigratedTable returns a new RoutingTable with partitionID's NodeID
+// updated to targetNodeID and its status set to Active.
+// The target node's address is added to the nodeAddrs map.
+func buildMigratedTable(rt *domain.RoutingTable, partitionID, targetNodeID, targetAddr string, epoch uint64) (*domain.RoutingTable, error) {
 	entries := rt.Entries()
 	for i, e := range entries {
 		if e.Partition.ID == partitionID {
-			entries[i].Node = targetNode
+			entries[i].NodeID = targetNodeID
 			entries[i].PartitionStatus = domain.PartitionStatusActive
+			entries[i].Epoch = epoch
 			break
 		}
 	}
-	return domain.NewRoutingTable(rt.Version()+1, entries)
+	newRT, err := domain.NewRoutingTable(rt.Version()+1, entries)
+	if err != nil {
+		return nil, err
+	}
+	// Copy existing addresses and add/update the target node's address.
+	newAddrs := make(map[string]string, len(rt.NodeAddrs())+1)
+	for k, v := range rt.NodeAddrs() {
+		newAddrs[k] = v
+	}
+	newAddrs[targetNodeID] = targetAddr
+	return newRT.WithNodeAddrs(newAddrs), nil
 }
 
 // Failover moves partitionID from an unreachable source PS to targetNodeID.
@@ -207,13 +229,14 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
 	}
 	kr := entry.Partition.KeyRange
-	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End); err != nil {
+	nextEpoch := entry.Epoch + 1
+	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End, nextEpoch); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("prepare partition on target PS: %w", err)
 	}
 
 	// 6. Set routing to targetNode Active.
-	finalRT, err := buildMigratedTable(rt, partitionID, targetNode)
+	finalRT, err := buildMigratedTable(rt, partitionID, targetNode.ID, targetNode.Address, nextEpoch)
 	if err != nil {
 		return fmt.Errorf("build migrated routing table: %w", err)
 	}
@@ -261,10 +284,11 @@ func (m *Migrator) ResumeMigrate(ctx context.Context, actorType, partitionID, ta
 	// Step 1: ExecuteMigrateOut on source PS.
 	// The source may have already evicted the partition (if PM crashed after step 4).
 	// ErrNotFound / ErrPartitionNotOwned from source → already evicted → continue.
-	sourceCtrl, err := m.psFactory.GetClient(entry.Node.Address)
-	if err != nil {
+	sourceAddr, _ := rt.NodeAddress(entry.NodeID)
+	sourceCtrl, err := m.psFactory.GetClient(sourceAddr)
+	if err != nil || sourceAddr == "" {
 		slog.Warn("rebalance: ResumeMigrate: cannot connect to source, assuming already evicted",
-			"source", entry.Node.Address, "err", err)
+			"source", sourceAddr, "err", err)
 	} else {
 		if evictErr := sourceCtrl.ExecuteMigrateOut(ctx, actorType, partitionID, targetNodeID, targetNode.Address); evictErr != nil {
 			if isGoneErr(evictErr) {
@@ -281,12 +305,13 @@ func (m *Migrator) ResumeMigrate(ctx context.Context, actorType, partitionID, ta
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
 	}
 	kr := entry.Partition.KeyRange
-	if err := targetCtrl.PreparePartition(ctx, actorType, partitionID, kr.Start, kr.End); err != nil {
+	nextEpoch := entry.Epoch + 1
+	if err := targetCtrl.PreparePartition(ctx, actorType, partitionID, kr.Start, kr.End, nextEpoch); err != nil {
 		return fmt.Errorf("resume prepare partition: %w", err)
 	}
 
 	// Step 3: Update routing table to Active on target.
-	finalRT, err := buildMigratedTable(rt, partitionID, targetNode)
+	finalRT, err := buildMigratedTable(rt, partitionID, targetNode.ID, targetNode.Address, nextEpoch)
 	if err != nil {
 		return fmt.Errorf("build migrated routing table: %w", err)
 	}

@@ -176,8 +176,8 @@ func (a *apiHandler) handleRouting(w http.ResponseWriter, r *http.Request) {
 			ActorType:     e.Partition.ActorType,
 			KeyRangeStart: e.Partition.KeyRange.Start,
 			KeyRangeEnd:   e.Partition.KeyRange.End,
-			NodeID:        e.Node.ID,
-			NodeAddress:   e.Node.Address,
+			NodeID:        e.NodeID,
+			NodeAddress:   func() string { addr, _ := rt.NodeAddress(e.NodeID); return addr }(),
 		}
 	}
 	jsonOK(w, resp)

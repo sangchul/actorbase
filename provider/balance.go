@@ -8,8 +8,9 @@ import "context"
 type NodeStatus int
 
 const (
-	NodeStatusActive   NodeStatus = iota
-	NodeStatusDraining            // Partition migration in progress (graceful shutdown)
+	NodeStatusActive     NodeStatus = iota
+	NodeStatusDraining              // Partition migration in progress (graceful shutdown)
+	NodeStatusRestricted            // Online but will NOT accept new partitions as a migration target
 )
 
 // NodeInfo holds cluster node information.

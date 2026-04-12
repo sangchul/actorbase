@@ -31,7 +31,7 @@ func routeEntry(partitionID, actorType, start, end, nodeID string, status domain
 			ActorType: actorType,
 			KeyRange:  domain.KeyRange{Start: start, End: end},
 		},
-		Node:            domain.NodeInfo{ID: nodeID, Address: nodeID + ":9000", Status: domain.NodeStatusActive},
+		NodeID:          nodeID,
 		PartitionStatus: status,
 	}
 }

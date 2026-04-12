@@ -99,9 +99,33 @@ service PartitionManagerService {
   // Called by abctl node reset after the operator has diagnosed the failure.
   rpc ResetNode(ResetNodeRequest) returns (ResetNodeResponse);
 
+  // SetNodeDrained is called by PS after drain completes. Draining → Drained.
+  rpc SetNodeDrained(SetNodeDrainedRequest) returns (SetNodeDrainedResponse);
+
+  // ActivateNode transitions a Drained node back to Active without a restart.
+  // Called by abctl node activate.
+  rpc ActivateNode(ActivateNodeRequest) returns (ActivateNodeResponse);
+
+  // RestrictNode transitions an Active node to Restricted (no new migrations accepted).
+  // Called by abctl node restrict.
+  rpc RestrictNode(RestrictNodeRequest) returns (RestrictNodeResponse);
+
+  // UnrestrictNode transitions a Restricted node back to Active.
+  // Called by abctl node unrestrict.
+  rpc UnrestrictNode(UnrestrictNodeRequest) returns (UnrestrictNodeResponse);
+
   // GetQueueStatus returns the current state of the PM task queue:
   // the running task (if any), all pending tasks, and recent history.
   rpc GetQueueStatus(GetQueueStatusRequest) returns (GetQueueStatusResponse);
+
+  // Heartbeat is called by PS every HeartbeatInterval to signal liveness.
+  // PM tracks last-seen per node; missing heartbeats trigger failure detection.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // EvictionComplete is called by PS after EvictAll finishes during shutdown.
+  // Signals PM that the WAL is fully flushed, allowing immediate PreparePartition
+  // on the replacement PS instead of waiting for walFlushMargin.
+  rpc EvictionComplete(EvictionCompleteRequest) returns (EvictionCompleteResponse);
 }
 
 message WatchRoutingRequest {
@@ -202,9 +226,26 @@ message PreparePartitionRequest {
   string key_range_start = 2; // target PS가 올바른 파티션인지 검증용
   string key_range_end   = 3;
   string actor_type      = 4; // PS가 올바른 ActorHost로 라우팅하는 데 사용.
+  uint64 epoch           = 5; // assignment epoch; PS stores and validates against future control commands
 }
 
 message PreparePartitionResponse {}
+
+// ─────────────────────────────────────────────────────────
+// Heartbeat Messages
+// ─────────────────────────────────────────────────────────
+
+message HeartbeatRequest {
+  string node_id = 1;
+}
+
+message HeartbeatResponse {}
+
+message EvictionCompleteRequest {
+  string node_id = 1;
+}
+
+message EvictionCompleteResponse {}
 
 message ExecuteMergeRequest {
   string actor_type          = 1;
@@ -231,13 +272,16 @@ message RouteEntryProto {
   string     node_address    = 5;
   NodeStatus node_status     = 6;
   string     actor_type      = 7; // actor type 식별자
+  uint64     epoch           = 8; // monotonically increasing assignment epoch; PS validates on control commands
 }
 
 enum NodeStatus {
-  NODE_STATUS_WAITING  = 0; // pre-registered, not yet online
-  NODE_STATUS_ACTIVE   = 1; // online and serving
-  NODE_STATUS_DRAINING = 2; // graceful shutdown, migrating partitions
-  NODE_STATUS_FAILED   = 3; // unexpected failure, awaiting operator reset
+  NODE_STATUS_WAITING    = 0; // pre-registered, not yet online
+  NODE_STATUS_ACTIVE     = 1; // online and serving
+  NODE_STATUS_DRAINING   = 2; // graceful shutdown, migrating partitions
+  NODE_STATUS_FAILED     = 3; // unexpected failure, awaiting operator reset
+  NODE_STATUS_DRAINED    = 4; // drain completed, PS may still be running
+  NODE_STATUS_RESTRICTED = 5; // active but won't accept new partitions
 }
 
 // ─────────────────────────────────────────────────────────
@@ -297,6 +341,30 @@ message ResetNodeRequest {
 }
 
 message ResetNodeResponse {}
+
+message SetNodeDrainedRequest {
+  string node_id = 1;
+}
+
+message SetNodeDrainedResponse {}
+
+message ActivateNodeRequest {
+  string node_id = 1;
+}
+
+message ActivateNodeResponse {}
+
+message RestrictNodeRequest {
+  string node_id = 1;
+}
+
+message RestrictNodeResponse {}
+
+message UnrestrictNodeRequest {
+  string node_id = 1;
+}
+
+message UnrestrictNodeResponse {}
 
 // ─────────────────────────────────────────────────────────
 // Queue Messages

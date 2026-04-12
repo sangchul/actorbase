@@ -22,6 +22,7 @@ type partitionHandler struct {
 	dispatchers map[string]actorDispatcher
 	routing     *atomic.Pointer[domain.RoutingTable]
 	nodeID      string
+	fenced      *atomic.Bool // set to true when node is isolated; rejects all data-plane requests
 }
 
 // Send forwards a request to the Actor for req.ActorType and returns the response.
@@ -29,6 +30,10 @@ func (h *partitionHandler) Send(
 	ctx context.Context,
 	req *pb.SendRequest,
 ) (*pb.SendResponse, error) {
+	if h.fenced != nil && h.fenced.Load() {
+		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+	}
+
 	// 1. Look up the dispatcher for the actor type.
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
@@ -46,7 +51,7 @@ func (h *partitionHandler) Send(
 	if !ok {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
-	if entry.Node.ID != h.nodeID {
+	if entry.NodeID != h.nodeID {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
 
@@ -70,6 +75,10 @@ func (h *partitionHandler) Scan(
 	ctx context.Context,
 	req *pb.ScanRequest,
 ) (*pb.ScanResponse, error) {
+	if h.fenced != nil && h.fenced.Load() {
+		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+	}
+
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
@@ -84,7 +93,7 @@ func (h *partitionHandler) Scan(
 	if !ok {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
-	if entry.Node.ID != h.nodeID {
+	if entry.NodeID != h.nodeID {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
 	if entry.PartitionStatus == domain.PartitionStatusDraining {

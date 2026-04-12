@@ -104,7 +104,7 @@ func (m *mockPSController) ExecuteMigrateOut(_ context.Context, _, _, _, _ strin
 	return m.executeMigrateOutErr
 }
 
-func (m *mockPSController) PreparePartition(_ context.Context, _, _, _, _ string) error {
+func (m *mockPSController) PreparePartition(_ context.Context, _, _, _, _ string, _ uint64) error {
 	m.preparePartitionCalled = true
 	return m.preparePartitionErr
 }
@@ -145,26 +145,27 @@ func (m *mockPSClientFactory) GetClient(addr string) (transport.PSController, er
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-func makeRT(version int64, entries []domain.RouteEntry) *domain.RoutingTable {
+// makeRT builds a RoutingTable. An optional nodeAddrs map (nodeID → address)
+// can be passed as the third argument and is attached via WithNodeAddrs.
+func makeRT(version int64, entries []domain.RouteEntry, addrs ...map[string]string) *domain.RoutingTable {
 	rt, err := domain.NewRoutingTable(version, entries)
 	if err != nil {
 		panic(err)
 	}
+	if len(addrs) > 0 {
+		rt.WithNodeAddrs(addrs[0])
+	}
 	return rt
 }
 
-func makeEntry(partitionID, actorType, start, end, nodeID, nodeAddr string, status domain.PartitionStatus) domain.RouteEntry {
+func makeEntry(partitionID, actorType, start, end, nodeID, _ string, status domain.PartitionStatus) domain.RouteEntry {
 	return domain.RouteEntry{
 		Partition: domain.Partition{
 			ID:        partitionID,
 			ActorType: actorType,
 			KeyRange:  domain.KeyRange{Start: start, End: end},
 		},
-		Node: domain.NodeInfo{
-			ID:      nodeID,
-			Address: nodeAddr,
-			Status:  domain.NodeStatusActive,
-		},
+		NodeID:          nodeID,
 		PartitionStatus: status,
 	}
 }

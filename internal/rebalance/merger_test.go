@@ -17,8 +17,12 @@ func adjacentEntries() []domain.RouteEntry {
 	}
 }
 
+func adjacentAddrs() map[string]string {
+	return map[string]string{"node1": "node1:9000"}
+}
+
 func TestMerger_Merge_Success(t *testing.T) {
-	store := newMockRoutingStore(makeRT(1, adjacentEntries()))
+	store := newMockRoutingStore(makeRT(1, adjacentEntries(), adjacentAddrs()))
 	ctrl := &mockPSController{}
 	factory := newMockPSClientFactory(ctrl)
 
@@ -74,7 +78,7 @@ func TestMerger_Merge_DifferentNodes(t *testing.T) {
 }
 
 func TestMerger_Merge_RPCFailure_RevertRouting(t *testing.T) {
-	store := newMockRoutingStore(makeRT(1, adjacentEntries()))
+	store := newMockRoutingStore(makeRT(1, adjacentEntries(), adjacentAddrs()))
 	ctrl := &mockPSController{executeMergeErr: errors.New("rpc error")}
 	factory := newMockPSClientFactory(ctrl)
 
@@ -103,7 +107,7 @@ func TestMerger_ResumeMerge_UpperAlreadyMerged(t *testing.T) {
 		makeEntry("lower", "kv", "a", "m", "node1", "node1:9000", domain.PartitionStatusDraining),
 		makeEntry("upper", "kv", "m", "z", "node1", "node1:9000", domain.PartitionStatusDraining),
 	}
-	store := newMockRoutingStore(makeRT(2, entries))
+	store := newMockRoutingStore(makeRT(2, entries, map[string]string{"node1": "node1:9000"}))
 	// PS responds ErrNotFound for upper — already merged.
 	ctrl := &mockPSController{executeMergeErr: provider.ErrNotFound}
 	factory := newMockPSClientFactory(ctrl)
@@ -148,7 +152,7 @@ func TestMerger_ResumeMerge_RPCRealError(t *testing.T) {
 		makeEntry("lower", "kv", "a", "m", "node1", "node1:9000", domain.PartitionStatusDraining),
 		makeEntry("upper", "kv", "m", "z", "node1", "node1:9000", domain.PartitionStatusDraining),
 	}
-	store := newMockRoutingStore(makeRT(2, entries))
+	store := newMockRoutingStore(makeRT(2, entries, map[string]string{"node1": "node1:9000"}))
 	ctrl := &mockPSController{executeMergeErr: errors.New("timeout")}
 	factory := newMockPSClientFactory(ctrl)
 

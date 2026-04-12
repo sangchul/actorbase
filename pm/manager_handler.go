@@ -2,12 +2,14 @@ package pm
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/sangchul/actorbase/internal/cluster"
 	"github.com/sangchul/actorbase/internal/domain"
 	"github.com/sangchul/actorbase/internal/transport"
 	pb "github.com/sangchul/actorbase/internal/transport/proto"
@@ -278,6 +280,20 @@ func (h *managerHandler) RequestJoin(
 	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusActive); err != nil {
 		return nil, transport.ToGRPCStatus(err)
 	}
+
+	// Pre-populate heartbeat so the failure detector doesn't false-positive immediately after join.
+	h.server.heartbeats.Store(req.NodeId, time.Now())
+
+	// Trigger node-joined policy evaluation.
+	// PS no longer registers an etcd heartbeat key, so the etcd-based NodeJoined event will not fire.
+	// We trigger it directly here from the RequestJoin RPC.
+	nodeInfo := domain.NodeInfo{
+		ID:      entry.ID,
+		Address: entry.Address,
+		Status:  domain.NodeStatusActive,
+	}
+	go h.server.handleNodeJoined(h.server.serverCtx, nodeInfo)
+
 	return &pb.RequestJoinResponse{}, nil
 }
 
@@ -367,6 +383,97 @@ func (h *managerHandler) ResetNode(
 	return &pb.ResetNodeResponse{}, nil
 }
 
+// SetNodeDrained is called by PS after drainPartitions completes. Draining → Drained.
+func (h *managerHandler) SetNodeDrained(
+	ctx context.Context,
+	req *pb.SetNodeDrainedRequest,
+) (*pb.SetNodeDrainedResponse, error) {
+	entry, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	if !found {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.NodeId)
+	}
+	if entry.Status != domain.NodeStatusDraining {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"node %q is in %v state, expected Draining", req.NodeId, entry.Status)
+	}
+	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusDrained); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.SetNodeDrainedResponse{}, nil
+}
+
+// ActivateNode transitions a Drained node back to Active without a process restart.
+// Called by abctl node activate.
+func (h *managerHandler) ActivateNode(
+	ctx context.Context,
+	req *pb.ActivateNodeRequest,
+) (*pb.ActivateNodeResponse, error) {
+	entry, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	if !found {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.NodeId)
+	}
+	if entry.Status != domain.NodeStatusDrained {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"node %q is in %v state, expected Drained", req.NodeId, entry.Status)
+	}
+	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusActive); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.ActivateNodeResponse{}, nil
+}
+
+// RestrictNode transitions an Active node to Restricted (no new migration target).
+// Called by abctl node restrict.
+func (h *managerHandler) RestrictNode(
+	ctx context.Context,
+	req *pb.RestrictNodeRequest,
+) (*pb.RestrictNodeResponse, error) {
+	entry, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	if !found {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.NodeId)
+	}
+	if entry.Status != domain.NodeStatusActive {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"node %q is in %v state, expected Active", req.NodeId, entry.Status)
+	}
+	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusRestricted); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.RestrictNodeResponse{}, nil
+}
+
+// UnrestrictNode transitions a Restricted node back to Active.
+// Called by abctl node unrestrict.
+func (h *managerHandler) UnrestrictNode(
+	ctx context.Context,
+	req *pb.UnrestrictNodeRequest,
+) (*pb.UnrestrictNodeResponse, error) {
+	entry, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	if !found {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.NodeId)
+	}
+	if entry.Status != domain.NodeStatusRestricted {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"node %q is in %v state, expected Restricted", req.NodeId, entry.Status)
+	}
+	if err := h.server.nodeCatalog.UpdateStatus(ctx, req.NodeId, domain.NodeStatusActive); err != nil {
+		return nil, transport.ToGRPCStatus(err)
+	}
+	return &pb.UnrestrictNodeResponse{}, nil
+}
+
 // GetQueueStatus returns the current PM task queue state.
 func (h *managerHandler) GetQueueStatus(
 	_ context.Context,
@@ -411,6 +518,44 @@ func taskToProto(t *taskqueue.Task) *pb.QueueTaskInfo {
 	return info
 }
 
+// Heartbeat records the liveness signal from a PS node.
+// PM's failure detector uses this to detect nodes that have stopped sending heartbeats.
+func (h *managerHandler) Heartbeat(
+	_ context.Context,
+	req *pb.HeartbeatRequest,
+) (*pb.HeartbeatResponse, error) {
+	h.server.heartbeats.Store(req.NodeId, time.Now())
+	return &pb.HeartbeatResponse{}, nil
+}
+
+// EvictionComplete signals that the PS has finished flushing all WAL and checkpoints.
+// For the SIGKILL failover path: allows PM to skip walFlushMargin.
+// For the SIGTERM graceful path: immediately triggers handleNodeLeft to avoid
+// waiting for the HeartbeatTimeout (usually 5s).
+func (h *managerHandler) EvictionComplete(
+	ctx context.Context,
+	req *pb.EvictionCompleteRequest,
+) (*pb.EvictionCompleteResponse, error) {
+	h.server.evictedNodes.Store(req.NodeId, struct{}{})
+
+	// Remove from heartbeat table to prevent the failure detector from firing again.
+	h.server.heartbeats.Delete(req.NodeId)
+
+	// Immediately handle the departure without waiting for HeartbeatTimeout.
+	// handleNodeLeft is safe to call here: if the node is Draining (SIGTERM path),
+	// it sets the node to Waiting; if Active (unexpected EvictionComplete), it
+	// triggers failover. This is idempotent — if handleNodeLeft was already called,
+	// the node will be in a terminal state and the call is a no-op.
+	node, found, err := h.server.nodeCatalog.GetNode(ctx, req.NodeId)
+	if err == nil && found {
+		slog.Info("pm: EvictionComplete received, triggering immediate handleNodeLeft",
+			"node", req.NodeId, "status", node.Status)
+		go h.server.handleNodeLeft(h.server.serverCtx, node, cluster.NodeLeaveGraceful)
+	}
+
+	return &pb.EvictionCompleteResponse{}, nil
+}
+
 // domainStatusToProto converts domain.NodeStatus to pb.NodeStatus.
 func domainStatusToProto(s domain.NodeStatus) pb.NodeStatus {
 	switch s {
@@ -422,6 +567,10 @@ func domainStatusToProto(s domain.NodeStatus) pb.NodeStatus {
 		return pb.NodeStatus_NODE_STATUS_DRAINING
 	case domain.NodeStatusFailed:
 		return pb.NodeStatus_NODE_STATUS_FAILED
+	case domain.NodeStatusDrained:
+		return pb.NodeStatus_NODE_STATUS_DRAINED
+	case domain.NodeStatusRestricted:
+		return pb.NodeStatus_NODE_STATUS_RESTRICTED
 	default:
 		return pb.NodeStatus_NODE_STATUS_WAITING
 	}

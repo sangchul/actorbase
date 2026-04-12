@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v4.23.4
-// source: internal/transport/proto/actorbase.proto
+// source: actorbase.proto
 
 package actorbasepb
 
@@ -167,25 +167,31 @@ var PartitionService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/transport/proto/actorbase.proto",
+	Metadata: "actorbase.proto",
 }
 
 const (
-	PartitionManagerService_WatchRouting_FullMethodName    = "/actorbase.v1.PartitionManagerService/WatchRouting"
-	PartitionManagerService_RequestSplit_FullMethodName    = "/actorbase.v1.PartitionManagerService/RequestSplit"
-	PartitionManagerService_RequestMigrate_FullMethodName  = "/actorbase.v1.PartitionManagerService/RequestMigrate"
-	PartitionManagerService_RequestMerge_FullMethodName    = "/actorbase.v1.PartitionManagerService/RequestMerge"
-	PartitionManagerService_ListMembers_FullMethodName     = "/actorbase.v1.PartitionManagerService/ListMembers"
-	PartitionManagerService_GetClusterStats_FullMethodName = "/actorbase.v1.PartitionManagerService/GetClusterStats"
-	PartitionManagerService_ApplyPolicy_FullMethodName     = "/actorbase.v1.PartitionManagerService/ApplyPolicy"
-	PartitionManagerService_GetPolicy_FullMethodName       = "/actorbase.v1.PartitionManagerService/GetPolicy"
-	PartitionManagerService_ClearPolicy_FullMethodName     = "/actorbase.v1.PartitionManagerService/ClearPolicy"
-	PartitionManagerService_RequestJoin_FullMethodName     = "/actorbase.v1.PartitionManagerService/RequestJoin"
-	PartitionManagerService_SetNodeDraining_FullMethodName = "/actorbase.v1.PartitionManagerService/SetNodeDraining"
-	PartitionManagerService_AddNode_FullMethodName         = "/actorbase.v1.PartitionManagerService/AddNode"
-	PartitionManagerService_RemoveNode_FullMethodName      = "/actorbase.v1.PartitionManagerService/RemoveNode"
-	PartitionManagerService_ResetNode_FullMethodName       = "/actorbase.v1.PartitionManagerService/ResetNode"
-	PartitionManagerService_GetQueueStatus_FullMethodName  = "/actorbase.v1.PartitionManagerService/GetQueueStatus"
+	PartitionManagerService_WatchRouting_FullMethodName     = "/actorbase.v1.PartitionManagerService/WatchRouting"
+	PartitionManagerService_RequestSplit_FullMethodName     = "/actorbase.v1.PartitionManagerService/RequestSplit"
+	PartitionManagerService_RequestMigrate_FullMethodName   = "/actorbase.v1.PartitionManagerService/RequestMigrate"
+	PartitionManagerService_RequestMerge_FullMethodName     = "/actorbase.v1.PartitionManagerService/RequestMerge"
+	PartitionManagerService_ListMembers_FullMethodName      = "/actorbase.v1.PartitionManagerService/ListMembers"
+	PartitionManagerService_GetClusterStats_FullMethodName  = "/actorbase.v1.PartitionManagerService/GetClusterStats"
+	PartitionManagerService_ApplyPolicy_FullMethodName      = "/actorbase.v1.PartitionManagerService/ApplyPolicy"
+	PartitionManagerService_GetPolicy_FullMethodName        = "/actorbase.v1.PartitionManagerService/GetPolicy"
+	PartitionManagerService_ClearPolicy_FullMethodName      = "/actorbase.v1.PartitionManagerService/ClearPolicy"
+	PartitionManagerService_RequestJoin_FullMethodName      = "/actorbase.v1.PartitionManagerService/RequestJoin"
+	PartitionManagerService_SetNodeDraining_FullMethodName  = "/actorbase.v1.PartitionManagerService/SetNodeDraining"
+	PartitionManagerService_AddNode_FullMethodName          = "/actorbase.v1.PartitionManagerService/AddNode"
+	PartitionManagerService_RemoveNode_FullMethodName       = "/actorbase.v1.PartitionManagerService/RemoveNode"
+	PartitionManagerService_ResetNode_FullMethodName        = "/actorbase.v1.PartitionManagerService/ResetNode"
+	PartitionManagerService_SetNodeDrained_FullMethodName   = "/actorbase.v1.PartitionManagerService/SetNodeDrained"
+	PartitionManagerService_ActivateNode_FullMethodName     = "/actorbase.v1.PartitionManagerService/ActivateNode"
+	PartitionManagerService_RestrictNode_FullMethodName     = "/actorbase.v1.PartitionManagerService/RestrictNode"
+	PartitionManagerService_UnrestrictNode_FullMethodName   = "/actorbase.v1.PartitionManagerService/UnrestrictNode"
+	PartitionManagerService_GetQueueStatus_FullMethodName   = "/actorbase.v1.PartitionManagerService/GetQueueStatus"
+	PartitionManagerService_Heartbeat_FullMethodName        = "/actorbase.v1.PartitionManagerService/Heartbeat"
+	PartitionManagerService_EvictionComplete_FullMethodName = "/actorbase.v1.PartitionManagerService/EvictionComplete"
 )
 
 // PartitionManagerServiceClient is the client API for PartitionManagerService service.
@@ -230,9 +236,27 @@ type PartitionManagerServiceClient interface {
 	// ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
 	// Called by abctl node reset after the operator has diagnosed the failure.
 	ResetNode(ctx context.Context, in *ResetNodeRequest, opts ...grpc.CallOption) (*ResetNodeResponse, error)
+	// SetNodeDrained is called by PS after drain completes. Draining → Drained.
+	SetNodeDrained(ctx context.Context, in *SetNodeDrainedRequest, opts ...grpc.CallOption) (*SetNodeDrainedResponse, error)
+	// ActivateNode transitions a Drained node back to Active without a restart.
+	// Called by abctl node activate.
+	ActivateNode(ctx context.Context, in *ActivateNodeRequest, opts ...grpc.CallOption) (*ActivateNodeResponse, error)
+	// RestrictNode transitions an Active node to Restricted (no new migrations accepted).
+	// Called by abctl node restrict.
+	RestrictNode(ctx context.Context, in *RestrictNodeRequest, opts ...grpc.CallOption) (*RestrictNodeResponse, error)
+	// UnrestrictNode transitions a Restricted node back to Active.
+	// Called by abctl node unrestrict.
+	UnrestrictNode(ctx context.Context, in *UnrestrictNodeRequest, opts ...grpc.CallOption) (*UnrestrictNodeResponse, error)
 	// GetQueueStatus returns the current state of the PM task queue:
 	// the running task (if any), all pending tasks, and recent history.
 	GetQueueStatus(ctx context.Context, in *GetQueueStatusRequest, opts ...grpc.CallOption) (*GetQueueStatusResponse, error)
+	// Heartbeat is called by PS every HeartbeatInterval to signal liveness.
+	// PM tracks last-seen per node; missing heartbeats trigger failure detection.
+	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
+	// EvictionComplete is called by PS after EvictAll finishes during shutdown.
+	// Signals PM that the WAL is fully flushed, allowing immediate PreparePartition
+	// on the replacement PS instead of waiting for walFlushMargin.
+	EvictionComplete(ctx context.Context, in *EvictionCompleteRequest, opts ...grpc.CallOption) (*EvictionCompleteResponse, error)
 }
 
 type partitionManagerServiceClient struct {
@@ -392,10 +416,70 @@ func (c *partitionManagerServiceClient) ResetNode(ctx context.Context, in *Reset
 	return out, nil
 }
 
+func (c *partitionManagerServiceClient) SetNodeDrained(ctx context.Context, in *SetNodeDrainedRequest, opts ...grpc.CallOption) (*SetNodeDrainedResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetNodeDrainedResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_SetNodeDrained_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) ActivateNode(ctx context.Context, in *ActivateNodeRequest, opts ...grpc.CallOption) (*ActivateNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ActivateNodeResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_ActivateNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) RestrictNode(ctx context.Context, in *RestrictNodeRequest, opts ...grpc.CallOption) (*RestrictNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RestrictNodeResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_RestrictNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) UnrestrictNode(ctx context.Context, in *UnrestrictNodeRequest, opts ...grpc.CallOption) (*UnrestrictNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnrestrictNodeResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_UnrestrictNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *partitionManagerServiceClient) GetQueueStatus(ctx context.Context, in *GetQueueStatusRequest, opts ...grpc.CallOption) (*GetQueueStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetQueueStatusResponse)
 	err := c.cc.Invoke(ctx, PartitionManagerService_GetQueueStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HeartbeatResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_Heartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *partitionManagerServiceClient) EvictionComplete(ctx context.Context, in *EvictionCompleteRequest, opts ...grpc.CallOption) (*EvictionCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EvictionCompleteResponse)
+	err := c.cc.Invoke(ctx, PartitionManagerService_EvictionComplete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -444,9 +528,27 @@ type PartitionManagerServiceServer interface {
 	// ResetNode transitions a Failed node back to Waiting, allowing it to rejoin.
 	// Called by abctl node reset after the operator has diagnosed the failure.
 	ResetNode(context.Context, *ResetNodeRequest) (*ResetNodeResponse, error)
+	// SetNodeDrained is called by PS after drain completes. Draining → Drained.
+	SetNodeDrained(context.Context, *SetNodeDrainedRequest) (*SetNodeDrainedResponse, error)
+	// ActivateNode transitions a Drained node back to Active without a restart.
+	// Called by abctl node activate.
+	ActivateNode(context.Context, *ActivateNodeRequest) (*ActivateNodeResponse, error)
+	// RestrictNode transitions an Active node to Restricted (no new migrations accepted).
+	// Called by abctl node restrict.
+	RestrictNode(context.Context, *RestrictNodeRequest) (*RestrictNodeResponse, error)
+	// UnrestrictNode transitions a Restricted node back to Active.
+	// Called by abctl node unrestrict.
+	UnrestrictNode(context.Context, *UnrestrictNodeRequest) (*UnrestrictNodeResponse, error)
 	// GetQueueStatus returns the current state of the PM task queue:
 	// the running task (if any), all pending tasks, and recent history.
 	GetQueueStatus(context.Context, *GetQueueStatusRequest) (*GetQueueStatusResponse, error)
+	// Heartbeat is called by PS every HeartbeatInterval to signal liveness.
+	// PM tracks last-seen per node; missing heartbeats trigger failure detection.
+	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
+	// EvictionComplete is called by PS after EvictAll finishes during shutdown.
+	// Signals PM that the WAL is fully flushed, allowing immediate PreparePartition
+	// on the replacement PS instead of waiting for walFlushMargin.
+	EvictionComplete(context.Context, *EvictionCompleteRequest) (*EvictionCompleteResponse, error)
 	mustEmbedUnimplementedPartitionManagerServiceServer()
 }
 
@@ -499,8 +601,26 @@ func (UnimplementedPartitionManagerServiceServer) RemoveNode(context.Context, *R
 func (UnimplementedPartitionManagerServiceServer) ResetNode(context.Context, *ResetNodeRequest) (*ResetNodeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResetNode not implemented")
 }
+func (UnimplementedPartitionManagerServiceServer) SetNodeDrained(context.Context, *SetNodeDrainedRequest) (*SetNodeDrainedResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetNodeDrained not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) ActivateNode(context.Context, *ActivateNodeRequest) (*ActivateNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ActivateNode not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) RestrictNode(context.Context, *RestrictNodeRequest) (*RestrictNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestrictNode not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) UnrestrictNode(context.Context, *UnrestrictNodeRequest) (*UnrestrictNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnrestrictNode not implemented")
+}
 func (UnimplementedPartitionManagerServiceServer) GetQueueStatus(context.Context, *GetQueueStatusRequest) (*GetQueueStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetQueueStatus not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedPartitionManagerServiceServer) EvictionComplete(context.Context, *EvictionCompleteRequest) (*EvictionCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EvictionComplete not implemented")
 }
 func (UnimplementedPartitionManagerServiceServer) mustEmbedUnimplementedPartitionManagerServiceServer() {
 }
@@ -769,6 +889,78 @@ func _PartitionManagerService_ResetNode_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PartitionManagerService_SetNodeDrained_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetNodeDrainedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).SetNodeDrained(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_SetNodeDrained_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).SetNodeDrained(ctx, req.(*SetNodeDrainedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_ActivateNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ActivateNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).ActivateNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_ActivateNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).ActivateNode(ctx, req.(*ActivateNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_RestrictNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestrictNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).RestrictNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_RestrictNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).RestrictNode(ctx, req.(*RestrictNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_UnrestrictNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnrestrictNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).UnrestrictNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_UnrestrictNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).UnrestrictNode(ctx, req.(*UnrestrictNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _PartitionManagerService_GetQueueStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetQueueStatusRequest)
 	if err := dec(in); err != nil {
@@ -783,6 +975,42 @@ func _PartitionManagerService_GetQueueStatus_Handler(srv interface{}, ctx contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PartitionManagerServiceServer).GetQueueStatus(ctx, req.(*GetQueueStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HeartbeatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).Heartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_Heartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).Heartbeat(ctx, req.(*HeartbeatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PartitionManagerService_EvictionComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EvictionCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PartitionManagerServiceServer).EvictionComplete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PartitionManagerService_EvictionComplete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PartitionManagerServiceServer).EvictionComplete(ctx, req.(*EvictionCompleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -847,8 +1075,32 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _PartitionManagerService_ResetNode_Handler,
 		},
 		{
+			MethodName: "SetNodeDrained",
+			Handler:    _PartitionManagerService_SetNodeDrained_Handler,
+		},
+		{
+			MethodName: "ActivateNode",
+			Handler:    _PartitionManagerService_ActivateNode_Handler,
+		},
+		{
+			MethodName: "RestrictNode",
+			Handler:    _PartitionManagerService_RestrictNode_Handler,
+		},
+		{
+			MethodName: "UnrestrictNode",
+			Handler:    _PartitionManagerService_UnrestrictNode_Handler,
+		},
+		{
 			MethodName: "GetQueueStatus",
 			Handler:    _PartitionManagerService_GetQueueStatus_Handler,
+		},
+		{
+			MethodName: "Heartbeat",
+			Handler:    _PartitionManagerService_Heartbeat_Handler,
+		},
+		{
+			MethodName: "EvictionComplete",
+			Handler:    _PartitionManagerService_EvictionComplete_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
@@ -858,7 +1110,7 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "internal/transport/proto/actorbase.proto",
+	Metadata: "actorbase.proto",
 }
 
 const (
@@ -1167,5 +1419,5 @@ var PartitionControlService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/transport/proto/actorbase.proto",
+	Metadata: "actorbase.proto",
 }

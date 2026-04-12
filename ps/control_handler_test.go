@@ -260,3 +260,67 @@ func TestControlHandler_GetStats_EmptyDispatchers(t *testing.T) {
 		t.Errorf("expected 0 partitions, got %d", resp.PartitionCount)
 	}
 }
+
+// ── PreparePartition epoch ─────────────────────────────────────────────────────
+
+func TestControlHandler_PreparePartition_EpochStored(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	h := newCtrlHandler(map[string]actorDispatcher{"kv": d})
+
+	_, err := h.PreparePartition(context.Background(), &pb.PreparePartitionRequest{
+		ActorType: "kv", PartitionId: "p1", Epoch: 42,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	val, ok := h.partitionEpochs.Load("p1")
+	if !ok {
+		t.Fatal("epoch should be stored after PreparePartition")
+	}
+	if val.(uint64) != 42 {
+		t.Errorf("expected epoch 42, got %v", val)
+	}
+}
+
+func TestControlHandler_PreparePartition_StaleEpochRejected(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	h := newCtrlHandler(map[string]actorDispatcher{"kv": d})
+
+	// First assignment: epoch 10
+	_, err := h.PreparePartition(context.Background(), &pb.PreparePartitionRequest{
+		ActorType: "kv", PartitionId: "p1", Epoch: 10,
+	})
+	if err != nil {
+		t.Fatalf("first PreparePartition failed: %v", err)
+	}
+
+	// Stale PM directive: epoch 5 (lower than stored 10) → must be rejected
+	_, err = h.PreparePartition(context.Background(), &pb.PreparePartitionRequest{
+		ActorType: "kv", PartitionId: "p1", Epoch: 5,
+	})
+	if grpcCode(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition for stale epoch, got %v", grpcCode(err))
+	}
+}
+
+func TestControlHandler_PreparePartition_HigherEpochAccepted(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	h := newCtrlHandler(map[string]actorDispatcher{"kv": d})
+
+	// First assignment: epoch 10
+	_, _ = h.PreparePartition(context.Background(), &pb.PreparePartitionRequest{
+		ActorType: "kv", PartitionId: "p1", Epoch: 10,
+	})
+
+	// New PM: higher epoch 11 → accepted, epoch updated
+	_, err := h.PreparePartition(context.Background(), &pb.PreparePartitionRequest{
+		ActorType: "kv", PartitionId: "p1", Epoch: 11,
+	})
+	if err != nil {
+		t.Errorf("higher epoch should be accepted, got: %v", err)
+	}
+	val, _ := h.partitionEpochs.Load("p1")
+	if val.(uint64) != 11 {
+		t.Errorf("expected stored epoch 11, got %v", val)
+	}
+}

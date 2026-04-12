@@ -81,11 +81,13 @@ func (r *balancerRunner) runOnce(ctx context.Context) {
 	if err != nil || len(allNodes) == 0 {
 		return
 	}
-	// Only pass Active nodes to the policy; Waiting/Failed/Draining nodes
+	// Pass Active and Restricted nodes to the policy; Waiting/Failed/Draining nodes
 	// should not be considered for load-balancing decisions.
+	// Restricted nodes hold partitions and must appear in stats, but the policy
+	// must not pick them as migration targets (enforced in pickLeastLoaded).
 	nodes := make([]domain.NodeInfo, 0, len(allNodes))
 	for _, n := range allNodes {
-		if n.Status == domain.NodeStatusActive {
+		if n.Status == domain.NodeStatusActive || n.Status == domain.NodeStatusRestricted {
 			nodes = append(nodes, n)
 		}
 	}
@@ -155,7 +157,7 @@ func (r *balancerRunner) buildClusterStats(ctx context.Context, nodes []domain.N
 				KeyRangeEnd:   entry.Partition.KeyRange.End,
 				KeyCount:      -1,
 			}
-			partitionsByNode[entry.Node.ID] = append(partitionsByNode[entry.Node.ID], pi)
+			partitionsByNode[entry.NodeID] = append(partitionsByNode[entry.NodeID], pi)
 		}
 	}
 

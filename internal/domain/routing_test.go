@@ -1,15 +1,17 @@
 package domain
 
-import "testing"
+import (
+	"testing"
+)
 
-func makeEntry(partID, start, end, nodeID, addr string) RouteEntry {
+func makeEntry(partID, start, end, nodeID, _ string) RouteEntry {
 	return RouteEntry{
 		Partition: Partition{
 			ID:        partID,
 			ActorType: "test",
 			KeyRange:  KeyRange{Start: start, End: end},
 		},
-		Node: NodeInfo{ID: nodeID, Address: addr},
+		NodeID: nodeID,
 	}
 }
 
@@ -56,11 +58,11 @@ func TestNewRoutingTable_AllowsOverlappingRangesDifferentActorTypes(t *testing.T
 	entries := []RouteEntry{
 		{
 			Partition: Partition{ID: "p1", ActorType: "bucket", KeyRange: KeyRange{Start: "a", End: "m"}},
-			Node:      NodeInfo{ID: "n1", Address: "n1:9000"},
+			NodeID:    "n1",
 		},
 		{
 			Partition: Partition{ID: "p2", ActorType: "object", KeyRange: KeyRange{Start: "a", End: "m"}},
-			Node:      NodeInfo{ID: "n1", Address: "n1:9000"},
+			NodeID:    "n1",
 		},
 	}
 	_, err := NewRoutingTable(1, entries)
@@ -236,9 +238,9 @@ func partIDs(entries []RouteEntry) []string {
 
 func TestRoutingTable_EntriesByType(t *testing.T) {
 	entries := []RouteEntry{
-		{Partition: Partition{ID: "b1", ActorType: "bucket", KeyRange: KeyRange{Start: "a", End: "m"}}, Node: NodeInfo{ID: "n1"}},
-		{Partition: Partition{ID: "o1", ActorType: "object", KeyRange: KeyRange{Start: "a", End: "m"}}, Node: NodeInfo{ID: "n1"}},
-		{Partition: Partition{ID: "b2", ActorType: "bucket", KeyRange: KeyRange{Start: "m", End: ""}}, Node: NodeInfo{ID: "n2"}},
+		{Partition: Partition{ID: "b1", ActorType: "bucket", KeyRange: KeyRange{Start: "a", End: "m"}}, NodeID: "n1"},
+		{Partition: Partition{ID: "o1", ActorType: "object", KeyRange: KeyRange{Start: "a", End: "m"}}, NodeID: "n1"},
+		{Partition: Partition{ID: "b2", ActorType: "bucket", KeyRange: KeyRange{Start: "m", End: ""}}, NodeID: "n2"},
 	}
 	rt, err := NewRoutingTable(1, entries)
 	if err != nil {
@@ -256,5 +258,47 @@ func TestRoutingTable_EntriesByType(t *testing.T) {
 	none := rt.EntriesByType("nonexistent")
 	if none != nil {
 		t.Error("expected nil for nonexistent actor type")
+	}
+}
+
+func TestRoutingTable_NodeAddress(t *testing.T) {
+	entries := []RouteEntry{makeEntry("p1", "a", "z", "n1", "n1:9000")}
+	rt, _ := NewRoutingTable(1, entries)
+	rt.WithNodeAddrs(map[string]string{"n1": "n1:9000"})
+
+	addr, ok := rt.NodeAddress("n1")
+	if !ok {
+		t.Fatal("expected address for n1")
+	}
+	if addr != "n1:9000" {
+		t.Errorf("addr = %q, want %q", addr, "n1:9000")
+	}
+
+	_, ok = rt.NodeAddress("unknown")
+	if ok {
+		t.Error("expected false for unknown node")
+	}
+}
+
+func TestRoutingTable_NodeAddrsAfterSplit(t *testing.T) {
+	// After a split, the new RoutingTable should still carry the original nodeAddrs.
+	original := makeEntry("p1", "a", "z", "n1", "n1:9000")
+	rt, _ := NewRoutingTable(1, []RouteEntry{original})
+	rt.WithNodeAddrs(map[string]string{"n1": "n1:9000"})
+
+	// Simulate split: build two new entries from original
+	newEntries := []RouteEntry{
+		{Partition: Partition{ID: "p1", ActorType: "test", KeyRange: KeyRange{Start: "a", End: "m"}}, NodeID: "n1"},
+		{Partition: Partition{ID: "p2", ActorType: "test", KeyRange: KeyRange{Start: "m", End: "z"}}, NodeID: "n1"},
+	}
+	newRT, _ := NewRoutingTable(2, newEntries)
+	newRT.WithNodeAddrs(rt.NodeAddrs())
+
+	addr, ok := newRT.NodeAddress("n1")
+	if !ok {
+		t.Fatal("expected address propagated after split")
+	}
+	if addr != "n1:9000" {
+		t.Errorf("addr = %q, want %q", addr, "n1:9000")
 	}
 }

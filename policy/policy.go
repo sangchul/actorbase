@@ -71,13 +71,17 @@ func ParsePolicy(data []byte) (provider.BalancePolicy, *RunnerConfig, error) {
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────────
 
-// pickLeastLoaded returns the node ID with the fewest partitions among reachable nodes, excluding excludeNodeID.
+// pickLeastLoaded returns the node ID with the fewest partitions among reachable,
+// non-Restricted nodes, excluding excludeNodeID.
 func pickLeastLoaded(stats provider.ClusterStats, excludeNodeID string) string {
 	best := ""
 	bestCount := -1
 	for _, ns := range stats.Nodes {
 		if !ns.Reachable || ns.Node.ID == excludeNodeID {
 			continue
+		}
+		if ns.Node.Status == provider.NodeStatusRestricted {
+			continue // Restricted nodes do not accept new partitions
 		}
 		if bestCount < 0 || len(ns.Partitions) < bestCount {
 			bestCount = len(ns.Partitions)

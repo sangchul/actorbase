@@ -297,6 +297,30 @@ func (c *PMClient) ResetNode(ctx context.Context, nodeID string) error {
 	return fromGRPCStatus(err)
 }
 
+// SetNodeDrained notifies the PM that drain has completed. Draining → Drained.
+func (c *PMClient) SetNodeDrained(ctx context.Context, nodeID string) error {
+	_, err := c.client.SetNodeDrained(ctx, &pb.SetNodeDrainedRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
+// ActivateNode transitions a Drained node back to Active.
+func (c *PMClient) ActivateNode(ctx context.Context, nodeID string) error {
+	_, err := c.client.ActivateNode(ctx, &pb.ActivateNodeRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
+// RestrictNode transitions an Active node to Restricted (no new partitions).
+func (c *PMClient) RestrictNode(ctx context.Context, nodeID string) error {
+	_, err := c.client.RestrictNode(ctx, &pb.RestrictNodeRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
+// UnrestrictNode transitions a Restricted node back to Active.
+func (c *PMClient) UnrestrictNode(ctx context.Context, nodeID string) error {
+	_, err := c.client.UnrestrictNode(ctx, &pb.UnrestrictNodeRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
 // protoStatusToDomain converts pb.NodeStatus to domain.NodeStatus.
 func protoStatusToDomain(s pb.NodeStatus) domain.NodeStatus {
 	switch s {
@@ -306,6 +330,10 @@ func protoStatusToDomain(s pb.NodeStatus) domain.NodeStatus {
 		return domain.NodeStatusDraining
 	case pb.NodeStatus_NODE_STATUS_FAILED:
 		return domain.NodeStatusFailed
+	case pb.NodeStatus_NODE_STATUS_DRAINED:
+		return domain.NodeStatusDrained
+	case pb.NodeStatus_NODE_STATUS_RESTRICTED:
+		return domain.NodeStatusRestricted
 	default:
 		return domain.NodeStatusWaiting
 	}
@@ -372,6 +400,20 @@ func (c *PMClient) GetQueueStatus(ctx context.Context) (*pb.GetQueueStatusRespon
 	return resp, nil
 }
 
+// Heartbeat sends a liveness signal to the PM.
+// Called periodically by PS; PM uses the last-seen timestamp to detect failures.
+func (c *PMClient) Heartbeat(ctx context.Context, nodeID string) error {
+	_, err := c.client.Heartbeat(ctx, &pb.HeartbeatRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
+// EvictionComplete signals to PM that this PS has finished flushing all WAL/checkpoints.
+// Allows PM to skip walFlushMargin and immediately assign the partition to a new PS.
+func (c *PMClient) EvictionComplete(ctx context.Context, nodeID string) error {
+	_, err := c.client.EvictionComplete(ctx, &pb.EvictionCompleteRequest{NodeId: nodeID})
+	return fromGRPCStatus(err)
+}
+
 // ── PSController interface (PM → PS, control plane) ──────────────────────────
 
 // PSController is the interface for PM → PS control-plane operations.
@@ -380,7 +422,7 @@ func (c *PMClient) GetQueueStatus(ctx context.Context) (*pb.GetQueueStatusRespon
 type PSController interface {
 	ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error)
 	ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string) error
-	PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string) error
+	PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string, epoch uint64) error
 	ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error
 	GetStats(ctx context.Context) (*pb.GetStatsResponse, error)
 	Ping(ctx context.Context) error
@@ -454,16 +496,18 @@ func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, actorType, part
 }
 
 // PreparePartition instructs the target PS to load a partition from the CheckpointStore.
+// epoch is the assignment epoch issued by PM; PS stores it for future control-command validation.
 // Uses WaitForReady so that a freshly restarted PS (IDLE connection) is reached even
 // when the gRPC client's reconnect backoff has not yet elapsed.
-func (c *PSControlClient) PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string) error {
+func (c *PSControlClient) PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string, epoch uint64) error {
 	slog.Info("transport: PreparePartition → PS", "partition", partitionID, "actor_type", actorType,
-		"conn_state", c.conn.GetState())
+		"epoch", epoch, "conn_state", c.conn.GetState())
 	_, err := c.client.PreparePartition(ctx, &pb.PreparePartitionRequest{
 		PartitionId:   partitionID,
 		KeyRangeStart: keyRangeStart,
 		KeyRangeEnd:   keyRangeEnd,
 		ActorType:     actorType,
+		Epoch:         epoch,
 	}, grpc.WaitForReady(true))
 	if err != nil {
 		slog.Error("transport: PreparePartition RPC error", "partition", partitionID,
@@ -515,25 +559,26 @@ func (c *PSControlClient) Ping(ctx context.Context) error {
 
 func protoToRoutingTable(proto *pb.RoutingTableProto) (*domain.RoutingTable, error) {
 	entries := make([]domain.RouteEntry, len(proto.Entries))
+	nodeAddrs := make(map[string]string, len(proto.Entries))
 	for i, e := range proto.Entries {
-		var nodeStatus domain.NodeStatus
-		if e.NodeStatus == pb.NodeStatus_NODE_STATUS_DRAINING {
-			nodeStatus = domain.NodeStatusDraining
-		}
 		entries[i] = domain.RouteEntry{
 			Partition: domain.Partition{
 				ID:        e.PartitionId,
 				ActorType: e.ActorType,
 				KeyRange:  domain.KeyRange{Start: e.KeyRangeStart, End: e.KeyRangeEnd},
 			},
-			Node: domain.NodeInfo{
-				ID:      e.NodeId,
-				Address: e.NodeAddress,
-				Status:  nodeStatus,
-			},
+			NodeID: e.NodeId,
+			Epoch:  e.Epoch,
+		}
+		if e.NodeAddress != "" {
+			nodeAddrs[e.NodeId] = e.NodeAddress
 		}
 	}
-	return domain.NewRoutingTable(proto.Version, entries)
+	rt, err := domain.NewRoutingTable(proto.Version, entries)
+	if err != nil {
+		return nil, err
+	}
+	return rt.WithNodeAddrs(nodeAddrs), nil
 }
 
 // RoutingTableToProto converts a domain.RoutingTable to a proto message.
@@ -542,18 +587,16 @@ func RoutingTableToProto(rt *domain.RoutingTable) *pb.RoutingTableProto {
 	entries := rt.Entries()
 	protoEntries := make([]*pb.RouteEntryProto, len(entries))
 	for i, e := range entries {
-		var nodeStatus pb.NodeStatus
-		if e.Node.Status == domain.NodeStatusDraining {
-			nodeStatus = pb.NodeStatus_NODE_STATUS_DRAINING
-		}
+		addr, _ := rt.NodeAddress(e.NodeID)
 		protoEntries[i] = &pb.RouteEntryProto{
 			PartitionId:   e.Partition.ID,
 			ActorType:     e.Partition.ActorType,
 			KeyRangeStart: e.Partition.KeyRange.Start,
 			KeyRangeEnd:   e.Partition.KeyRange.End,
-			NodeId:        e.Node.ID,
-			NodeAddress:   e.Node.Address,
-			NodeStatus:    nodeStatus,
+			NodeId:        e.NodeID,
+			NodeAddress:   addr,
+			NodeStatus:    pb.NodeStatus_NODE_STATUS_WAITING, // NodeStatus managed by NodeCatalog
+			Epoch:         e.Epoch,
 		}
 	}
 	return &pb.RoutingTableProto{

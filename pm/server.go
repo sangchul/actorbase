@@ -79,6 +79,18 @@ type Server struct {
 
 	// serverCtx stores the ctx from Start() and is used in applyPolicy for the balancer lifetime.
 	serverCtx context.Context
+
+	// heartbeats tracks the last heartbeat time per PS nodeID.
+	// Updated by the Heartbeat RPC handler; read by runFailureDetector.
+	heartbeats sync.Map // nodeID → time.Time
+
+	// evictedNodes tracks nodes that have sent EvictionComplete.
+	// Allows PM to skip walFlushMargin and immediately assign partition to new PS.
+	evictedNodes sync.Map // nodeID → struct{}
+
+	// bootstrapOnce ensures the initial routing table is created exactly once,
+	// even if multiple PS nodes send RequestJoin concurrently on a fresh cluster.
+	bootstrapOnce sync.Once
 }
 
 // subscriber holds the state for a single WatchRouting stream.
@@ -188,9 +200,11 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
-	// 4. Reconcile catalog: Active/Draining nodes with no live heartbeat → Waiting.
-	// This handles the case where PM crashed while PS was gracefully shutting down.
-	s.reconcileCatalog(ctx)
+	// 4. Reconcile catalog: ping Active/Draining nodes; non-responsive → Waiting.
+	// This handles the case where PM crashed while a PS was offline.
+	s.reconcileCatalogByPing(ctx)
+	// Recover partitions left on non-Active nodes after PM crash + PS failure.
+	s.recoverOrphanedPartitions(ctx)
 
 	// 5. Load the initial routing table.
 	currentRT, err := s.routingStore.Load(ctx)
@@ -202,18 +216,18 @@ func (s *Server) Start(ctx context.Context) error {
 	// 6. Watch routing store and broadcast updates to subscribers.
 	go s.watchRouting(ctx)
 
-	// 7. Watch node join/leave events and invoke BalancePolicy.
+	// 7. Watch node join events (NodeLeft is now handled by the failure detector).
 	go s.watchMembership(ctx)
+
+	// 7b. Start failure detector: triggers handleNodeLeft for nodes whose heartbeats time out.
+	go s.runFailureDetector(ctx)
 
 	// 8. Resume any in-progress work that was interrupted by a PM crash.
 	s.resumePendingWork(ctx)
 
-	// 9. If the cluster is empty, wait for the first PS to register and create the initial routing table.
-	if currentRT == nil {
-		go s.bootstrap(ctx)
-	}
-
-	// 10. Start the web console HTTP server if configured.
+	// 9. Start the web console HTTP server if configured.
+	// (Bootstrap of the initial routing table is handled lazily in handleNodeJoined
+	//  when the first PS calls RequestJoin on a fresh cluster.)
 	if s.cfg.HTTPAddr != "" {
 		consoleSrv := console.NewServer(s.cfg.HTTPAddr, s.cfg.ListenAddr)
 		go consoleSrv.Start(ctx)
@@ -240,20 +254,10 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// reconcileCatalog sets catalog nodes that are Active/Draining but have no live heartbeat to Waiting.
-// Called once on PM startup (after leader election) to handle the case where PM was down
-// when a PS gracefully shut down (leaving catalog in Active state with no heartbeat).
-func (s *Server) reconcileCatalog(ctx context.Context) {
-	liveIDs, err := s.nodeRegistry.ListLiveNodeIDs(ctx)
-	if err != nil {
-		slog.Warn("pm: reconcile: failed to list live nodes", "err", err)
-		return
-	}
-	liveSet := make(map[string]struct{}, len(liveIDs))
-	for _, id := range liveIDs {
-		liveSet[id] = struct{}{}
-	}
-
+// reconcileCatalogByPing verifies Active/Draining/Drained/Restricted nodes by pinging them directly.
+// Nodes that do not respond are reset to Waiting.
+// Called once on PM startup (after leader election). Replaces the old etcd-heartbeat-based reconcile.
+func (s *Server) reconcileCatalogByPing(ctx context.Context) {
 	nodes, err := s.nodeCatalog.ListNodes(ctx)
 	if err != nil {
 		slog.Warn("pm: reconcile: failed to list catalog nodes", "err", err)
@@ -261,17 +265,97 @@ func (s *Server) reconcileCatalog(ctx context.Context) {
 	}
 
 	for _, n := range nodes {
-		if n.Status != domain.NodeStatusActive && n.Status != domain.NodeStatusDraining {
+		switch n.Status {
+		case domain.NodeStatusActive, domain.NodeStatusDraining,
+			domain.NodeStatusDrained, domain.NodeStatusRestricted:
+			// These states imply the node should be running — verify by ping.
+		default:
 			continue
 		}
-		if _, alive := liveSet[n.ID]; alive {
+		if n.Address == "" {
 			continue
 		}
-		// Node is Active/Draining in catalog but has no live heartbeat — set to Waiting.
+		pingCtx, cancel := context.WithTimeout(ctx, s.cfg.PingTimeout)
+		alive := s.pingPS(pingCtx, n.Address)
+		cancel()
+		if alive {
+			continue
+		}
+		// Node claims to be running but does not respond — reset to Waiting.
 		if err := s.nodeCatalog.UpdateStatus(ctx, n.ID, domain.NodeStatusWaiting); err != nil {
 			slog.Warn("pm: reconcile: failed to reset node", "node", n.ID, "err", err)
 		} else {
-			slog.Info("pm: reconcile: reset stale node to Waiting", "node", n.ID, "prev_status", n.Status)
+			slog.Info("pm: reconcile: reset unresponsive node to Waiting", "node", n.ID, "prev_status", n.Status)
+		}
+	}
+}
+
+// runFailureDetector periodically checks heartbeat timestamps.
+// Any Active node whose last heartbeat exceeds HeartbeatTimeout is declared dead and triggers handleNodeLeft.
+func (s *Server) runFailureDetector(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.checkHeartbeats(ctx)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Server) checkHeartbeats(ctx context.Context) {
+	threshold := time.Now().Add(-s.cfg.HeartbeatTimeout)
+	var stale []string
+	s.heartbeats.Range(func(key, val any) bool {
+		if val.(time.Time).Before(threshold) {
+			stale = append(stale, key.(string))
+		}
+		return true
+	})
+	for _, nodeID := range stale {
+		s.heartbeats.Delete(nodeID)
+		node, found, err := s.nodeCatalog.GetNode(ctx, nodeID)
+		if err != nil || !found {
+			continue
+		}
+		switch node.Status {
+		case domain.NodeStatusActive, domain.NodeStatusRestricted:
+			slog.Warn("pm: failure detector: heartbeat timeout, declaring node dead",
+				"node", nodeID, "timeout", s.cfg.HeartbeatTimeout)
+			go s.handleNodeLeft(ctx, node, cluster.NodeLeaveFailure)
+		case domain.NodeStatusDraining:
+			// PS crashed during drain; treat as failure so partitions are recovered.
+			slog.Warn("pm: failure detector: heartbeat timeout on Draining node, treating as failure",
+				"node", nodeID, "timeout", s.cfg.HeartbeatTimeout)
+			go s.handleNodeLeft(ctx, node, cluster.NodeLeaveFailure)
+		default:
+			continue
+		}
+	}
+}
+
+// waitForEviction blocks until the node sends EvictionComplete or walFlushMargin elapses.
+// Ensures the dead PS has flushed its WAL to shared storage before the replacement PS reads it.
+func (s *Server) waitForEviction(ctx context.Context, nodeID string) {
+	deadline := time.Now().Add(s.cfg.WalFlushMargin)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, done := s.evictedNodes.LoadAndDelete(nodeID); done {
+			slog.Info("pm: waitForEviction: EvictionComplete received, proceeding immediately", "node", nodeID)
+			return
+		}
+		if time.Now().After(deadline) {
+			slog.Info("pm: waitForEviction: walFlushMargin elapsed, proceeding", "node", nodeID,
+				"margin", s.cfg.WalFlushMargin)
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
 		}
 	}
 }
@@ -299,18 +383,21 @@ func (s *Server) broadcast(rt *domain.RoutingTable) {
 	}
 }
 
-// watchMembership delivers node join/leave events to BalancePolicy and executes the returned actions.
+// watchMembership handles node join events from the etcd membership watcher.
+// NodeLeft events are no longer sourced from etcd; the failure detector handles them.
 func (s *Server) watchMembership(ctx context.Context) {
 	slog.Info("pm: membership watcher started")
 	ch := s.membership.Watch(ctx)
 	for event := range ch {
 		switch event.Type {
 		case cluster.NodeJoined:
-			slog.Info("pm: node joined", "node", event.Node.ID, "addr", event.Node.Address)
+			slog.Info("pm: node joined (etcd)", "node", event.Node.ID, "addr", event.Node.Address)
 			go s.handleNodeJoined(ctx, event.Node)
 		case cluster.NodeLeft:
-			slog.Info("pm: node left", "node", event.Node.ID, "reason", event.Reason)
-			go s.handleNodeLeft(ctx, event.Node, event.Reason)
+			// NodeLeft from etcd (TTL expiry) is now a secondary signal.
+			// The failure detector is the primary source; ignore duplicate events.
+			slog.Debug("pm: node left (etcd TTL, secondary signal — already handled by failure detector)",
+				"node", event.Node.ID)
 		}
 	}
 	slog.Info("pm: membership watcher stopped")
@@ -327,7 +414,7 @@ func (s *Server) handleNodeJoined(ctx context.Context, node domain.NodeInfo) {
 		}
 	}
 
-	nodes, err := s.activeNodes(ctx)
+	nodes, err := s.operationalNodes(ctx)
 	if err != nil {
 		slog.Error("pm: handleNodeJoined: list nodes failed", "node", node.ID, "err", err)
 		return
@@ -338,34 +425,76 @@ func (s *Server) handleNodeJoined(ctx context.Context, node domain.NodeInfo) {
 		return
 	}
 
+	// If no routing table exists yet, this is the first node of a fresh cluster.
+	// Bootstrap by creating the initial routing table for each actor type.
+	if rt == nil {
+		s.bootstrapFirstNode(ctx, node)
+		return
+	}
+
 	pol := s.activeBalancePolicy()
 	stats := s.quickClusterStats(ctx, nodes, rt, "")
 	actions := pol.OnNodeJoined(ctx, domainToProviderNodeInfo(node), stats)
 	slog.Info("pm: handleNodeJoined: policy returned actions", "node", node.ID, "actions", len(actions))
 	s.executeBalanceActions(ctx, actions)
+
+	// Recover any partitions left on non-Active nodes (Failed or Waiting-but-offline).
+	// This handles cases where a PS died with no other PS available at the time.
+	s.recoverOrphanedPartitions(ctx)
+}
+
+// bootstrapFirstNode creates the initial routing table for a fresh cluster.
+// Uses sync.Once to guard against concurrent RequestJoins on startup.
+func (s *Server) bootstrapFirstNode(ctx context.Context, firstNode domain.NodeInfo) {
+	s.bootstrapOnce.Do(func() {
+		// Re-check under the lock in case another goroutine already bootstrapped.
+		if existing, err := s.routingStore.Load(ctx); err != nil || existing != nil {
+			if existing != nil {
+				slog.Info("pm bootstrap: routing table already exists, skipping", "node", firstNode.ID)
+			}
+			return
+		}
+
+		entries := make([]domain.RouteEntry, 0, len(s.cfg.ActorTypes))
+		for _, actorType := range s.cfg.ActorTypes {
+			entries = append(entries, domain.RouteEntry{
+				Partition: domain.Partition{
+					ID:        uuid.New().String(),
+					ActorType: actorType,
+					KeyRange:  domain.KeyRange{Start: "", End: ""},
+				},
+				NodeID:          firstNode.ID,
+				PartitionStatus: domain.PartitionStatusActive,
+				Epoch:           1,
+			})
+		}
+
+		initial, err := domain.NewRoutingTable(1, entries)
+		if err != nil {
+			slog.Error("pm bootstrap: create routing table", "err", err)
+			return
+		}
+		initial.WithNodeAddrs(map[string]string{firstNode.ID: firstNode.Address})
+		if err := s.routingStore.Save(ctx, initial); err != nil {
+			slog.Error("pm bootstrap: save routing table", "err", err)
+			return
+		}
+		slog.Info("pm bootstrap: initial routing table created",
+			"actor_types", s.cfg.ActorTypes, "node", firstNode.ID)
+	})
 }
 
 func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reason cluster.NodeLeaveReason) {
-	// Verify the node is actually dead before proceeding.
-	// etcd lease expiry can be a false positive when etcd itself is overloaded.
-	if node.Address != "" {
-		pingCtx, cancel := context.WithTimeout(ctx, s.cfg.PingTimeout)
-		alive := s.pingPS(pingCtx, node.Address)
-		cancel()
-		if alive {
-			slog.Warn("pm: handleNodeLeft: PS responded to ping — lease expiry was false positive, aborting failover",
-				"node", node.ID, "addr", node.Address)
-			return
-		}
-		slog.Info("pm: handleNodeLeft: PS did not respond to ping, proceeding with failover",
-			"node", node.ID, "addr", node.Address)
-	}
+	// Note: the false-positive ping check has been removed.
+	// Failure is now detected via PM-direct heartbeat timeout (runFailureDetector),
+	// which is more accurate than etcd TTL expiry. No ping is needed.
 
 	// Determine the catalog state to decide how to handle the departure.
 	catalogEntry, found, _ := s.nodeCatalog.GetNode(ctx, node.ID)
 	wasDraining := found && catalogEntry.Status == domain.NodeStatusDraining
+	isDrained   := found && catalogEntry.Status == domain.NodeStatusDrained
 
-	nodes, err := s.activeNodes(ctx)
+	nodes, err := s.operationalNodes(ctx)
 	if err != nil {
 		slog.Error("pm: handleNodeLeft: list nodes failed", "node", node.ID, "err", err)
 		return
@@ -379,7 +508,7 @@ func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reaso
 	var deadPartitions int
 	if rt != nil {
 		for _, e := range rt.Entries() {
-			if e.Node.ID == node.ID {
+			if e.NodeID == node.ID {
 				deadPartitions++
 			}
 		}
@@ -395,7 +524,15 @@ func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reaso
 	slog.Info("pm: handleNodeLeft: policy returned actions", "node", node.ID, "actions", len(actions))
 	s.executeBalanceActions(ctx, actions)
 
-	if wasDraining {
+	if isDrained {
+		// Drain completed successfully before the node exited.
+		// No failover needed — partitions were already migrated during drain.
+		if err := s.nodeCatalog.UpdateStatus(ctx, node.ID, domain.NodeStatusWaiting); err != nil {
+			slog.Error("pm: handleNodeLeft: failed to set Waiting after completed drain", "node", node.ID, "err", err)
+		} else {
+			slog.Info("pm: node returned to Waiting after completed drain", "node", node.ID)
+		}
+	} else if wasDraining {
 		// Graceful shutdown: drainPartitions already migrated the partitions.
 		// Failover any stragglers (usually none), then transition back to Waiting.
 		s.failoverDeadNode(ctx, node.ID)
@@ -404,9 +541,19 @@ func (s *Server) handleNodeLeft(ctx context.Context, node domain.NodeInfo, reaso
 		} else {
 			slog.Info("pm: node returned to Waiting after graceful drain", "node", node.ID)
 		}
+	} else if deadPartitions == 0 {
+		// Unexpected failure with no partitions: no data at risk, safe to auto-recover.
+		// Node can rejoin without operator intervention.
+		if err := s.nodeCatalog.UpdateStatus(ctx, node.ID, domain.NodeStatusWaiting); err != nil {
+			slog.Error("pm: handleNodeLeft: failed to set Waiting (no partitions)", "node", node.ID, "err", err)
+		} else {
+			slog.Info("pm: node with no partitions returned to Waiting after unexpected exit", "node", node.ID)
+		}
 	} else {
-		// Unexpected failure: mark Failed, then failover. Node stays Failed until
-		// the operator runs 'abctl node reset' to allow it to rejoin.
+		// Unexpected failure with partitions: wait for WAL flush before assigning to new PS.
+		// Either EvictionComplete arrives (fast path) or walFlushMargin elapses (safe path).
+		s.waitForEviction(ctx, node.ID)
+		// Operator review required before rejoin.
 		if err := s.nodeCatalog.UpdateStatus(ctx, node.ID, domain.NodeStatusFailed); err != nil {
 			slog.Error("pm: handleNodeLeft: failed to set Failed", "node", node.ID, "err", err)
 		}
@@ -436,7 +583,7 @@ func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
 	// List of remaining partitions on the dead node (empty if the policy already handled them).
 	var remaining []domain.RouteEntry
 	for _, entry := range rt.Entries() {
-		if entry.Node.ID == deadNodeID {
+		if entry.NodeID == deadNodeID {
 			remaining = append(remaining, entry)
 		}
 	}
@@ -480,6 +627,53 @@ func (s *Server) failoverDeadNode(ctx context.Context, deadNodeID string) {
 	}
 }
 
+// recoverOrphanedPartitions reassigns partitions that belong to non-Active nodes to currently Active nodes.
+// Uses Failover (skips ExecuteMigrateOut) because the source node may be offline.
+// Called on node join (case E/F) and on PM start after reconcileCatalog (crash recovery).
+func (s *Server) recoverOrphanedPartitions(ctx context.Context) {
+	rt, err := s.routingStore.Load(ctx)
+	if err != nil || rt == nil {
+		return
+	}
+
+	activeNodes, err := s.activeNodes(ctx)
+	if err != nil || len(activeNodes) == 0 {
+		return
+	}
+
+	activeSet := make(map[string]bool, len(activeNodes))
+	for _, n := range activeNodes {
+		activeSet[n.ID] = true
+	}
+
+	var orphaned []domain.RouteEntry
+	for _, entry := range rt.Entries() {
+		if !activeSet[entry.NodeID] {
+			orphaned = append(orphaned, entry)
+		}
+	}
+	if len(orphaned) == 0 {
+		return
+	}
+
+	slog.Info("pm: recoverOrphanedPartitions: found orphaned partitions", "count", len(orphaned))
+	for i, entry := range orphaned {
+		target := activeNodes[i%len(activeNodes)]
+		slog.Info("pm: recoverOrphanedPartitions: recovering partition",
+			"partition", entry.Partition.ID, "from", entry.NodeID, "to", target.ID)
+		taskID := s.queue.Submit(taskqueue.PriorityFailover, "failover",
+			entry.Partition.ActorType, entry.Partition.ID,
+			failoverTaskParams{PartitionID: entry.Partition.ID, TargetNodeID: target.ID})
+		if ferr := s.queue.Wait(ctx, taskID); ferr != nil {
+			slog.Error("pm: recoverOrphanedPartitions: failover failed",
+				"partition", entry.Partition.ID, "target", target.ID, "err", ferr)
+		} else {
+			slog.Info("pm: recoverOrphanedPartitions: partition recovered",
+				"partition", entry.Partition.ID, "to", target.ID)
+		}
+	}
+}
+
 // activeBalancePolicy returns the currently active BalancePolicy.
 // Returns the YAML-applied implementation if one is active, otherwise falls back to cfg.BalancePolicy.
 func (s *Server) activeBalancePolicy() provider.BalancePolicy {
@@ -493,7 +687,8 @@ func (s *Server) activeBalancePolicy() provider.BalancePolicy {
 }
 
 // activeNodes returns only Active nodes from the catalog.
-// Used to build cluster stats and failover target lists.
+// Used as migration targets (failover, recoverOrphanedPartitions).
+// Restricted nodes are intentionally excluded: they do not accept new partitions.
 func (s *Server) activeNodes(ctx context.Context) ([]domain.NodeInfo, error) {
 	all, err := s.nodeCatalog.ListNodes(ctx)
 	if err != nil {
@@ -506,6 +701,24 @@ func (s *Server) activeNodes(ctx context.Context) ([]domain.NodeInfo, error) {
 		}
 	}
 	return active, nil
+}
+
+// operationalNodes returns Active and Restricted nodes from the catalog.
+// Used to build ClusterStats passed to BalancePolicy. Restricted nodes hold
+// partitions and must appear in stats, but the policy must not pick them as
+// migration targets (checked in pickLeastLoaded via provider.NodeStatusRestricted).
+func (s *Server) operationalNodes(ctx context.Context) ([]domain.NodeInfo, error) {
+	all, err := s.nodeCatalog.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domain.NodeInfo, 0, len(all))
+	for _, n := range all {
+		if n.Status == domain.NodeStatusActive || n.Status == domain.NodeStatusRestricted {
+			result = append(result, n)
+		}
+	}
+	return result, nil
 }
 
 // quickClusterStats builds a lightweight ClusterStats for event handlers.
@@ -523,7 +736,7 @@ func (s *Server) quickClusterStats(ctx context.Context, nodes []domain.NodeInfo,
 				KeyRangeEnd:   entry.Partition.KeyRange.End,
 				KeyCount:      -1,
 			}
-			partitionsByNode[entry.Node.ID] = append(partitionsByNode[entry.Node.ID], pi)
+			partitionsByNode[entry.NodeID] = append(partitionsByNode[entry.NodeID], pi)
 		}
 	}
 
@@ -586,53 +799,19 @@ func (s *Server) executeBalanceActions(ctx context.Context, actions []provider.B
 }
 
 func domainToProviderNodeInfo(n domain.NodeInfo) provider.NodeInfo {
+	var pStatus provider.NodeStatus
+	switch n.Status {
+	case domain.NodeStatusDraining:
+		pStatus = provider.NodeStatusDraining
+	case domain.NodeStatusRestricted:
+		pStatus = provider.NodeStatusRestricted
+	default:
+		pStatus = provider.NodeStatusActive
+	}
 	return provider.NodeInfo{
 		ID:     n.ID,
 		Addr:   n.Address,
-		Status: provider.NodeStatus(n.Status),
-	}
-}
-
-func (s *Server) bootstrap(ctx context.Context) {
-	ch := s.membership.Watch(ctx)
-	for event := range ch {
-		if event.Type != cluster.NodeJoined {
-			continue
-		}
-		rt, err := s.routingStore.Load(ctx)
-		if err != nil {
-			slog.Error("pm bootstrap: load routing table", "err", err)
-			return
-		}
-		if rt != nil {
-			return
-		}
-
-		entries := make([]domain.RouteEntry, 0, len(s.cfg.ActorTypes))
-		for _, actorType := range s.cfg.ActorTypes {
-			entries = append(entries, domain.RouteEntry{
-				Partition: domain.Partition{
-					ID:        uuid.New().String(),
-					ActorType: actorType,
-					KeyRange:  domain.KeyRange{Start: "", End: ""},
-				},
-				Node:            event.Node,
-				PartitionStatus: domain.PartitionStatusActive,
-			})
-		}
-
-		initial, err := domain.NewRoutingTable(1, entries)
-		if err != nil {
-			slog.Error("pm bootstrap: create routing table", "err", err)
-			return
-		}
-		if err := s.routingStore.Save(ctx, initial); err != nil {
-			slog.Error("pm bootstrap: save routing table", "err", err)
-			return
-		}
-		slog.Info("pm bootstrap: initial routing table created",
-			"actor_types", s.cfg.ActorTypes, "node", event.Node.ID)
-		return
+		Status: pStatus,
 	}
 }
 
@@ -760,10 +939,10 @@ func (s *Server) ensureSameNodeAndMerge(ctx context.Context, actorType, lowerID,
 	if !ok {
 		return fmt.Errorf("ensureSameNodeAndMerge: upper partition %s not found", upperID)
 	}
-	if lowerEntry.Node.ID != upperEntry.Node.ID {
+	if lowerEntry.NodeID != upperEntry.NodeID {
 		slog.Info("pm: merge: migrating upper to lower's node",
-			"upper", upperID, "from", upperEntry.Node.ID, "to", lowerEntry.Node.ID)
-		if err := s.migrator.Migrate(ctx, actorType, upperID, lowerEntry.Node.ID); err != nil {
+			"upper", upperID, "from", upperEntry.NodeID, "to", lowerEntry.NodeID)
+		if err := s.migrator.Migrate(ctx, actorType, upperID, lowerEntry.NodeID); err != nil {
 			return fmt.Errorf("ensureSameNodeAndMerge: migrate upper: %w", err)
 		}
 	}
@@ -930,7 +1109,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 			}
 			if rt != nil {
 				entry, ok := rt.LookupByPartition(p.PartitionID)
-				if !ok || entry.Node.ID == p.TargetNodeID {
+				if !ok || entry.NodeID == p.TargetNodeID {
 					_ = s.workJournal.Complete(ctx, work.ID)
 					continue
 				}
@@ -960,7 +1139,7 @@ func (s *Server) resumePendingWork(ctx context.Context) {
 			}
 			if rt != nil {
 				entry, ok := rt.LookupByPartition(p.PartitionID)
-				if !ok || entry.Node.ID == p.TargetNodeID {
+				if !ok || entry.NodeID == p.TargetNodeID {
 					_ = s.workJournal.Complete(ctx, work.ID)
 					continue
 				}

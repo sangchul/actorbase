@@ -179,7 +179,11 @@ func (c *Client[Req, Resp]) Send(ctx context.Context, key string, req Req) (Resp
 			return zero, provider.ErrPartitionNotOwned
 		}
 
-		conn, err := c.connPool.Get(entry.Node.Address)
+		addr, ok := rt.NodeAddress(entry.NodeID)
+		if !ok {
+			return zero, fmt.Errorf("sdk: no address for node %s", entry.NodeID)
+		}
+		conn, err := c.connPool.Get(addr)
 		if err != nil {
 			return zero, err
 		}
@@ -251,7 +255,12 @@ func (c *Client[Req, Resp]) Scan(ctx context.Context, startKey, endKey string, r
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				conn, err := c.connPool.Get(entry.Node.Address)
+				addr, ok := rt.NodeAddress(entry.NodeID)
+				if !ok {
+					resCh <- scanResult{entry: entry, err: fmt.Errorf("sdk: no address for node %s", entry.NodeID)}
+					return
+				}
+				conn, err := c.connPool.Get(addr)
 				if err != nil {
 					resCh <- scanResult{entry: entry, err: err}
 					return

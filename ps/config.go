@@ -12,9 +12,10 @@ const (
 	defaultEvictInterval          = 1 * time.Minute
 	defaultCheckpointInterval     = 1 * time.Minute
 	defaultCheckpointWALThreshold = 100
-	defaultEtcdLeaseTTL           = 3 * time.Second
 	defaultDrainTimeout           = 60 * time.Second
 	defaultShutdownTimeout        = 30 * time.Second
+	defaultHeartbeatInterval      = 1 * time.Second
+	defaultIsolationFenceLimit    = 5
 )
 
 // BaseConfig holds settings shared across the entire PS instance.
@@ -29,7 +30,15 @@ type BaseConfig struct {
 
 	Metrics provider.Metrics // If nil, metrics collection is skipped.
 
-	EtcdLeaseTTL time.Duration // Node lease TTL. Default: 3s.
+	// HeartbeatInterval is how often PS sends a Heartbeat RPC to the PM leader.
+	// Default: 1s.
+	HeartbeatInterval time.Duration
+
+	// IsolationFenceLimit is the number of consecutive ticks where both PM heartbeat
+	// and etcd are unreachable before PS declares itself isolated, stops serving,
+	// and initiates shutdown.
+	// Default: 5 (≈5 s with default HeartbeatInterval).
+	IsolationFenceLimit int
 
 	// EvictionScheduler settings (shared across all actor types)
 	IdleTimeout   time.Duration // Evict an actor if it receives no messages for this duration. Default: 5m.
@@ -53,14 +62,17 @@ func (c *BaseConfig) setDefaults() {
 	if c.CheckpointInterval <= 0 {
 		c.CheckpointInterval = defaultCheckpointInterval
 	}
-	if c.EtcdLeaseTTL <= 0 {
-		c.EtcdLeaseTTL = defaultEtcdLeaseTTL
-	}
 	if c.DrainTimeout <= 0 {
 		c.DrainTimeout = defaultDrainTimeout
 	}
 	if c.ShutdownTimeout <= 0 {
 		c.ShutdownTimeout = defaultShutdownTimeout
+	}
+	if c.HeartbeatInterval <= 0 {
+		c.HeartbeatInterval = defaultHeartbeatInterval
+	}
+	if c.IsolationFenceLimit <= 0 {
+		c.IsolationFenceLimit = defaultIsolationFenceLimit
 	}
 }
 

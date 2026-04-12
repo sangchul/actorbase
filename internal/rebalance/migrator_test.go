@@ -20,7 +20,7 @@ func makeNodes(ids ...string) []domain.NodeInfo {
 
 func TestMigrator_Migrate_Success(t *testing.T) {
 	entry := makeEntry("p1", "kv", "a", "z", "node1", "node1:9000", domain.PartitionStatusActive)
-	store := newMockRoutingStore(makeRT(1, []domain.RouteEntry{entry}))
+	store := newMockRoutingStore(makeRT(1, []domain.RouteEntry{entry}, map[string]string{"node1": "node1:9000"}))
 	catalog := &mockNodeCatalog{nodes: makeNodes("node1", "node2")}
 	ctrl := &mockPSController{}
 	factory := newMockPSClientFactory(ctrl)
@@ -38,8 +38,8 @@ func TestMigrator_Migrate_Success(t *testing.T) {
 
 	rt, _ := store.Load(context.Background())
 	e, _ := rt.LookupByPartition("p1")
-	if e.Node.ID != "node2" {
-		t.Errorf("partition node = %q, want %q", e.Node.ID, "node2")
+	if e.NodeID != "node2" {
+		t.Errorf("partition node = %q, want %q", e.NodeID, "node2")
 	}
 	if e.PartitionStatus != domain.PartitionStatusActive {
 		t.Error("partition status should be Active after migrate")
@@ -74,7 +74,7 @@ func TestMigrator_Migrate_ActorTypeMismatch(t *testing.T) {
 
 func TestMigrator_Migrate_MigrateOutFailure_RevertRouting(t *testing.T) {
 	entry := makeEntry("p1", "kv", "a", "z", "node1", "node1:9000", domain.PartitionStatusActive)
-	store := newMockRoutingStore(makeRT(1, []domain.RouteEntry{entry}))
+	store := newMockRoutingStore(makeRT(1, []domain.RouteEntry{entry}, map[string]string{"node1": "node1:9000"}))
 	catalog := &mockNodeCatalog{nodes: makeNodes("node1", "node2")}
 	ctrl := &mockPSController{executeMigrateOutErr: errors.New("rpc error")}
 	factory := newMockPSClientFactory(ctrl)
@@ -90,7 +90,7 @@ func TestMigrator_Migrate_MigrateOutFailure_RevertRouting(t *testing.T) {
 	if e.PartitionStatus != domain.PartitionStatusActive {
 		t.Error("routing should be reverted to Active after MigrateOut failure")
 	}
-	if e.Node.ID != "node1" {
+	if e.NodeID != "node1" {
 		t.Error("routing should remain on source node after MigrateOut failure")
 	}
 }
@@ -100,7 +100,7 @@ func TestMigrator_Migrate_MigrateOutFailure_RevertRouting(t *testing.T) {
 func TestMigrator_ResumeMigrate_SourceAlreadyEvicted(t *testing.T) {
 	// Routing is Draining (PM crashed after MigrateOut but before PreparePartition).
 	entry := makeEntry("p1", "kv", "a", "z", "node1", "node1:9000", domain.PartitionStatusDraining)
-	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{entry}))
+	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{entry}, map[string]string{"node1": "node1:9000"}))
 	catalog := &mockNodeCatalog{nodes: makeNodes("node1", "node2")}
 
 	// Source returns ErrNotFound — already evicted.
@@ -119,8 +119,8 @@ func TestMigrator_ResumeMigrate_SourceAlreadyEvicted(t *testing.T) {
 	}
 	rt, _ := store.Load(context.Background())
 	e, _ := rt.LookupByPartition("p1")
-	if e.Node.ID != "node2" {
-		t.Errorf("partition node = %q, want %q", e.Node.ID, "node2")
+	if e.NodeID != "node2" {
+		t.Errorf("partition node = %q, want %q", e.NodeID, "node2")
 	}
 	if e.PartitionStatus != domain.PartitionStatusActive {
 		t.Error("partition should be Active after ResumeMigrate")
@@ -129,7 +129,7 @@ func TestMigrator_ResumeMigrate_SourceAlreadyEvicted(t *testing.T) {
 
 func TestMigrator_ResumeMigrate_SourceNotOwned(t *testing.T) {
 	entry := makeEntry("p1", "kv", "a", "z", "node1", "node1:9000", domain.PartitionStatusDraining)
-	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{entry}))
+	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{entry}, map[string]string{"node1": "node1:9000"}))
 	catalog := &mockNodeCatalog{nodes: makeNodes("node1", "node2")}
 
 	sourceCtrl := &mockPSController{executeMigrateOutErr: provider.ErrPartitionNotOwned}
@@ -149,7 +149,7 @@ func TestMigrator_ResumeMigrate_SourceNotOwned(t *testing.T) {
 
 func TestMigrator_ResumeMigrate_SourceRealError(t *testing.T) {
 	entry := makeEntry("p1", "kv", "a", "z", "node1", "node1:9000", domain.PartitionStatusDraining)
-	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{entry}))
+	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{entry}, map[string]string{"node1": "node1:9000"}))
 	catalog := &mockNodeCatalog{nodes: makeNodes("node1", "node2")}
 
 	// A non-"already done" error must propagate.
@@ -185,7 +185,7 @@ func TestMigrator_Failover_Success(t *testing.T) {
 	}
 	rt, _ := store.Load(context.Background())
 	e, _ := rt.LookupByPartition("p1")
-	if e.Node.ID != "node2" {
-		t.Errorf("partition node = %q, want %q", e.Node.ID, "node2")
+	if e.NodeID != "node2" {
+		t.Errorf("partition node = %q, want %q", e.NodeID, "node2")
 	}
 }

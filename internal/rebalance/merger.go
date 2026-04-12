@@ -67,9 +67,9 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 	}
 
 	// 5. Validate that both partitions are on the same node.
-	if lowerEntry.Node.ID != upperEntry.Node.ID {
+	if lowerEntry.NodeID != upperEntry.NodeID {
 		return fmt.Errorf("partitions are on different nodes: lower=%s, upper=%s",
-			lowerEntry.Node.ID, upperEntry.Node.ID)
+			lowerEntry.NodeID, upperEntry.NodeID)
 	}
 
 	// 6. Validate that both partitions are in Active status.
@@ -83,7 +83,7 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 	slog.Info("rebalance: merge starting",
 		"actor_type", actorType,
 		"lower", lowerPartitionID, "upper", upperPartitionID,
-		"node", lowerEntry.Node.ID)
+		"node", lowerEntry.NodeID)
 
 	// 7. Set both partitions to Draining in the routing table (SDK receives ErrPartitionBusy).
 	drainingRT, err := buildMergeDrainingTable(rt, lowerPartitionID, upperPartitionID)
@@ -95,10 +95,15 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 	}
 
 	// 8. Send ExecuteMerge RPC to the PS.
-	psCtrl, err := m.psFactory.GetClient(lowerEntry.Node.Address)
+	lowerAddr, ok := rt.NodeAddress(lowerEntry.NodeID)
+	if !ok {
+		m.revertToActive(ctx, rt)
+		return fmt.Errorf("no address known for node %s", lowerEntry.NodeID)
+	}
+	psCtrl, err := m.psFactory.GetClient(lowerAddr)
 	if err != nil {
 		m.revertToActive(ctx, rt)
-		return fmt.Errorf("connect to PS %s: %w", lowerEntry.Node.Address, err)
+		return fmt.Errorf("connect to PS %s: %w", lowerAddr, err)
 	}
 	if err := psCtrl.ExecuteMerge(ctx, actorType, lowerPartitionID, upperPartitionID); err != nil {
 		m.revertToActive(ctx, rt)
@@ -147,9 +152,13 @@ func (m *Merger) ResumeMerge(ctx context.Context, actorType, lowerID, upperID st
 		return nil
 	}
 
-	psCtrl, err := m.psFactory.GetClient(lowerEntry.Node.Address)
+	lowerAddr, ok := rt.NodeAddress(lowerEntry.NodeID)
+	if !ok {
+		return fmt.Errorf("no address known for node %s", lowerEntry.NodeID)
+	}
+	psCtrl, err := m.psFactory.GetClient(lowerAddr)
 	if err != nil {
-		return fmt.Errorf("connect to PS %s: %w", lowerEntry.Node.Address, err)
+		return fmt.Errorf("connect to PS %s: %w", lowerAddr, err)
 	}
 
 	// Step 1: ExecuteMerge — treat ErrNotFound for upper as already merged.
@@ -187,7 +196,11 @@ func buildMergeDrainingTable(rt *domain.RoutingTable, lowerID, upperID string) (
 			entries[i].PartitionStatus = domain.PartitionStatusDraining
 		}
 	}
-	return domain.NewRoutingTable(rt.Version()+1, entries)
+	newRT, err := domain.NewRoutingTable(rt.Version()+1, entries)
+	if err != nil {
+		return nil, err
+	}
+	return newRT.WithNodeAddrs(rt.NodeAddrs()), nil
 }
 
 // buildMergedTable returns a new RoutingTable with the lower partition's
@@ -205,5 +218,9 @@ func buildMergedTable(rt *domain.RoutingTable, lowerID, upperID, newEnd string) 
 		}
 		result = append(result, e)
 	}
-	return domain.NewRoutingTable(rt.Version()+1, result)
+	newRT, err := domain.NewRoutingTable(rt.Version()+1, result)
+	if err != nil {
+		return nil, err
+	}
+	return newRT.WithNodeAddrs(rt.NodeAddrs()), nil
 }

@@ -8,7 +8,11 @@ import (
 	"github.com/sangchul/actorbase/provider"
 )
 
-const defaultPingTimeout = 2 * time.Second
+const (
+	defaultPingTimeout      = 2 * time.Second
+	defaultHeartbeatTimeout = 5 * time.Second
+	defaultWalFlushMargin   = 3 * time.Second
+)
 
 // Config holds all settings and dependencies required to create a PM.
 type Config struct {
@@ -43,6 +47,16 @@ type Config struct {
 	// Users can inject their own provider.BalancePolicy implementation,
 	// or apply a ThresholdPolicy at runtime via "abctl policy apply".
 	BalancePolicy provider.BalancePolicy
+
+	// HeartbeatTimeout is how long PM waits for a heartbeat before declaring a PS dead.
+	// Default: 5s.
+	HeartbeatTimeout time.Duration
+
+	// WalFlushMargin is the extra wait after declaring a PS dead before sending
+	// PreparePartition to the replacement PS (used when EvictionComplete is not received).
+	// Gives the dead PS time to finish flushing its WAL to shared storage.
+	// Default: 3s.
+	WalFlushMargin time.Duration
 }
 
 func (c *Config) setDefaults() {
@@ -51,6 +65,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.PingTimeout <= 0 {
 		c.PingTimeout = defaultPingTimeout
+	}
+	if c.HeartbeatTimeout <= 0 {
+		c.HeartbeatTimeout = defaultHeartbeatTimeout
+	}
+	if c.WalFlushMargin <= 0 {
+		c.WalFlushMargin = defaultWalFlushMargin
 	}
 }
 

@@ -70,9 +70,13 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey, 
 	}
 
 	// 6. Send ExecuteSplit to the source PS. If splitKey=="", the PS decides and returns the actual key.
-	psCtrl, err := s.psFactory.GetClient(entry.Node.Address)
+	addr, ok := rt.NodeAddress(entry.NodeID)
+	if !ok {
+		return "", fmt.Errorf("no address known for node %s", entry.NodeID)
+	}
+	psCtrl, err := s.psFactory.GetClient(addr)
 	if err != nil {
-		return "", fmt.Errorf("connect to source PS %s: %w", entry.Node.Address, err)
+		return "", fmt.Errorf("connect to source PS %s: %w", addr, err)
 	}
 	usedKey, err := psCtrl.ExecuteSplit(ctx, entry.Partition.ActorType, partitionID, splitKey, kr.Start, kr.End, newPartitionID)
 	if err != nil {
@@ -85,6 +89,7 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey, 
 	if err != nil {
 		return "", fmt.Errorf("build new routing table: %w", err)
 	}
+	newRT.WithNodeAddrs(rt.NodeAddrs())
 
 	if err := s.routingStore.Save(ctx, newRT); err != nil {
 		return "", fmt.Errorf("save routing table: %w", err)
@@ -114,7 +119,7 @@ func buildSplitEntries(
 			ActorType: original.Partition.ActorType,
 			KeyRange:  domain.KeyRange{Start: original.Partition.KeyRange.Start, End: splitKey},
 		},
-		Node:            original.Node,
+		NodeID:          original.NodeID,
 		PartitionStatus: domain.PartitionStatusActive,
 	})
 
@@ -125,7 +130,7 @@ func buildSplitEntries(
 			ActorType: original.Partition.ActorType,
 			KeyRange:  domain.KeyRange{Start: splitKey, End: original.Partition.KeyRange.End},
 		},
-		Node:            original.Node,
+		NodeID:          original.NodeID,
 		PartitionStatus: domain.PartitionStatusActive,
 	})
 

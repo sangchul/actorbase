@@ -17,10 +17,15 @@ const (
 )
 
 // RouteEntry is a pair of a partition and the node that hosts it.
+// NodeID references the hosting node; resolve the address via RoutingTable.NodeAddress.
+// Epoch is a monotonically increasing value assigned by PM each time a partition is
+// (re)assigned; PS validates incoming control commands against its stored epoch to
+// reject stale PM directives from a previous assignment.
 type RouteEntry struct {
 	Partition       Partition
-	Node            NodeInfo
+	NodeID          string
 	PartitionStatus PartitionStatus
+	Epoch           uint64
 }
 
 // RoutingTable is the partition-to-node mapping table.
@@ -29,6 +34,7 @@ type RouteEntry struct {
 //   - byType    : actorType → slice sorted ascending by KeyRange.Start
 //                 Key range overlap validation is performed only within the same actorType.
 //   - partitions: partitionID → RouteEntry map (O(1) lookup)
+//   - nodeAddrs : nodeID → gRPC address (populated via WithNodeAddrs)
 //
 // Different actorTypes may have overlapping key ranges without conflict.
 // (e.g., bucket partitions and object partitions have independent key spaces.)
@@ -36,6 +42,7 @@ type RoutingTable struct {
 	version    int64
 	byType     map[string][]RouteEntry // actorType → sorted []RouteEntry
 	partitions map[string]RouteEntry   // partitionID → RouteEntry (O(1) lookup)
+	nodeAddrs  map[string]string       // nodeID → gRPC address
 }
 
 // NewRoutingTable creates a RoutingTable.
@@ -82,6 +89,27 @@ func NewRoutingTable(version int64, entries []RouteEntry) (*RoutingTable, error)
 // Version returns the monotonically increasing version number.
 func (rt *RoutingTable) Version() int64 {
 	return rt.version
+}
+
+// WithNodeAddrs attaches a nodeID → gRPC address map to the table and returns rt.
+// Callers that need to resolve node addresses (SDK, rebalancers) should call this
+// after constructing the table from etcd or proto data.
+func (rt *RoutingTable) WithNodeAddrs(addrs map[string]string) *RoutingTable {
+	rt.nodeAddrs = addrs
+	return rt
+}
+
+// NodeAddress returns the gRPC address registered for nodeID.
+// Returns ("", false) when no address is known for that node.
+func (rt *RoutingTable) NodeAddress(nodeID string) (string, bool) {
+	addr, ok := rt.nodeAddrs[nodeID]
+	return addr, ok
+}
+
+// NodeAddrs returns the full nodeID → address map.
+// The returned map must not be modified by the caller.
+func (rt *RoutingTable) NodeAddrs() map[string]string {
+	return rt.nodeAddrs
 }
 
 // Entries returns all RouteEntries sorted by (actorType, KeyRange.Start).

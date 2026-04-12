@@ -104,6 +104,21 @@ func (c *Client) ResetNode(ctx context.Context, nodeID string) error {
 	return c.inner.ResetNode(ctx, nodeID)
 }
 
+// ActivateNode transitions a Drained node back to Active.
+func (c *Client) ActivateNode(ctx context.Context, nodeID string) error {
+	return c.inner.ActivateNode(ctx, nodeID)
+}
+
+// RestrictNode transitions an Active node to Restricted.
+func (c *Client) RestrictNode(ctx context.Context, nodeID string) error {
+	return c.inner.RestrictNode(ctx, nodeID)
+}
+
+// UnrestrictNode transitions a Restricted node back to Active.
+func (c *Client) UnrestrictNode(ctx context.Context, nodeID string) error {
+	return c.inner.UnrestrictNode(ctx, nodeID)
+}
+
 // WatchRouting receives routing table changes via streaming.
 // The channel is closed when ctx is cancelled.
 func (c *Client) WatchRouting(ctx context.Context, clientID string) <-chan RoutingSnapshot {
@@ -122,8 +137,8 @@ func (c *Client) WatchRouting(ctx context.Context, clientID string) <-chan Routi
 					ActorType:     e.Partition.ActorType,
 					KeyRangeStart: e.Partition.KeyRange.Start,
 					KeyRangeEnd:   e.Partition.KeyRange.End,
-					NodeID:        e.Node.ID,
-					NodeAddr:      e.Node.Address,
+					NodeID:        e.NodeID,
+					NodeAddr:      func() string { addr, _ := rt.NodeAddress(e.NodeID); return addr }(),
 				})
 			}
 			snap := RoutingSnapshot{Version: int64(rt.Version()), Entries: entries}

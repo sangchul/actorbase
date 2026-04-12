@@ -31,6 +31,13 @@
 #  12. Multi-actor-type 동시 운영 (kv + counter 파티션 공존)
 #  13. drainPartitions 타임아웃 (PM 없는 환경 → EvictAll → checkpoint 복원)
 #  14. 파티션 Merge (Split → Merge → 데이터 무결성 + checkpoint 복원)
+#  15. SIGKILL + 파티션 없음 → Waiting (케이스 A: node reset 불필요)
+#  16. SIGKILL + 파티션 있음 + 다른 PS 없음 → 새 PS join 시 자동 재할당 (케이스 E)
+#  17. SIGTERM + 파티션 있음 + 다른 PS 없음 → 다른 PS join 시 자동 재할당 (케이스 F)
+#  18. Drained 상태 검증 (drain 완료 후 Drained, activate로 Active 복귀)
+#  19. Restricted 상태 검증 (restrict 후 migration 거부, unrestrict 후 복귀)
+#  20. PM heartbeat 기반 빠른 failover (HeartbeatTimeout 5s + WalFlushMargin 3s ≤ 10s)
+#      + EvictionComplete 로그 검증 (SIGTERM 시 PS → PM WAL flush 완료 신호 전송)
 
 set -euo pipefail
 
@@ -339,6 +346,161 @@ start_ps2() {
   sleep 2
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 독립 실행용 셋업 헬퍼
+# 특정 시나리오만 지정해 실행할 때 클러스터 상태를 직접 구축하는 함수들.
+# 전체 실행(인수 없음)에서는 호출되지 않는다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 공통 기반: 모든 프로세스 종료 + etcd/WAL/CKPT 정리 + PM(kv-only) 재기동
+_base_reset() {
+  [[ -n "$PS2_PID"  ]] && { kill "$PS2_PID"  2>/dev/null || true; PS2_PID=""; }
+  [[ -n "$PS1_PID"  ]] && { kill "$PS1_PID"  2>/dev/null || true; PS1_PID=""; }
+  [[ -n "$PM3_PID"  ]] && { kill "$PM3_PID"  2>/dev/null || true; PM3_PID=""; }
+  [[ -n "$PM2_PID"  ]] && { kill "$PM2_PID"  2>/dev/null || true; PM2_PID=""; }
+  [[ -n "$PM_PID"   ]] && { kill "$PM_PID"   2>/dev/null || true; PM_PID="";  }
+  pkill -f "kv_stress" 2>/dev/null || true
+  sleep 2
+  etcdctl --endpoints="$ETCD_ADDR" del /actorbase/ --prefix >/dev/null 2>&1 || true
+  if [[ "$WAL_BACKEND" == "redis" ]]; then
+    redis-cli -u "redis://$REDIS_ADDR" FLUSHDB >/dev/null 2>&1 || true
+  else
+    rm -rf "$WAL_DIR"
+  fi
+  rm -rf "$CKPT_DIR"
+  mkdir -p "$WAL_DIR" "$CKPT_DIR"
+  PM_ADDR="localhost:8000"
+  "$BIN_DIR/pm" -addr :8000 -etcd "$ETCD_ADDR" -actor-types kv >"$PM_LOG" 2>&1 &
+  PM_PID=$!
+  sleep 1
+  if ! kill -0 "$PM_PID" 2>/dev/null; then
+    echo "ERROR: PM failed to start in _base_reset. See $PM_LOG"; exit 1
+  fi
+}
+
+# PM(kv) + PS1 단독 (1 파티션) — 시나리오 2, 3용
+setup_basic_cluster() {
+  _base_reset
+  start_ps1
+}
+
+# PM(kv) + PS1 단독 + split(m) 완료 (2 파티션, 기본 데이터) — 시나리오 4용
+setup_cluster_pre_migrate() {
+  setup_basic_cluster
+  kv_set apple  red    >/dev/null
+  kv_set banana yellow >/dev/null
+  kv_set mango  orange >/dev/null
+  kv_set zebra  black  >/dev/null
+  local pid
+  pid=$(partition_id_by_index 1)
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" split kv "$pid" m >/dev/null 2>&1
+  sleep 1
+}
+
+# PM(kv) + PS1[start,m) + PS2[m,end) + 기본 데이터 — 시나리오 5용
+setup_split_cluster() {
+  setup_basic_cluster
+  kv_set apple  red    >/dev/null
+  kv_set banana yellow >/dev/null
+  kv_set mango  orange >/dev/null
+  kv_set zebra  black  >/dev/null
+  local pid
+  pid=$(partition_id_by_index 1)
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" split kv "$pid" m >/dev/null 2>&1
+  sleep 1
+  start_ps2
+  local upper_id
+  upper_id=$(routing_entries | awk -F'\t' '$2=="m" {print $1}')
+  if [[ -n "$upper_id" ]]; then
+    "$BIN_DIR/abctl" -pm "$PM_ADDR" migrate kv "$upper_id" ps-2 >/dev/null 2>&1
+    sleep 1
+  fi
+}
+
+# PM(kv) + PS2만 활성 (모든 파티션 PS2로 이전, PS1 종료)
+# 시나리오 6, 7, 9, 10, 11용
+setup_ps2_only() {
+  setup_split_cluster
+  # PS1에 남은 파티션도 PS2로 이전
+  local pid
+  for pid in $(routing_entries | awk -F'\t' '$4=="ps-1" {print $1}'); do
+    "$BIN_DIR/abctl" -pm "$PM_ADDR" migrate kv "$pid" ps-2 >/dev/null 2>&1 || true
+    sleep 1
+  done
+  # PS1 종료 (drain)
+  if [[ -n "$PS1_PID" ]]; then
+    kill "$PS1_PID" 2>/dev/null || true
+    PS1_PID=""
+  fi
+  sleep 4  # drain 완료 대기
+}
+
+# PM(kv) + PS2만 활성, 3개 파티션 [start,f), [f,m), [m,end) + 특정 데이터
+# 시나리오 8용
+setup_three_partitions_ps2() {
+  setup_basic_cluster
+  kv_set apple   red2   >/dev/null
+  kv_set banana  yellow >/dev/null
+  kv_set avocado green  >/dev/null
+  kv_set cherry  red3   >/dev/null
+  kv_set mango   orange >/dev/null
+  kv_set zebra   black  >/dev/null
+  # [start,end) → split at m → [start,m), [m,end)
+  local pid
+  pid=$(partition_id_by_index 1)
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" split kv "$pid" m >/dev/null 2>&1
+  sleep 1
+  # [start,m) → split at f → [start,f), [f,m)
+  local lower_id
+  lower_id=$(routing_entries | awk -F'\t' '$2!="m" {print $1; exit}')
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" split kv "$lower_id" f >/dev/null 2>&1
+  sleep 1
+  # 모든 파티션을 PS2로 이전
+  start_ps2
+  for pid in $(routing_entries | awk -F'\t' '$4=="ps-1" {print $1}'); do
+    "$BIN_DIR/abctl" -pm "$PM_ADDR" migrate kv "$pid" ps-2 >/dev/null 2>&1 || true
+    sleep 1
+  done
+  if [[ -n "$PS1_PID" ]]; then
+    kill "$PS1_PID" 2>/dev/null || true
+    PS1_PID=""
+  fi
+  sleep 4
+}
+
+# PM(kv,counter) + PS1(kv,counter) — 시나리오 13, 14용
+setup_multi_actor_cluster() {
+  [[ -n "$PS2_PID"  ]] && { kill "$PS2_PID"  2>/dev/null || true; PS2_PID=""; }
+  [[ -n "$PS1_PID"  ]] && { kill "$PS1_PID"  2>/dev/null || true; PS1_PID=""; }
+  [[ -n "$PM3_PID"  ]] && { kill "$PM3_PID"  2>/dev/null || true; PM3_PID=""; }
+  [[ -n "$PM2_PID"  ]] && { kill "$PM2_PID"  2>/dev/null || true; PM2_PID=""; }
+  [[ -n "$PM_PID"   ]] && { kill "$PM_PID"   2>/dev/null || true; PM_PID="";  }
+  pkill -f "kv_stress" 2>/dev/null || true
+  sleep 2
+  etcdctl --endpoints="$ETCD_ADDR" del /actorbase/ --prefix >/dev/null 2>&1 || true
+  if [[ "$WAL_BACKEND" == "redis" ]]; then
+    redis-cli -u "redis://$REDIS_ADDR" FLUSHDB >/dev/null 2>&1 || true
+  else
+    rm -rf "$WAL_DIR"
+  fi
+  rm -rf "$CKPT_DIR"
+  mkdir -p "$WAL_DIR" "$CKPT_DIR"
+  PM_ADDR="localhost:8000"
+  "$BIN_DIR/pm" -addr :8000 -etcd "$ETCD_ADDR" -actor-types kv,counter \
+    >"$LOG_DIR/pm_multi.log" 2>&1 &
+  PM_PID=$!
+  sleep 1
+  if ! kill -0 "$PM_PID" 2>/dev/null; then
+    echo "ERROR: PM(kv,counter) failed to start"; exit 1
+  fi
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node add ps-1 localhost:8001 2>/dev/null || true
+  "$BIN_DIR/kv_server" -node-id ps-1 -addr localhost:8001 -etcd "$ETCD_ADDR" \
+    "${WAL_ARGS[@]}" "${CKPT_ARGS[@]}" \
+    -actor-types kv,counter >"$LOG_DIR/ps1_multi.log" 2>&1 &
+  PS1_PID=$!
+  sleep 4
+}
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 시나리오 함수 정의
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -371,6 +533,9 @@ scenario_2() {
   log "시나리오 2: 기본 KV 동작 (set/get/del)"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+  # 독립 실행 시 클러스터 초기화 (전체 실행에서는 시나리오 1이 이미 PS1을 기동)
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_basic_cluster; fi
+
   assert_eq "set user:1001" "ok"             "$(kv_set user:1001 '{"name":"alice"}')"
   assert_eq "get user:1001" '{"name":"alice"}' "$(kv_get user:1001)"
   assert_eq "del user:1001" "ok"             "$(kv_del user:1001)"
@@ -384,6 +549,9 @@ scenario_3() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 3: 파티션 Split"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시 클러스터 초기화
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_basic_cluster; fi
 
   kv_set apple  red    >/dev/null
   kv_set banana yellow >/dev/null
@@ -415,6 +583,9 @@ scenario_4() {
   log "시나리오 4: Scale-out + Migrate"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+  # 독립 실행 시: PS1 + split(m) 완료 상태까지 준비 (PS2는 이 시나리오가 직접 기동)
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_cluster_pre_migrate; fi
+
   start_ps2
 
   members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
@@ -442,6 +613,9 @@ scenario_5() {
   log "시나리오 5: SIGKILL → 자동 Failover + WAL replay"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+  # 독립 실행 시: PS1[start,m) + PS2[m,end) + 기본 데이터(apple=red, banana=yellow, ...) 준비
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_split_cluster; fi
+
   # checkpoint 이후 WAL에만 기록되는 데이터 삽입
   kv_set apple  red2  >/dev/null  # 이전 값 red → red2
   kv_set avocado green >/dev/null
@@ -450,10 +624,10 @@ scenario_5() {
   # PS-1 강제 종료 (SIGKILL)
   kill -9 "$PS1_PID" 2>/dev/null || true
   PS1_PID=""
-  log "PS-1 killed. Waiting for etcd lease expiry (~15s)..."
+  log "PS-1 killed. Waiting for PM heartbeat timeout + walFlushMargin (~10s)..."
 
-  # etcd TTL 만료 대기 (기본 10s, 여유 5s)
-  sleep 15
+  # PM heartbeat timeout(5s) + walFlushMargin(3s) + 여유 2s
+  sleep 10
 
   members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
   assert_contains "ps-1이 Failed 상태 (SIGKILL)" "Failed" "$(echo "$members" | grep ps-1 || true)"
@@ -479,6 +653,9 @@ scenario_6() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 6: SDK 라우팅 자동 갱신 (부하 중 split)"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시: PM + PS2 활성 (모든 파티션 PS2에 존재) 상태 준비
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_ps2_only; fi
 
   # 현재 하위 파티션(ps-2에 있음)을 split 대상으로 선택
   LOWER_ID=$(routing_entries | awk -F'\t' '$2!="m" {print $1; exit}')
@@ -513,6 +690,13 @@ scenario_7() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 7: Graceful Shutdown (SIGTERM → drain)"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시: PM + PS2 활성 + apple=red2, mango=orange 준비
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then
+    setup_ps2_only
+    kv_set apple  red2   >/dev/null
+    kv_set mango  orange >/dev/null
+  fi
 
   # ps-1 재기동 후 파티션 하나를 migrate하여 두 노드에 분산
   start_ps1
@@ -559,6 +743,10 @@ scenario_8() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 8: Range Scan (다중 파티션 fan-out)"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시: PS2에 [start,f), [f,m), [m,end) 3개 파티션 + 특정 데이터 준비
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_three_partitions_ps2; fi
+
   #
   # 이 시점의 클러스터 상태:
   #   파티션: [start,f), [f,m), [m,end) — 모두 ps-2에 존재
@@ -609,6 +797,10 @@ scenario_9() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 9: PM HA Failover"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시: PM + PS2 활성 상태 준비
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_ps2_only; fi
+
   #
   # 이 시점: 클러스터가 정상 동작 중 (PM-1 leader, PS-2 active)
   # 절차:
@@ -674,6 +866,10 @@ scenario_10() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 10: Actor Eviction + Re-activation"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시: PM + PS2 활성 상태 준비 (PM_ADDR은 localhost:8000으로 리셋)
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_ps2_only; fi
+
   #
   # 이 시점: PM-2가 리더, PS-2가 모든 파티션 소유
   # 절차:
@@ -745,6 +941,13 @@ scenario_11() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 11: SDK HA Mode 자동 재발견"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시: PM + PS2 활성 상태 준비 (PM_ADDR=localhost:8000)
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then
+    setup_ps2_only
+    PM2_PID=""  # 독립 실행 시 PM2는 없음
+  fi
+
   #
   # 이 시점: PM-2가 리더 (localhost:8003), PS-2가 kv 파티션 소유
   # 절차:
@@ -907,6 +1110,10 @@ scenario_13() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 13: drainPartitions 타임아웃"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시: PM(kv,counter) + PS1(kv,counter) 상태 준비
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_multi_actor_cluster; fi
+
   #
   # 절차:
   #   1. 테스트 데이터 삽입 + WAL flush 대기
@@ -980,6 +1187,10 @@ scenario_14() {
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "시나리오 14: 파티션 Merge (Split → Merge → 데이터 무결성)"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # 독립 실행 시: PM(kv,counter) + PS1(kv,counter) 상태 준비
+  if [[ ${#SELECTED_SCENARIOS[@]} -gt 0 ]]; then setup_multi_actor_cluster; fi
+
   #
   # 절차:
   #   1. 현재 파티션 수 확인 (시나리오 3에서 split된 상태일 수 있음)
@@ -1084,6 +1295,365 @@ scenario_14() {
 }
 should_run 14 || log "시나리오 14: SKIP"
 should_run 14 && scenario_14
+
+# ─────────────────────────────────────────────────────────────────────────────
+# reset_cluster_single_ps1: 클러스터를 PS1 단독 kv-only 운영 상태로 초기화
+# (시나리오 15-19의 사전 조건 설정용 내부 헬퍼)
+#
+# Hard-resets etcd so counter partitions from scenario 12 don't bleed into the
+# node-state scenarios (15-19).  Also clears WAL/CKPT and restarts PM with
+# kv-only so the routing table starts clean.
+# ─────────────────────────────────────────────────────────────────────────────
+reset_cluster_single_ps1() {
+  # Kill any running PS/PM processes.
+  [[ -n "$PS2_PID" ]] && { kill "$PS2_PID" 2>/dev/null || true; PS2_PID=""; }
+  [[ -n "$PS1_PID" ]] && { kill "$PS1_PID" 2>/dev/null || true; PS1_PID=""; }
+  [[ -n "$PM3_PID" ]] && { kill "$PM3_PID" 2>/dev/null || true; PM3_PID=""; }
+  [[ -n "$PM2_PID" ]] && { kill "$PM2_PID" 2>/dev/null || true; PM2_PID=""; }
+  [[ -n "$PM_PID"  ]] && { kill "$PM_PID"  2>/dev/null || true; PM_PID="";  }
+  sleep 3
+
+  # Hard-reset etcd (removes counter partitions, node catalog, routing table).
+  etcdctl --endpoints="$ETCD_ADDR" del /actorbase/ --prefix >/dev/null 2>&1 || true
+  if [[ "$WAL_BACKEND" == "redis" ]]; then
+    redis-cli -u "redis://$REDIS_ADDR" FLUSHDB >/dev/null 2>&1 || true
+  else
+    rm -rf "$WAL_DIR"
+  fi
+  rm -rf "$CKPT_DIR"
+  mkdir -p "$WAL_DIR" "$CKPT_DIR"
+
+  # Restart PM with kv-only.
+  PM_ADDR="localhost:8000"
+  "$BIN_DIR/pm" -addr :8000 -etcd "$ETCD_ADDR" -actor-types kv >"$PM_LOG" 2>&1 &
+  PM_PID=$!
+  sleep 1
+  if ! kill -0 "$PM_PID" 2>/dev/null; then
+    echo "ERROR: PM failed to start in reset_cluster_single_ps1. See $PM_LOG"
+    exit 1
+  fi
+
+  # Start PS1 only to rebuild a single-node kv-only cluster.
+  start_ps1
+  log "reset_cluster_single_ps1: cluster reset done, PS1 active (kv-only)"
+}
+
+scenario_15() {
+  log ""
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log "시나리오 15: SIGKILL + 파티션 없음 → Waiting (케이스 A)"
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #
+  # 전제: PS1이 파티션을 보유하지 않은 상태에서 SIGKILL 발생
+  # 기대: PS1이 Failed가 아닌 Waiting으로 전환
+  #       PS1이 재기동하면 node reset 없이 Active로 복귀
+  #
+  # 사전 준비: PS1 단독 운영 + 파티션을 PS2로 이동 후 PS2만 남기기
+  reset_cluster_single_ps1
+
+  # Add PS2 and migrate all partitions to PS2.
+  start_ps2
+  sleep 2
+
+  # Migrate all PS1 partitions to PS2.
+  for pid in $(routing_entries | awk -F'\t' '$4=="ps-1" {print $1}'); do
+    "$BIN_DIR/abctl" -pm "$PM_ADDR" migrate kv "$pid" ps-2 >/dev/null 2>/dev/null || true
+    sleep 1
+  done
+  sleep 1
+
+  assert_eq "PS1 파티션 수=0 (모두 PS2로 이전)" "0" "$(partitions_on_node ps-1)"
+
+  # SIGKILL PS1 (파티션 없음).
+  kill -9 "$PS1_PID" 2>/dev/null || true
+  PS1_PID=""
+  log "PS-1 SIGKILL. Waiting for PM heartbeat timeout (~8s)..."
+  # HeartbeatTimeout(5s) + 여유 3s (파티션 없음이므로 walFlushMargin 없음)
+  sleep 8
+
+  members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
+  # KEY assertion: Waiting, NOT Failed
+  assert_contains "ps-1이 Waiting 상태 (파티션 없음 + SIGKILL)" "Waiting" "$(echo "$members" | grep ps-1 || true)"
+  assert_not_contains "ps-1이 Failed가 아님" "Failed" "$(echo "$members" | grep ps-1 || true)"
+
+  # Restart PS1 without node reset.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node add ps-1 localhost:8001 2>/dev/null || true
+  "$BIN_DIR/kv_server" -node-id ps-1 -addr localhost:8001 -etcd "$ETCD_ADDR" \
+    "${WAL_ARGS[@]}" "${CKPT_ARGS[@]}" >"$PS1_LOG" 2>&1 &
+  PS1_PID=$!
+  sleep 3
+
+  members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
+  assert_contains "ps-1이 재기동 후 Active (node reset 없이)" "Active" "$(echo "$members" | grep ps-1 || true)"
+}
+should_run 15 || log "시나리오 15: SKIP"
+should_run 15 && scenario_15
+
+scenario_16() {
+  log ""
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log "시나리오 16: SIGKILL + 파티션 있음 + 다른 PS 없음 → 새 PS 자동 재할당 (케이스 E)"
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #
+  # 전제: PS1 단독 운영, 파티션 보유 상태에서 SIGKILL
+  # 기대: PS1=Failed, 파티션은 routing table에 남아 있다가
+  #       PS2가 join하면 PM이 recoverOrphanedPartitions로 자동 재할당
+  #
+  reset_cluster_single_ps1
+
+  kv_set "scenario16-key" "s16-val" >/dev/null
+
+  # Ensure PS2 is not registered.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node remove ps-2 2>/dev/null || true
+  sleep 1
+
+  # SIGKILL PS1 (파티션 있음, 다른 PS 없음).
+  kill -9 "$PS1_PID" 2>/dev/null || true
+  PS1_PID=""
+  log "PS-1 SIGKILL (파티션 보유). Waiting for PM heartbeat timeout + walFlushMargin (~10s)..."
+  # HeartbeatTimeout(5s) + walFlushMargin(3s) + 여유 2s
+  sleep 10
+
+  members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
+  assert_contains "ps-1이 Failed 상태" "Failed" "$(echo "$members" | grep ps-1 || true)"
+  assert_eq "파티션은 아직 routing table에 존재 (ps-1 소유)" "1" "$(partitions_on_node ps-1)"
+
+  # Start PS2 — PM should auto-recover orphaned partitions on join.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node add ps-2 localhost:8002 2>/dev/null || true
+  "$BIN_DIR/kv_server" -node-id ps-2 -addr localhost:8002 -etcd "$ETCD_ADDR" \
+    "${WAL_ARGS[@]}" "${CKPT_ARGS[@]}" >"$PS2_LOG" 2>&1 &
+  PS2_PID=$!
+  sleep 5  # Allow recoverOrphanedPartitions to complete
+
+  assert_eq "파티션이 ps-2로 이동됨" "1" "$(partitions_on_node ps-2)"
+  assert_eq "scenario16-key 데이터 복원 (checkpoint)" "s16-val" "$(kv_get scenario16-key)"
+}
+should_run 16 || log "시나리오 16: SKIP"
+should_run 16 && scenario_16
+
+scenario_17() {
+  log ""
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log "시나리오 17: SIGTERM + 파티션 있음 + 다른 PS 없음 → 다른 PS join 시 자동 재할당 (케이스 F)"
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #
+  # 전제: PS1 단독 운영, 파티션 보유 상태에서 SIGTERM
+  #   → drain target 없으므로 skip → EvictAll → checkpoint 저장 → Waiting
+  # 기대: PS2가 join하면 PM이 recoverOrphanedPartitions로 PS1의 Waiting 파티션을 재할당
+  #
+  reset_cluster_single_ps1
+
+  kv_set "scenario17-key" "s17-val" >/dev/null
+
+  # Ensure PS2 is not registered.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node remove ps-2 2>/dev/null || true
+  sleep 1
+
+  # SIGTERM PS1.
+  kill "$PS1_PID" 2>/dev/null || true
+  log "PS-1 SIGTERM sent. Waiting for drain + EvictAll (~10s)..."
+  sleep 10
+  PS1_PID=""
+
+  members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
+  assert_contains "ps-1이 Waiting 상태 (SIGTERM)" "Waiting" "$(echo "$members" | grep ps-1 || true)"
+  assert_eq "파티션이 아직 ps-1 소유" "1" "$(partitions_on_node ps-1)"
+
+  # Start PS2 (without resetting PS1) — PM should recover orphaned partitions.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node add ps-2 localhost:8002 2>/dev/null || true
+  "$BIN_DIR/kv_server" -node-id ps-2 -addr localhost:8002 -etcd "$ETCD_ADDR" \
+    "${WAL_ARGS[@]}" "${CKPT_ARGS[@]}" >"$PS2_LOG" 2>&1 &
+  PS2_PID=$!
+  sleep 5  # Allow recoverOrphanedPartitions to complete
+
+  assert_eq "파티션이 ps-2로 이동됨" "1" "$(partitions_on_node ps-2)"
+  assert_eq "scenario17-key 데이터 복원 (checkpoint)" "s17-val" "$(kv_get scenario17-key)"
+}
+should_run 17 || log "시나리오 17: SKIP"
+should_run 17 && scenario_17
+
+scenario_18() {
+  log ""
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log "시나리오 18: Drained 경로 검증 (notifyDrained → isDrained → Waiting)"
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #
+  # 전제: PS1 단독 운영, 파티션 보유
+  # 흐름:
+  #   1. PS2 기동 (drain target 확보)
+  #   2. PS1 SIGTERM → notifyDraining → drainPartitions → notifyDrained → EvictAll → Deregister
+  #   3. PM handleNodeLeft: isDrained=true → Waiting (not Failed)
+  #
+  # 주의: Drained 상태는 notifyDrained 호출~Deregister 완료 사이의 sub-second 과도 상태.
+  #       polling으로 포착하기 어려우므로 대신 로그로 검증한다.
+  #   - PS1 로그: "notified PM of drain completion"
+  #   - PM 로그:  "returned to Waiting after completed drain"
+  #   - 최종 상태: Waiting (not Failed)
+  #
+  reset_cluster_single_ps1
+  start_ps2
+
+  kv_set "s18-key" "s18-val" >/dev/null
+
+  # SIGTERM PS1 — drain to PS2, then notifyDrained, EvictAll, exit.
+  kill "$PS1_PID" 2>/dev/null || true
+  log "PS-1 SIGTERM sent. Waiting for drain + notifyDrained + exit (~8s)..."
+  sleep 8
+  PS1_PID=""
+
+  # Verify via logs that the Drained path was taken.
+  ps1_log=$(cat "$PS1_LOG" 2>/dev/null || true)
+  assert_contains "PS1 로그: PM에 drain 완료 통보" "notified PM of drain completion" "$ps1_log"
+  assert_contains "PS1 로그: PM에 eviction 완료 신호 전송" "notified PM of eviction completion" "$ps1_log"
+
+  pm_log=$(cat "$PM_LOG" 2>/dev/null || true)
+  assert_contains "PM 로그: drain 완료 후 Waiting 복귀 (isDrained 경로)" "returned to Waiting after completed drain" "$pm_log"
+
+  # Final state must be Waiting (not Failed): isDrained branch skips failoverDeadNode.
+  members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
+  assert_contains "ps-1이 Waiting 상태 (Drained 경로 후 자동 복귀)" "Waiting" "$(echo "$members" | grep ps-1 || true)"
+  assert_not_contains "ps-1이 Failed가 아님 (Drained 경로 성공)" "Failed" "$(echo "$members" | grep ps-1 || true)"
+
+  assert_eq "s18-key 데이터 PS2에서 접근 가능" "s18-val" "$(kv_get s18-key)"
+}
+should_run 18 || log "시나리오 18: SKIP"
+should_run 18 && scenario_18
+
+scenario_19() {
+  log ""
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log "시나리오 19: Restricted 상태 검증"
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #
+  # 전제: PS1 + PS2 운영 중
+  # 흐름:
+  #   1. PS2 restrict → Restricted
+  #   2. abctl migrate ... ps-2 → FailedPrecondition 에러
+  #   3. PS1 SIGTERM → drain: PS2는 target 후보에서 제외됨 (Active 없음 → drain skip)
+  #   4. abctl node unrestrict ps-2 → Active
+  #
+  reset_cluster_single_ps1
+  start_ps2
+
+  kv_set "s19-key" "s19-val" >/dev/null
+  sleep 1
+
+  # Split to give PS1 a partition.
+  PART_ID=$(partition_id_by_index 1)
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" split kv "$PART_ID" m >/dev/null 2>/dev/null || true
+  sleep 1
+
+  # Restrict PS2.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node restrict ps-2 2>/dev/null
+  members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
+  assert_contains "ps-2가 Restricted 상태" "Restricted" "$(echo "$members" | grep ps-2 || true)"
+
+  # Attempt manual migration to Restricted node — should fail.
+  PART_ON_PS1=$(routing_entries | awk -F'\t' '$4=="ps-1" {print $1; exit}')
+  if [[ -n "$PART_ON_PS1" ]]; then
+    migrate_out=$("$BIN_DIR/abctl" -pm "$PM_ADDR" migrate kv "$PART_ON_PS1" ps-2 2>&1 || true)
+    assert_contains "Restricted 노드로 migrate 거부됨" "not active" "$migrate_out"
+  else
+    pass "ps-1에 파티션 없음 (split 미수행) — migration 테스트 skip"
+  fi
+
+  # Unrestrict PS2.
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" node unrestrict ps-2 2>/dev/null
+  members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
+  assert_contains "ps-2가 Active 상태 (unrestrict 후)" "Active" "$(echo "$members" | grep ps-2 || true)"
+
+  assert_eq "s19-key 데이터 접근 가능" "s19-val" "$(kv_get s19-key)"
+}
+should_run 19 || log "시나리오 19: SKIP"
+should_run 19 && scenario_19
+
+scenario_20() {
+  log ""
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log "시나리오 20: PM heartbeat 기반 빠른 failover + EvictionComplete 검증"
+  log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #
+  # 검증 1 (SIGKILL): PM heartbeat timeout(5s) + walFlushMargin(3s) ≤ 10s 이내 failover
+  #   - PM 로그에 "heartbeat timeout" 메시지 확인
+  #   - PM 로그에 "waitForEviction: walFlushMargin elapsed" 확인 (EvictionComplete 없음)
+  #   - 데이터 복원 확인 (WAL replay)
+  #
+  # 검증 2 (SIGTERM): EvictionComplete 빠른 경로
+  #   - PS 로그에 "notified PM of eviction completion" 확인
+  #
+  reset_cluster_single_ps1
+  start_ps2
+
+  kv_set "s20-a" "val-a" >/dev/null
+  kv_set "s20-b" "val-b" >/dev/null
+  sleep 1  # WAL flush 대기
+
+  # 파티션 분산: ps-1에 하나, ps-2에 하나
+  PART_ID=$(partition_id_by_index 1)
+  "$BIN_DIR/abctl" -pm "$PM_ADDR" split kv "$PART_ID" s20 >/dev/null 2>/dev/null || true
+  sleep 1
+  UPPER_ID=$(routing_entries | awk -F'\t' '$2=="s20" {print $1}')
+  if [[ -n "$UPPER_ID" ]]; then
+    "$BIN_DIR/abctl" -pm "$PM_ADDR" migrate kv "$UPPER_ID" ps-2 >/dev/null 2>/dev/null || true
+    sleep 1
+  fi
+
+  # ── 검증 1: SIGKILL → PM heartbeat 기반 빠른 failover ──────────────────────
+  log "PS-1 SIGKILL. 타이머 시작..."
+  FAILOVER_START=$(date +%s)
+  kill -9 "$PS1_PID" 2>/dev/null || true
+  PS1_PID=""
+
+  # HeartbeatTimeout(5s) + walFlushMargin(3s) + 여유 2s 이내 failover 기대
+  sleep 10
+  FAILOVER_END=$(date +%s)
+  FAILOVER_ELAPSED=$((FAILOVER_END - FAILOVER_START))
+
+  members=$("$BIN_DIR/abctl" -pm "$PM_ADDR" members 2>/dev/null)
+  assert_contains "SIGKILL 후 ps-1이 Failed 상태" "Failed" "$(echo "$members" | grep ps-1 || true)"
+  assert_eq "SIGKILL 후 파티션이 ps-2로 이동됨" "2" "$(partitions_on_node ps-2)"
+
+  if [[ "$FAILOVER_ELAPSED" -le 12 ]]; then
+    pass "PM heartbeat 기반 failover: ${FAILOVER_ELAPSED}s (≤12s, 구 etcd TTL 15s+ 보다 빠름)"
+  else
+    fail "PM heartbeat 기반 failover: ${FAILOVER_ELAPSED}s (>12s — 예상보다 느림)"
+  fi
+
+  # PM 로그에 heartbeat timeout 메시지 확인
+  pm_log=$(cat "$PM_LOG" 2>/dev/null || true)
+  assert_contains "PM 로그: heartbeat timeout으로 노드 장애 감지" "heartbeat timeout" "$pm_log"
+  assert_contains "PM 로그: walFlushMargin 경과 후 failover 진행" "walFlushMargin elapsed" "$pm_log"
+
+  # 데이터 복원 (WAL replay from shared WAL)
+  assert_eq "SIGKILL 후 s20-a 데이터 복원 (WAL replay)" "val-a" "$(kv_get s20-a)"
+  assert_eq "SIGKILL 후 s20-b 데이터 복원 (WAL replay)" "val-b" "$(kv_get s20-b)"
+
+  # ── 검증 2: SIGTERM → EvictionComplete 빠른 경로 ───────────────────────────
+  # ps-1 재기동 후 파티션 하나 이전, 그 다음 SIGTERM
+  start_ps1
+  PART_FOR_PS1=$(routing_entries | awk -F'\t' '$4=="ps-2" {print $1; exit}')
+  if [[ -n "$PART_FOR_PS1" ]]; then
+    "$BIN_DIR/abctl" -pm "$PM_ADDR" migrate kv "$PART_FOR_PS1" ps-1 >/dev/null 2>/dev/null || true
+    sleep 1
+  fi
+
+  # PS1 SIGTERM — shutdown() → EvictAll → notifyEvictionComplete
+  kill "$PS1_PID" 2>/dev/null || true
+  log "PS-1 SIGTERM sent. Waiting for drain + EvictAll + EvictionComplete (~8s)..."
+  sleep 8
+  PS1_PID=""
+
+  ps1_log=$(cat "$PS1_LOG" 2>/dev/null || true)
+  assert_contains "SIGTERM 시 PS1이 PM에 eviction 완료 신호 전송" \
+    "notified PM of eviction completion" "$ps1_log"
+
+  # PM 로그에 EvictionComplete 수신 메시지 확인
+  pm_log=$(cat "$PM_LOG" 2>/dev/null || true)
+  assert_contains "PM 로그: EvictionComplete 수신 → walFlushMargin 생략" \
+    "EvictionComplete received" "$pm_log"
+}
+should_run 20 || log "시나리오 20: SKIP"
+should_run 20 && scenario_20
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 결과 요약

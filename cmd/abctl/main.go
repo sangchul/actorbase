@@ -120,6 +120,24 @@ func main() {
 				os.Exit(1)
 			}
 			cmdNodeReset(cfg, flag.Arg(2))
+		case "activate":
+			if flag.NArg() < 3 {
+				fmt.Fprintln(os.Stderr, "usage: abctl node activate <node-id>")
+				os.Exit(1)
+			}
+			cmdNodeActivate(cfg, flag.Arg(2))
+		case "restrict":
+			if flag.NArg() < 3 {
+				fmt.Fprintln(os.Stderr, "usage: abctl node restrict <node-id>")
+				os.Exit(1)
+			}
+			cmdNodeRestrict(cfg, flag.Arg(2))
+		case "unrestrict":
+			if flag.NArg() < 3 {
+				fmt.Fprintln(os.Stderr, "usage: abctl node unrestrict <node-id>")
+				os.Exit(1)
+			}
+			cmdNodeUnrestrict(cfg, flag.Arg(2))
 		default:
 			fmt.Fprintf(os.Stderr, "unknown node subcommand: %s\n", flag.Arg(1))
 			os.Exit(1)
@@ -152,6 +170,9 @@ Commands:
   node add <node-id> <addr>                        Pre-register a node (Waiting state)
   node remove <node-id>                            Remove a Waiting or Failed node
   node reset <node-id>                             Reset a Failed node to Waiting (allow rejoin)
+  node activate <node-id>                          Activate a Drained node back to Active (no restart)
+  node restrict <node-id>                          Restrict an Active node (no new partitions)
+  node unrestrict <node-id>                        Remove restriction from a Restricted node
 
 `)
 }
@@ -354,9 +375,49 @@ func nodeStatusLabel(s domain.NodeStatus) string {
 		return "Draining"
 	case domain.NodeStatusFailed:
 		return "Failed"
+	case domain.NodeStatusDrained:
+		return "Drained"
+	case domain.NodeStatusRestricted:
+		return "Restricted"
 	default:
 		return fmt.Sprintf("Unknown(%d)", s)
 	}
+}
+
+func cmdNodeActivate(cfg *Config, nodeID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.ActivateNode(ctx, nodeID); err != nil {
+		fmt.Fprintf(os.Stderr, "node activate failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("node %q activated (Drained → Active)\n", nodeID)
+}
+
+func cmdNodeRestrict(cfg *Config, nodeID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.RestrictNode(ctx, nodeID); err != nil {
+		fmt.Fprintf(os.Stderr, "node restrict failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("node %q restricted (Active → Restricted; will not accept new partitions)\n", nodeID)
+}
+
+func cmdNodeUnrestrict(cfg *Config, nodeID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := newPMClient(cfg.PMAddr)
+	if err := client.UnrestrictNode(ctx, nodeID); err != nil {
+		fmt.Fprintf(os.Stderr, "node unrestrict failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("node %q unrestricted (Restricted → Active)\n", nodeID)
 }
 
 func cmdQueue(cfg *Config, historyOnly bool) {

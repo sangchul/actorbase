@@ -3,6 +3,7 @@ package ps
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 
 	"google.golang.org/grpc/codes"
@@ -20,9 +21,16 @@ import (
 type controlHandler struct {
 	pb.UnimplementedPartitionControlServiceServer
 
-	dispatchers map[string]actorDispatcher
-	nodeID      string
-	routing     *atomic.Pointer[domain.RoutingTable]
+	dispatchers     map[string]actorDispatcher
+	nodeID          string
+	routing         *atomic.Pointer[domain.RoutingTable]
+	fenced          *atomic.Bool // set to true when node is isolated; rejects control-plane commands
+	partitionEpochs sync.Map     // partitionID → uint64: epoch assigned by PM at PreparePartition
+}
+
+// isFenced returns true if this node has been isolated and is shutting down.
+func (h *controlHandler) isFenced() bool {
+	return h.fenced != nil && h.fenced.Load()
 }
 
 // ExecuteSplit handles a split command from the PM.
@@ -32,6 +40,9 @@ func (h *controlHandler) ExecuteSplit(
 	ctx context.Context,
 	req *pb.ExecuteSplitRequest,
 ) (*pb.ExecuteSplitResponse, error) {
+	if h.isFenced() {
+		return nil, status.Error(codes.Unavailable, "node is fenced")
+	}
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
@@ -69,6 +80,9 @@ func (h *controlHandler) ExecuteMigrateOut(
 	ctx context.Context,
 	req *pb.ExecuteMigrateOutRequest,
 ) (*pb.ExecuteMigrateOutResponse, error) {
+	if h.isFenced() {
+		return nil, status.Error(codes.Unavailable, "node is fenced")
+	}
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
@@ -89,6 +103,9 @@ func (h *controlHandler) ExecuteMerge(
 	ctx context.Context,
 	req *pb.ExecuteMergeRequest,
 ) (*pb.ExecuteMergeResponse, error) {
+	if h.isFenced() {
+		return nil, status.Error(codes.Unavailable, "node is fenced")
+	}
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
@@ -140,20 +157,46 @@ func (h *controlHandler) Ping(_ context.Context, _ *pb.PingRequest) (*pb.PingRes
 }
 
 // PreparePartition handles a partition-load command from the PM.
+// The epoch in the request must be >= the stored epoch for this partition.
+// This protects against stale PM directives after a PM leader change.
 func (h *controlHandler) PreparePartition(
 	ctx context.Context,
 	req *pb.PreparePartitionRequest,
 ) (*pb.PreparePartitionResponse, error) {
+	if h.isFenced() {
+		return nil, status.Error(codes.Unavailable, "node is fenced")
+	}
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
 	}
+
+	// Validate epoch: reject commands from a stale PM (lower epoch than already stored).
+	if req.Epoch > 0 {
+		if stored, exists := h.partitionEpochs.Load(req.PartitionId); exists {
+			if req.Epoch < stored.(uint64) {
+				slog.Warn("ctrl: PreparePartition rejected: stale epoch",
+					"node", h.nodeID, "partition", req.PartitionId,
+					"request_epoch", req.Epoch, "stored_epoch", stored.(uint64))
+				return nil, status.Errorf(codes.FailedPrecondition,
+					"stale epoch %d for partition %s (current: %d)",
+					req.Epoch, req.PartitionId, stored.(uint64))
+			}
+		}
+	}
+
 	slog.Info("ctrl: PreparePartition", "node", h.nodeID, "actor_type", req.ActorType,
-		"partition", req.PartitionId)
+		"partition", req.PartitionId, "epoch", req.Epoch)
 	if err := d.Activate(ctx, req.PartitionId); err != nil {
 		slog.Error("ctrl: PreparePartition failed", "node", h.nodeID, "partition", req.PartitionId, "err", err)
 		return nil, transport.ToGRPCStatus(err)
 	}
-	slog.Info("ctrl: PreparePartition done", "node", h.nodeID, "partition", req.PartitionId)
+
+	// Store the epoch after successful activation.
+	if req.Epoch > 0 {
+		h.partitionEpochs.Store(req.PartitionId, req.Epoch)
+	}
+
+	slog.Info("ctrl: PreparePartition done", "node", h.nodeID, "partition", req.PartitionId, "epoch", req.Epoch)
 	return &pb.PreparePartitionResponse{}, nil
 }

@@ -152,21 +152,25 @@ type routeEntryDTO struct {
 	NodeAddress     string `json:"nodeAddress"`
 	NodeStatus      int    `json:"nodeStatus"`
 	PartitionStatus int    `json:"partitionStatus"`
+	Epoch           uint64 `json:"epoch"`
 }
 
 func marshalRoutingTable(rt *domain.RoutingTable) ([]byte, error) {
 	entries := rt.Entries()
+	nodeAddrs := rt.NodeAddrs()
 	dtoEntries := make([]routeEntryDTO, len(entries))
 	for i, e := range entries {
+		addr := nodeAddrs[e.NodeID]
 		dtoEntries[i] = routeEntryDTO{
 			PartitionID:     e.Partition.ID,
 			ActorType:       e.Partition.ActorType,
 			KeyRangeStart:   e.Partition.KeyRange.Start,
 			KeyRangeEnd:     e.Partition.KeyRange.End,
-			NodeID:          e.Node.ID,
-			NodeAddress:     e.Node.Address,
-			NodeStatus:      int(e.Node.Status),
+			NodeID:          e.NodeID,
+			NodeAddress:     addr,
+			NodeStatus:      0, // NodeStatus is managed by NodeCatalog, not stored in routing table
 			PartitionStatus: int(e.PartitionStatus),
+			Epoch:           e.Epoch,
 		}
 	}
 	return json.Marshal(routingTableDTO{Version: rt.Version(), Entries: dtoEntries})
@@ -179,6 +183,7 @@ func unmarshalRoutingTable(data []byte) (*domain.RoutingTable, error) {
 	}
 
 	entries := make([]domain.RouteEntry, len(dto.Entries))
+	nodeAddrs := make(map[string]string, len(dto.Entries))
 	for i, e := range dto.Entries {
 		entries[i] = domain.RouteEntry{
 			Partition: domain.Partition{
@@ -186,14 +191,18 @@ func unmarshalRoutingTable(data []byte) (*domain.RoutingTable, error) {
 				ActorType: e.ActorType,
 				KeyRange:  domain.KeyRange{Start: e.KeyRangeStart, End: e.KeyRangeEnd},
 			},
-			Node: domain.NodeInfo{
-				ID:      e.NodeID,
-				Address: e.NodeAddress,
-				Status:  domain.NodeStatus(e.NodeStatus),
-			},
+			NodeID:          e.NodeID,
 			PartitionStatus: domain.PartitionStatus(e.PartitionStatus),
+			Epoch:           e.Epoch,
+		}
+		if e.NodeAddress != "" {
+			nodeAddrs[e.NodeID] = e.NodeAddress
 		}
 	}
 
-	return domain.NewRoutingTable(dto.Version, entries)
+	rt, err := domain.NewRoutingTable(dto.Version, entries)
+	if err != nil {
+		return nil, err
+	}
+	return rt.WithNodeAddrs(nodeAddrs), nil
 }
