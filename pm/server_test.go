@@ -734,3 +734,41 @@ func newTestQueue(s *Server) *taskqueue.Queue {
 	_ = s
 	return q
 }
+
+// ─── Leadership self-validation tests ────────────────────────────────────────
+
+// TestExecuteTask_CancelledContext verifies that executeTask returns a
+// context error immediately when the context is cancelled, without executing
+// any task work. This simulates what happens when leaderCtx is cancelled due
+// to etcd session expiry.
+func TestExecuteTask_CancelledContext(t *testing.T) {
+	splitter := &mockSplitter{err: errors.New("should not be called")}
+	s := &Server{
+		splitter:     splitter,
+		migrator:     &mockMigrator{},
+		merger:       &mockMerger{},
+		nodeCatalog:  newMockNodeCatalog(),
+		routingStore: &mockRTStore{},
+		subscribers:  make(map[string]*subscriber),
+		queue:        taskqueue.New(),
+	}
+
+	// Cancelled context — simulates leadership loss.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	task := &taskqueue.Task{
+		Params: splitTaskParams{ActorType: "kv", PartitionID: "p1", SplitKey: ""},
+	}
+	err := s.executeTask(ctx, task)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+	// Splitter must not have been called.
+	if len(splitter.calls) > 0 {
+		t.Errorf("splitter should not have been called, got %d calls", len(splitter.calls))
+	}
+}
