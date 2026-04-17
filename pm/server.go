@@ -168,7 +168,7 @@ func NewServer(cfg Config) (*Server, error) {
 // In HA mode, blocks until this instance wins the etcd leader election.
 // Only the elected leader opens the gRPC port and starts serving.
 func (s *Server) Start(ctx context.Context) error {
-	s.serverCtx = ctx
+	// serverCtx is set to leaderCtx below, after session is acquired.
 
 	// 1. etcd election — block until this instance becomes the leader (standbys wait here).
 	sess, err := cluster.CampaignLeader(ctx, s.etcdCli, s.cfg.ListenAddr)
@@ -177,17 +177,35 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	defer sess.Close() //nolint:errcheck — resign on shutdown
 
+	// leaderCtx is cancelled when EITHER the caller cancels ctx (normal shutdown)
+	// OR the etcd session expires (lease lost due to GC pause / network isolation).
+	// All goroutines and the task queue use leaderCtx so they stop immediately when
+	// leadership is lost, preventing a stale PM from issuing directives after a new
+	// leader has been elected.
+	leaderCtx, leaderCancel := context.WithCancel(ctx)
+	s.serverCtx = leaderCtx
+	defer leaderCancel()
+	go func() {
+		select {
+		case <-sess.Done():
+			slog.Error("pm: etcd session expired — leadership lost, shutting down",
+				"addr", s.cfg.ListenAddr)
+			leaderCancel()
+		case <-leaderCtx.Done():
+		}
+	}()
+
 	// 2. Start the task queue worker (before balancer and resumePendingWork so they can submit tasks).
-	go s.queue.Start(ctx, s.executeTask)
+	go s.queue.Start(leaderCtx, s.executeTask)
 
 	// 3. Restore YAML policy from Redis or etcd.
-	if yamlStr, err := s.loadPolicy(ctx); err != nil {
+	if yamlStr, err := s.loadPolicy(leaderCtx); err != nil {
 		slog.Warn("pm: load policy failed", "err", err)
 	} else if yamlStr != "" {
 		if pol, runnerCfg, parseErr := policy.ParsePolicy([]byte(yamlStr)); parseErr != nil {
 			slog.Warn("pm: stored policy parse failed", "err", parseErr)
 		} else {
-			balancerCtx, cancel := context.WithCancel(ctx)
+			balancerCtx, cancel := context.WithCancel(leaderCtx)
 			b := newBalancerRunner(runnerCfg, pol, s.splitter, s.migrator, s.merger, s.nodeCatalog, s.routingStore, s.psFactory, s.queue)
 			go b.start(balancerCtx)
 			s.policyMu.Lock()
@@ -202,35 +220,35 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// 4. Reconcile catalog: ping Active/Draining nodes; non-responsive → Waiting.
 	// This handles the case where PM crashed while a PS was offline.
-	s.reconcileCatalogByPing(ctx)
+	s.reconcileCatalogByPing(leaderCtx)
 	// Recover partitions left on non-Active nodes after PM crash + PS failure.
-	s.recoverOrphanedPartitions(ctx)
+	s.recoverOrphanedPartitions(leaderCtx)
 
 	// 5. Load the initial routing table.
-	currentRT, err := s.routingStore.Load(ctx)
+	currentRT, err := s.routingStore.Load(leaderCtx)
 	if err != nil {
 		return fmt.Errorf("pm: load routing table: %w", err)
 	}
 	s.routing.Store(currentRT)
 
 	// 6. Watch routing store and broadcast updates to subscribers.
-	go s.watchRouting(ctx)
+	go s.watchRouting(leaderCtx)
 
 	// 7. Watch node join events (NodeLeft is now handled by the failure detector).
-	go s.watchMembership(ctx)
+	go s.watchMembership(leaderCtx)
 
 	// 7b. Start failure detector: triggers handleNodeLeft for nodes whose heartbeats time out.
-	go s.runFailureDetector(ctx)
+	go s.runFailureDetector(leaderCtx)
 
 	// 8. Resume any in-progress work that was interrupted by a PM crash.
-	s.resumePendingWork(ctx)
+	s.resumePendingWork(leaderCtx)
 
 	// 9. Start the web console HTTP server if configured.
 	// (Bootstrap of the initial routing table is handled lazily in handleNodeJoined
 	//  when the first PS calls RequestJoin on a fresh cluster.)
 	if s.cfg.HTTPAddr != "" {
 		consoleSrv := console.NewServer(s.cfg.HTTPAddr, s.cfg.ListenAddr)
-		go consoleSrv.Start(ctx)
+		go consoleSrv.Start(leaderCtx)
 	}
 
 	// 11. Start accepting gRPC connections.
@@ -244,7 +262,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	select {
-	case <-ctx.Done():
+	case <-leaderCtx.Done():
 	case err := <-grpcErrCh:
 		return fmt.Errorf("pm: grpc server error: %w", err)
 	}
@@ -904,7 +922,12 @@ type failoverTaskParams struct {
 }
 
 // executeTask is the task queue executor — called by the single worker goroutine.
+// It checks ctx before executing any work so that a cancelled leaderCtx (etcd
+// session expired) prevents in-flight directives from being issued by a stale leader.
 func (s *Server) executeTask(ctx context.Context, t *taskqueue.Task) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("pm: task skipped (leadership lost): %w", err)
+	}
 	switch p := t.Params.(type) {
 	case splitTaskParams:
 		newID, err := s.doSplit(ctx, p.ActorType, p.PartitionID, p.SplitKey)

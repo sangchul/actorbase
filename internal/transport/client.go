@@ -99,8 +99,10 @@ func NewPSClient(conn *grpc.ClientConn, codec provider.Codec) *PSClient {
 
 // Send delivers req to the Actor for partitionID and deserializes the response
 // into respPtr. Payload serialization/deserialization is handled by the Codec.
+// epoch is the RouteEntry.Epoch known to the caller; PS uses it to reject writes
+// from clients with a stale routing table (split-brain fencing).
 // gRPC status errors are converted to provider errors before returning.
-func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req any, respPtr any) error { //nolint:unparam
+func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, epoch uint64, req any, respPtr any) error { //nolint:unparam
 	payload, err := c.codec.Marshal(req)
 	if err != nil {
 		return err
@@ -109,6 +111,7 @@ func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req 
 		PartitionId: partitionID,
 		Payload:     payload,
 		ActorType:   actorType,
+		Epoch:       epoch,
 	})
 	if err != nil {
 		return fromGRPCStatus(err)
@@ -120,17 +123,19 @@ func (c *PSClient) Send(ctx context.Context, actorType, partitionID string, req 
 // the response into respPtr. expectedStart/expectedEnd are the partition key
 // range known to the SDK. If they differ from the PS's actual range,
 // ErrPartitionMoved is returned to signal a stale routing entry.
-func (c *PSClient) Scan(ctx context.Context, actorType, partitionID string, req any, respPtr any, expectedStart, expectedEnd string) error {
+// epoch is the RouteEntry.Epoch for split-brain fencing (same semantics as Send).
+func (c *PSClient) Scan(ctx context.Context, actorType, partitionID string, epoch uint64, req any, respPtr any, expectedStart, expectedEnd string) error {
 	payload, err := c.codec.Marshal(req)
 	if err != nil {
 		return err
 	}
 	resp, err := c.client.Scan(ctx, &pb.ScanRequest{
-		PartitionId:            partitionID,
-		Payload:                payload,
-		ActorType:              actorType,
-		ExpectedKeyRangeStart:  expectedStart,
-		ExpectedKeyRangeEnd:    expectedEnd,
+		PartitionId:           partitionID,
+		Payload:               payload,
+		ActorType:             actorType,
+		ExpectedKeyRangeStart: expectedStart,
+		ExpectedKeyRangeEnd:   expectedEnd,
+		Epoch:                 epoch,
 	})
 	if err != nil {
 		return fromGRPCStatus(err)

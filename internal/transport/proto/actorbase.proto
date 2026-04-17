@@ -24,6 +24,7 @@ message SendRequest {
   string partition_id = 1;
   bytes  payload      = 2; // Codec.Marshal(req)
   string actor_type   = 3; // actor type 식별자. PS가 올바른 ActorHost로 라우팅하는 데 사용.
+  uint64 epoch        = 4; // fencing token: SDK sets this from RouteEntry.Epoch; PS rejects stale writes.
 }
 
 message SendResponse {
@@ -36,6 +37,7 @@ message ScanRequest {
   string actor_type               = 3;
   string expected_key_range_start = 4; // SDK가 알고 있는 파티션 key range (stale routing 감지용)
   string expected_key_range_end   = 5;
+  uint64 epoch                    = 6; // fencing token: SDK sets this from RouteEntry.Epoch; PS rejects stale writes.
 }
 
 message ScanResponse {

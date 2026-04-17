@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v4.23.4
-// source: actorbase.proto
+// source: internal/transport/proto/actorbase.proto
 
 package actorbasepb
 
@@ -167,7 +167,7 @@ var PartitionService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "actorbase.proto",
+	Metadata: "internal/transport/proto/actorbase.proto",
 }
 
 const (
@@ -1110,7 +1110,7 @@ var PartitionManagerService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "actorbase.proto",
+	Metadata: "internal/transport/proto/actorbase.proto",
 }
 
 const (
@@ -1419,5 +1419,5 @@ var PartitionControlService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "actorbase.proto",
+	Metadata: "internal/transport/proto/actorbase.proto",
 }

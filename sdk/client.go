@@ -190,7 +190,7 @@ func (c *Client[Req, Resp]) Send(ctx context.Context, key string, req Req) (Resp
 
 		psClient := transport.NewPSClient(conn, c.cfg.Codec)
 		var resp Resp
-		err = psClient.Send(ctx, c.cfg.TypeID, entry.Partition.ID, req, &resp)
+		err = psClient.Send(ctx, c.cfg.TypeID, entry.Partition.ID, entry.Epoch, req, &resp)
 		if err == nil {
 			return resp, nil
 		}
@@ -267,7 +267,7 @@ func (c *Client[Req, Resp]) Scan(ctx context.Context, startKey, endKey string, r
 				}
 				var resp Resp
 				err = transport.NewPSClient(conn, c.cfg.Codec).Scan(
-					ctx, c.cfg.TypeID, entry.Partition.ID, req, &resp,
+					ctx, c.cfg.TypeID, entry.Partition.ID, entry.Epoch, req, &resp,
 					entry.Partition.KeyRange.Start, entry.Partition.KeyRange.End,
 				)
 				resCh <- scanResult{entry: entry, resp: resp, err: err}

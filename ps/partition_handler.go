@@ -3,6 +3,7 @@ package ps
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -19,10 +20,26 @@ import (
 type partitionHandler struct {
 	pb.UnimplementedPartitionServiceServer
 
-	dispatchers map[string]actorDispatcher
-	routing     *atomic.Pointer[domain.RoutingTable]
-	nodeID      string
-	fenced      *atomic.Bool // set to true when node is isolated; rejects all data-plane requests
+	dispatchers           map[string]actorDispatcher
+	routing               *atomic.Pointer[domain.RoutingTable]
+	nodeID                string
+	fenced                *atomic.Bool  // set to true when node is isolated; rejects all data-plane requests
+	lastHeartbeatOK       *atomic.Int64 // Unix nanoseconds of the last successful PM heartbeat
+	ownershipLeaseTimeout time.Duration // max time without a heartbeat before rejecting data-plane requests
+}
+
+// isLeaseExpired returns true when the ownership lease has expired:
+// the last successful PM heartbeat is older than ownershipLeaseTimeout.
+// Returns false when the lease is disabled (lastHeartbeatOK == nil or timeout == 0).
+func (h *partitionHandler) isLeaseExpired() bool {
+	if h.lastHeartbeatOK == nil || h.ownershipLeaseTimeout <= 0 {
+		return false
+	}
+	lastNS := h.lastHeartbeatOK.Load()
+	if lastNS == 0 {
+		return false // not yet initialised (server hasn't started heartbeat loop)
+	}
+	return time.Since(time.Unix(0, lastNS)) > h.ownershipLeaseTimeout
 }
 
 // Send forwards a request to the Actor for req.ActorType and returns the response.
@@ -31,6 +48,9 @@ func (h *partitionHandler) Send(
 	req *pb.SendRequest,
 ) (*pb.SendResponse, error) {
 	if h.fenced != nil && h.fenced.Load() {
+		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+	}
+	if h.isLeaseExpired() {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
 
@@ -55,12 +75,28 @@ func (h *partitionHandler) Send(
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
 
-	// 4. Reject if the partition is in Draining status.
+	// 4. Epoch fencing: reject writes from stale or future routing tables.
+	//    req.Epoch == 0 means the client does not send an epoch (backward-compat).
+	if req.Epoch != 0 {
+		if req.Epoch < entry.Epoch {
+			// Client has a stale routing table (epoch predates the current assignment).
+			// The client should refresh the routing table and retry.
+			return nil, status.Error(codes.FailedPrecondition, provider.ErrPartitionMoved.Error())
+		}
+		if req.Epoch > entry.Epoch {
+			// This PS itself has a stale routing table (the PM re-assigned the partition
+			// to a new epoch, but this PS has not yet received the update).
+			// The client should retry; this PS will catch up shortly.
+			return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+		}
+	}
+
+	// 5. Reject if the partition is in Draining status.
 	if entry.PartitionStatus == domain.PartitionStatusDraining {
 		return nil, status.Error(codes.ResourceExhausted, provider.ErrPartitionBusy.Error())
 	}
 
-	// 5. Forward to the Actor via the dispatcher (includes deserialization).
+	// 6. Forward to the Actor via the dispatcher (includes deserialization).
 	payload, err := d.Send(ctx, req.PartitionId, req.Payload)
 	if err != nil {
 		return nil, transport.ToGRPCStatus(err)
@@ -76,6 +112,9 @@ func (h *partitionHandler) Scan(
 	req *pb.ScanRequest,
 ) (*pb.ScanResponse, error) {
 	if h.fenced != nil && h.fenced.Load() {
+		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+	}
+	if h.isLeaseExpired() {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
 
@@ -96,6 +135,17 @@ func (h *partitionHandler) Scan(
 	if entry.NodeID != h.nodeID {
 		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
 	}
+
+	// Epoch fencing (same semantics as Send).
+	if req.Epoch != 0 {
+		if req.Epoch < entry.Epoch {
+			return nil, status.Error(codes.FailedPrecondition, provider.ErrPartitionMoved.Error())
+		}
+		if req.Epoch > entry.Epoch {
+			return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+		}
+	}
+
 	if entry.PartitionStatus == domain.PartitionStatusDraining {
 		return nil, status.Error(codes.ResourceExhausted, provider.ErrPartitionBusy.Error())
 	}

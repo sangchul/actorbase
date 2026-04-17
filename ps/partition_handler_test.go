@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 
@@ -25,6 +26,10 @@ func makeRoutingPtr(nodeID string, entries ...domain.RouteEntry) *atomic.Pointer
 }
 
 func routeEntry(partitionID, actorType, start, end, nodeID string, status domain.PartitionStatus) domain.RouteEntry {
+	return routeEntryEpoch(partitionID, actorType, start, end, nodeID, status, 0)
+}
+
+func routeEntryEpoch(partitionID, actorType, start, end, nodeID string, status domain.PartitionStatus, epoch uint64) domain.RouteEntry {
 	return domain.RouteEntry{
 		Partition: domain.Partition{
 			ID:        partitionID,
@@ -33,6 +38,7 @@ func routeEntry(partitionID, actorType, start, end, nodeID string, status domain
 		},
 		NodeID:          nodeID,
 		PartitionStatus: status,
+		Epoch:           epoch,
 	}
 }
 
@@ -41,6 +47,20 @@ func newPartHandler(nodeID string, rt *atomic.Pointer[domain.RoutingTable], disp
 		dispatchers: dispatchers,
 		routing:     rt,
 		nodeID:      nodeID,
+	}
+}
+
+// newPartHandlerWithLease creates a partitionHandler with an ownership lease.
+// lastHBNano is the Unix nanoseconds stored in lastHeartbeatOK (0 means not yet initialised).
+func newPartHandlerWithLease(nodeID string, rt *atomic.Pointer[domain.RoutingTable], dispatchers map[string]actorDispatcher, lastHBNano int64, leaseTimeout time.Duration) *partitionHandler {
+	var hb atomic.Int64
+	hb.Store(lastHBNano)
+	return &partitionHandler{
+		dispatchers:           dispatchers,
+		routing:               rt,
+		nodeID:                nodeID,
+		lastHeartbeatOK:       &hb,
+		ownershipLeaseTimeout: leaseTimeout,
 	}
 }
 
@@ -210,5 +230,158 @@ func TestPartitionHandler_Scan_UnknownActorType(t *testing.T) {
 	_, err := h.Scan(context.Background(), &pb.ScanRequest{ActorType: "unknown"})
 	if grpcCode(err) != codes.NotFound {
 		t.Errorf("expected codes.NotFound, got %v", grpcCode(err))
+	}
+}
+
+// ── Epoch fencing tests ───────────────────────────────────────────────────────
+
+// TestPartitionHandler_Send_EpochZero_Skips_EpochCheck verifies that epoch=0
+// (backward-compat clients) bypasses epoch validation and succeeds normally.
+func TestPartitionHandler_Send_EpochZero_Skips_EpochCheck(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	rt := makeRoutingPtr("node1", routeEntryEpoch("p1", "kv", "a", "z", "node1", domain.PartitionStatusActive, 5))
+	h := newPartHandler("node1", rt, map[string]actorDispatcher{"kv": d})
+
+	// epoch=0 → no fencing, must succeed
+	_, err := h.Send(context.Background(), &pb.SendRequest{
+		ActorType:   "kv",
+		PartitionId: "p1",
+		Payload:     []byte("x"),
+		Epoch:       0,
+	})
+	if err != nil {
+		t.Errorf("epoch=0 should skip check, got err: %v", err)
+	}
+}
+
+// TestPartitionHandler_Send_StaleEpoch verifies that a client with an epoch
+// older than the current assignment gets FailedPrecondition (ErrPartitionMoved).
+func TestPartitionHandler_Send_StaleEpoch(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	// PS has epoch=5 (current assignment); client sends epoch=3 (stale routing table).
+	rt := makeRoutingPtr("node1", routeEntryEpoch("p1", "kv", "a", "z", "node1", domain.PartitionStatusActive, 5))
+	h := newPartHandler("node1", rt, map[string]actorDispatcher{"kv": d})
+
+	_, err := h.Send(context.Background(), &pb.SendRequest{
+		ActorType:   "kv",
+		PartitionId: "p1",
+		Payload:     []byte("x"),
+		Epoch:       3, // stale
+	})
+	if grpcCode(err) != codes.FailedPrecondition {
+		t.Errorf("stale epoch: expected FailedPrecondition, got %v", grpcCode(err))
+	}
+}
+
+// TestPartitionHandler_Send_FutureEpoch verifies that a client with an epoch
+// newer than this PS's routing table gets Unavailable (ErrPartitionNotOwned).
+func TestPartitionHandler_Send_FutureEpoch(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	// PS has epoch=5; client sends epoch=7 (PS routing not yet updated by PM).
+	rt := makeRoutingPtr("node1", routeEntryEpoch("p1", "kv", "a", "z", "node1", domain.PartitionStatusActive, 5))
+	h := newPartHandler("node1", rt, map[string]actorDispatcher{"kv": d})
+
+	_, err := h.Send(context.Background(), &pb.SendRequest{
+		ActorType:   "kv",
+		PartitionId: "p1",
+		Payload:     []byte("x"),
+		Epoch:       7, // PS has stale RT
+	})
+	if grpcCode(err) != codes.Unavailable {
+		t.Errorf("future epoch: expected Unavailable, got %v", grpcCode(err))
+	}
+}
+
+// TestPartitionHandler_Send_MatchingEpoch verifies that epoch equal to the
+// current assignment proceeds normally.
+func TestPartitionHandler_Send_MatchingEpoch(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	rt := makeRoutingPtr("node1", routeEntryEpoch("p1", "kv", "a", "z", "node1", domain.PartitionStatusActive, 5))
+	h := newPartHandler("node1", rt, map[string]actorDispatcher{"kv": d})
+
+	_, err := h.Send(context.Background(), &pb.SendRequest{
+		ActorType:   "kv",
+		PartitionId: "p1",
+		Payload:     []byte("x"),
+		Epoch:       5, // matches
+	})
+	if err != nil {
+		t.Errorf("matching epoch should succeed, got err: %v", err)
+	}
+}
+
+// TestPartitionHandler_Scan_StaleEpoch mirrors the Send stale-epoch test for Scan.
+func TestPartitionHandler_Scan_StaleEpoch(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	rt := makeRoutingPtr("node1", routeEntryEpoch("p1", "kv", "a", "z", "node1", domain.PartitionStatusActive, 5))
+	h := newPartHandler("node1", rt, map[string]actorDispatcher{"kv": d})
+
+	_, err := h.Scan(context.Background(), &pb.ScanRequest{
+		ActorType:             "kv",
+		PartitionId:           "p1",
+		ExpectedKeyRangeStart: "a",
+		ExpectedKeyRangeEnd:   "z",
+		Epoch:                 3,
+	})
+	if grpcCode(err) != codes.FailedPrecondition {
+		t.Errorf("stale epoch: expected FailedPrecondition, got %v", grpcCode(err))
+	}
+}
+
+// ── Ownership lease tests ─────────────────────────────────────────────────────
+
+// TestPartitionHandler_Send_LeaseExpired verifies that Send returns Unavailable
+// when the ownership lease has expired (last heartbeat is older than timeout).
+func TestPartitionHandler_Send_LeaseExpired(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	rt := makeRoutingPtr("node1", routeEntry("p1", "kv", "a", "z", "node1", domain.PartitionStatusActive))
+	// Set lastHeartbeatOK to 10 seconds ago with a 3-second lease.
+	expiredNS := time.Now().Add(-10 * time.Second).UnixNano()
+	h := newPartHandlerWithLease("node1", rt, map[string]actorDispatcher{"kv": d}, expiredNS, 3*time.Second)
+
+	_, err := h.Send(context.Background(), &pb.SendRequest{
+		ActorType:   "kv",
+		PartitionId: "p1",
+		Payload:     []byte("x"),
+	})
+	if grpcCode(err) != codes.Unavailable {
+		t.Errorf("expired lease: expected Unavailable, got %v", grpcCode(err))
+	}
+}
+
+// TestPartitionHandler_Send_LeaseValid verifies that Send succeeds when the
+// last heartbeat is within the lease timeout.
+func TestPartitionHandler_Send_LeaseValid(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	rt := makeRoutingPtr("node1", routeEntry("p1", "kv", "a", "z", "node1", domain.PartitionStatusActive))
+	// Last heartbeat 1 second ago, lease timeout 3 seconds → still valid.
+	recentNS := time.Now().Add(-1 * time.Second).UnixNano()
+	h := newPartHandlerWithLease("node1", rt, map[string]actorDispatcher{"kv": d}, recentNS, 3*time.Second)
+
+	_, err := h.Send(context.Background(), &pb.SendRequest{
+		ActorType:   "kv",
+		PartitionId: "p1",
+		Payload:     []byte("x"),
+	})
+	if err != nil {
+		t.Errorf("valid lease: expected success, got err: %v", err)
+	}
+}
+
+// TestPartitionHandler_Send_LeaseDisabled verifies that when lastHeartbeatOK is nil
+// (e.g., tests that don't set up a lease), Send proceeds without lease checks.
+func TestPartitionHandler_Send_LeaseDisabled(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	rt := makeRoutingPtr("node1", routeEntry("p1", "kv", "a", "z", "node1", domain.PartitionStatusActive))
+	// newPartHandler leaves lastHeartbeatOK nil → lease check disabled.
+	h := newPartHandler("node1", rt, map[string]actorDispatcher{"kv": d})
+
+	_, err := h.Send(context.Background(), &pb.SendRequest{
+		ActorType:   "kv",
+		PartitionId: "p1",
+		Payload:     []byte("x"),
+	})
+	if err != nil {
+		t.Errorf("disabled lease: expected success, got err: %v", err)
 	}
 }

@@ -82,6 +82,12 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		return fmt.Errorf("save draining routing table: %w", err)
 	}
 
+	// Leadership checkpoint: abort if context was cancelled between steps.
+	if err := ctx.Err(); err != nil {
+		m.revertToActive(context.Background(), rt) //nolint:contextcheck — ctx is already done
+		return fmt.Errorf("leadership lost before migrate out: %w", err)
+	}
+
 	// 4. Send ExecuteMigrateOut to the source PS.
 	sourceAddr, ok := rt.NodeAddress(entry.NodeID)
 	if !ok {
@@ -97,6 +103,14 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 	if err := sourceCtrl.ExecuteMigrateOut(ctx, entry.Partition.ActorType, partitionID, targetNodeID, targetNode.Address); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("execute migrate out: %w", err)
+	}
+
+	// Leadership checkpoint: abort if context was cancelled between steps.
+	if err := ctx.Err(); err != nil {
+		// Source has already evicted the partition; revert routing so the next PM
+		// leader can assign it. Use background context since leaderCtx is done.
+		m.revertToActive(context.Background(), rt) //nolint:contextcheck — ctx is already done
+		return fmt.Errorf("leadership lost after migrate out, before prepare: %w", err)
 	}
 
 	// 5. Send PreparePartition to the target PS (with retry).

@@ -177,10 +177,12 @@ func (b *ServerBuilder) Build() (*Server, error) {
 	}
 
 	pb.RegisterPartitionServiceServer(grpcSrv, &partitionHandler{
-		dispatchers: b.dispatchers,
-		routing:     &s.routing,
-		nodeID:      b.base.NodeID,
-		fenced:      &s.fenced,
+		dispatchers:           b.dispatchers,
+		routing:               &s.routing,
+		nodeID:                b.base.NodeID,
+		fenced:                &s.fenced,
+		lastHeartbeatOK:       &s.lastHeartbeatOK,
+		ownershipLeaseTimeout: b.base.OwnershipLeaseTimeout,
 	})
 	pb.RegisterPartitionControlServiceServer(grpcSrv, &controlHandler{
 		dispatchers: b.dispatchers,
@@ -202,8 +204,9 @@ type Server struct {
 	rtStore     cluster.RoutingTableStore
 	grpcSrv     *grpc.Server
 	etcdCli     *clientv3.Client
-	routing     atomic.Pointer[domain.RoutingTable]
-	fenced      atomic.Bool // true when the node is isolated and shutting down
+	routing         atomic.Pointer[domain.RoutingTable]
+	fenced          atomic.Bool  // true when the node is isolated and shutting down
+	lastHeartbeatOK atomic.Int64 // Unix nanoseconds of the last successful PM heartbeat
 }
 
 // Start starts the PS. Returns after graceful shutdown when ctx is cancelled.
@@ -225,6 +228,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// 3. Start PM heartbeat loop. Uses an inner context so isolation fencing can
 	//    cancel without touching the caller's ctx.
+	// Initialize lastHeartbeatOK to now so the ownership lease does not expire
+	// before the first heartbeat tick fires.
+	s.lastHeartbeatOK.Store(time.Now().UnixNano())
 	innerCtx, innerCancel := context.WithCancel(ctx)
 	defer innerCancel()
 	go s.heartbeatLoop(innerCtx, pmAddr, innerCancel)
@@ -312,6 +318,7 @@ func (s *Server) heartbeatLoop(ctx context.Context, pmAddr string, cancel contex
 			if hbErr == nil {
 				// Heartbeat succeeded — node is not isolated.
 				isolatedConsecutive = 0
+				s.lastHeartbeatOK.Store(time.Now().UnixNano())
 				continue
 			}
 

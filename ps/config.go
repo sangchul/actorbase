@@ -16,6 +16,7 @@ const (
 	defaultShutdownTimeout        = 30 * time.Second
 	defaultHeartbeatInterval      = 1 * time.Second
 	defaultIsolationFenceLimit    = 5
+	defaultOwnershipLeaseTimeout  = 3 * time.Second
 )
 
 // BaseConfig holds settings shared across the entire PS instance.
@@ -39,6 +40,14 @@ type BaseConfig struct {
 	// and initiates shutdown.
 	// Default: 5 (≈5 s with default HeartbeatInterval).
 	IsolationFenceLimit int
+
+	// OwnershipLeaseTimeout is the maximum time allowed since the last successful
+	// PM heartbeat before data-plane requests (Send/Scan) are rejected with
+	// ErrPartitionNotOwned. This closes the fencing window between isolation onset
+	// and the IsolationFenceLimit being reached.
+	// Must be less than HeartbeatInterval × IsolationFenceLimit to take effect.
+	// Default: 3s.
+	OwnershipLeaseTimeout time.Duration
 
 	// EvictionScheduler settings (shared across all actor types)
 	IdleTimeout   time.Duration // Evict an actor if it receives no messages for this duration. Default: 5m.
@@ -73,6 +82,9 @@ func (c *BaseConfig) setDefaults() {
 	}
 	if c.IsolationFenceLimit <= 0 {
 		c.IsolationFenceLimit = defaultIsolationFenceLimit
+	}
+	if c.OwnershipLeaseTimeout <= 0 {
+		c.OwnershipLeaseTimeout = defaultOwnershipLeaseTimeout
 	}
 }
 
