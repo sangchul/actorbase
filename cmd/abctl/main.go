@@ -224,11 +224,11 @@ func cmdRouting(cfg *Config) {
 	}
 
 	fmt.Printf("Version: %d\n\n", snap.Version)
-	fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
-		"PARTITION-ID", "ACTOR-TYPE", "KEY-START", "KEY-END", "NODE-ID", "NODE-ADDR")
-	fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
+	fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %-8s  %s\n",
+		"PARTITION-ID", "ACTOR-TYPE", "KEY-START", "KEY-END", "NODE-ID", "EPOCH", "NODE-ADDR")
+	fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %-8s  %s\n",
 		"------------------------------------", "------------", "----------------", "----------------",
-		"------------------------------------", "-----------")
+		"------------------------------------", "--------", "-----------")
 	for _, e := range snap.Entries {
 		start := e.KeyRangeStart
 		end := e.KeyRangeEnd
@@ -238,8 +238,8 @@ func cmdRouting(cfg *Config) {
 		if end == "" {
 			end = "(end)"
 		}
-		fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %s\n",
-			e.PartitionID, e.ActorType, start, end, e.NodeID, e.NodeAddr)
+		fmt.Printf("%-36s  %-12s  %-16s  %-16s  %-36s  %-8d  %s\n",
+			e.PartitionID, e.ActorType, start, end, e.NodeID, e.Epoch, e.NodeAddr)
 	}
 }
 

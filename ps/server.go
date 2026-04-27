@@ -168,13 +168,24 @@ func (b *ServerBuilder) Build() (*Server, error) {
 		Metrics:    b.base.Metrics,
 	})
 
+	ctrl := &controlHandler{
+		dispatchers: b.dispatchers,
+		nodeID:      b.base.NodeID,
+		routing:     nil, // set below after s is created
+		fenced:      nil, // set below after s is created
+	}
+
 	s := &Server{
 		cfg:         b.base,
 		dispatchers: b.dispatchers,
 		rtStore:     rtStore,
 		grpcSrv:     grpcSrv,
 		etcdCli:     etcdCli,
+		ctrlHandler: ctrl,
 	}
+
+	ctrl.routing = &s.routing
+	ctrl.fenced = &s.fenced
 
 	pb.RegisterPartitionServiceServer(grpcSrv, &partitionHandler{
 		dispatchers:           b.dispatchers,
@@ -184,12 +195,7 @@ func (b *ServerBuilder) Build() (*Server, error) {
 		lastHeartbeatOK:       &s.lastHeartbeatOK,
 		ownershipLeaseTimeout: b.base.OwnershipLeaseTimeout,
 	})
-	pb.RegisterPartitionControlServiceServer(grpcSrv, &controlHandler{
-		dispatchers: b.dispatchers,
-		nodeID:      b.base.NodeID,
-		routing:     &s.routing,
-		fenced:      &s.fenced,
-	})
+	pb.RegisterPartitionControlServiceServer(grpcSrv, ctrl)
 
 	return s, nil
 }
@@ -204,6 +210,7 @@ type Server struct {
 	rtStore     cluster.RoutingTableStore
 	grpcSrv     *grpc.Server
 	etcdCli     *clientv3.Client
+	ctrlHandler     *controlHandler
 	routing         atomic.Pointer[domain.RoutingTable]
 	fenced          atomic.Bool  // true when the node is isolated and shutting down
 	lastHeartbeatOK atomic.Int64 // Unix nanoseconds of the last successful PM heartbeat
@@ -244,6 +251,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.routing.Store(firstRT)
 	if firstRT != nil {
 		slog.Info("ps: initial routing table received", "node", s.cfg.NodeID, "version", firstRT.Version(), "partitions", len(firstRT.Entries()))
+		// Restore partitionEpochs from RT so PS restarts are protected against stale PM directives.
+		s.ctrlHandler.hydrateEpochs(firstRT)
 	}
 
 	// 5. Handle subsequent routing updates in the background.
@@ -282,6 +291,7 @@ func (s *Server) watchRouting(ctx context.Context, ch <-chan *domain.RoutingTabl
 		s.routing.Store(rt)
 		if rt != nil {
 			slog.Info("ps: routing table updated", "node", s.cfg.NodeID, "version", rt.Version(), "partitions", len(rt.Entries()))
+			s.ctrlHandler.hydrateEpochs(rt)
 		}
 	}
 }

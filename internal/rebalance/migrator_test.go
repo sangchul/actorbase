@@ -189,3 +189,86 @@ func TestMigrator_Failover_Success(t *testing.T) {
 		t.Errorf("partition node = %q, want %q", e.NodeID, "node2")
 	}
 }
+
+// ─── Epoch invariant ──────────────────────────────────────────────────────────
+
+func TestMigrator_Migrate_EpochInvariant(t *testing.T) {
+	p1 := makeEntry("p1", "kv", "a", "m", "node1", "node1:9000", domain.PartitionStatusActive)
+	p1.Epoch = 2
+	bystander := makeEntry("p2", "kv", "m", "z", "node1", "node1:9000", domain.PartitionStatusActive)
+	bystander.Epoch = 1
+	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{p1, bystander},
+		map[string]string{"node1": "node1:9000", "node2": "node2:9000"}))
+	catalog := &mockNodeCatalog{nodes: makeNodes("node1", "node2")}
+	ctrl := &mockPSController{}
+	factory := newMockPSClientFactory(ctrl)
+
+	m := NewMigrator(store, catalog, factory)
+	if err := m.Migrate(context.Background(), "kv", "p1", "node2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resultRT, _ := store.Load(context.Background())
+	wantEpoch := uint64(3) // rt.Version()+1 = 2+1
+
+	migrated, _ := resultRT.LookupByPartition("p1")
+	if migrated.Epoch != wantEpoch {
+		t.Errorf("migrated entry epoch = %d, want %d", migrated.Epoch, wantEpoch)
+	}
+	// Bystander epoch must not change.
+	by, _ := resultRT.LookupByPartition("p2")
+	if by.Epoch != 1 {
+		t.Errorf("bystander epoch = %d, want 1 (unchanged)", by.Epoch)
+	}
+}
+
+func TestMigrator_Failover_EpochInvariant(t *testing.T) {
+	p1 := makeEntry("p1", "kv", "a", "z", "dead", "dead:9000", domain.PartitionStatusActive)
+	p1.Epoch = 3
+	store := newMockRoutingStore(makeRT(3, []domain.RouteEntry{p1}))
+	catalog := &mockNodeCatalog{nodes: makeNodes("node2")}
+	targetCtrl := &mockPSController{}
+	factory := &mockPSClientFactory{byAddr: map[string]transport.PSController{
+		"node2:9000": targetCtrl,
+	}}
+
+	m := NewMigrator(store, catalog, factory)
+	if err := m.Failover(context.Background(), "p1", "node2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resultRT, _ := store.Load(context.Background())
+	wantEpoch := uint64(4) // rt.Version()+1 = 3+1
+
+	e, _ := resultRT.LookupByPartition("p1")
+	if e.Epoch != wantEpoch {
+		t.Errorf("failover entry epoch = %d, want %d", e.Epoch, wantEpoch)
+	}
+}
+
+func TestMigrator_ResumeMigrate_EpochInvariant(t *testing.T) {
+	p1 := makeEntry("p1", "kv", "a", "z", "node1", "node1:9000", domain.PartitionStatusDraining)
+	p1.Epoch = 2
+	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{p1},
+		map[string]string{"node1": "node1:9000"}))
+	catalog := &mockNodeCatalog{nodes: makeNodes("node1", "node2")}
+
+	sourceCtrl := &mockPSController{executeMigrateOutErr: provider.ErrNotFound}
+	targetCtrl := &mockPSController{}
+	factory := newMockPSClientFactory(nil)
+	factory.byAddr["node1:9000"] = sourceCtrl
+	factory.byAddr["node2:9000"] = targetCtrl
+
+	m := NewMigrator(store, catalog, factory)
+	if err := m.ResumeMigrate(context.Background(), "kv", "p1", "node2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resultRT, _ := store.Load(context.Background())
+	wantEpoch := uint64(3) // rt.Version()+1 = 2+1
+
+	e, _ := resultRT.LookupByPartition("p1")
+	if e.Epoch != wantEpoch {
+		t.Errorf("resumed entry epoch = %d, want %d", e.Epoch, wantEpoch)
+	}
+}

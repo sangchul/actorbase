@@ -208,6 +208,7 @@ message ExecuteSplitRequest {
   string actor_type       = 4; // PS가 올바른 ActorHost로 라우팅하는 데 사용.
   string key_range_start  = 5; // split_key 미제공 시 PS의 midpoint 계산용
   string key_range_end    = 6; // split_key 미제공 시 PS의 midpoint 계산용
+  uint64 epoch            = 7; // fencing token; PS rejects commands from a stale PM
 }
 
 message ExecuteSplitResponse {
@@ -219,6 +220,7 @@ message ExecuteMigrateOutRequest {
   string target_node_id  = 2;
   string target_address  = 3;
   string actor_type      = 4; // PS가 올바른 ActorHost로 라우팅하는 데 사용.
+  uint64 epoch           = 5; // fencing token; PS rejects commands from a stale PM
 }
 
 message ExecuteMigrateOutResponse {}
@@ -253,6 +255,7 @@ message ExecuteMergeRequest {
   string actor_type          = 1;
   string lower_partition_id  = 2;
   string upper_partition_id  = 3;
+  uint64 epoch               = 4; // fencing token; PS rejects commands from a stale PM
 }
 
 message ExecuteMergeResponse {}

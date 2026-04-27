@@ -27,10 +27,11 @@ import (
 //   - Finds the responsible partition by key and forwards the request to the corresponding PS.
 //   - On routing errors, waits for the table to be refreshed and retries.
 type Client[Req, Resp any] struct {
-	cfg      Config[Req, Resp]
-	pmClient *transport.PMClient
-	connPool *transport.ConnPool
-	routing  atomic.Pointer[domain.RoutingTable]
+	cfg            Config[Req, Resp]
+	pmClient       *transport.PMClient
+	connPool       *transport.ConnPool
+	routing        atomic.Pointer[domain.RoutingTable]
+	routingUpdated atomic.Pointer[chan struct{}] // closed and replaced on every RT update
 }
 
 // NewClient validates the Config and creates a Client including the PM connection.
@@ -56,11 +57,14 @@ func NewClient[Req, Resp any](cfg Config[Req, Resp]) (*Client[Req, Resp], error)
 		return nil, err
 	}
 
-	return &Client[Req, Resp]{
+	c := &Client[Req, Resp]{
 		cfg:      cfg,
 		pmClient: transport.NewPMClient(pmConn),
 		connPool: transport.NewConnPool(),
-	}, nil
+	}
+	ch := make(chan struct{})
+	c.routingUpdated.Store(&ch)
+	return c, nil
 }
 
 // discoverLeaderAddr resolves the current PM leader address from etcd.
@@ -118,6 +122,12 @@ func (c *Client[Req, Resp]) consumeRouting(ctx context.Context, ch <-chan *domai
 	for {
 		for rt := range ch {
 			c.routing.Store(rt)
+			// Signal waiting Send/Scan retries that a fresh routing table is available.
+			newCh := make(chan struct{})
+			old := c.routingUpdated.Swap(&newCh)
+			if old != nil {
+				close(*old)
+			}
 		}
 
 		// channel closed — exit if not in HA mode or if ctx is cancelled
@@ -206,7 +216,11 @@ func (c *Client[Req, Resp]) Send(ctx context.Context, key string, req Req) (Resp
 			errors.Is(err, provider.ErrPartitionNotOwned),
 			errors.Is(err, provider.ErrPartitionBusy):
 			if attempt < c.cfg.MaxRetries {
+				// Wait for a routing table update OR RetryInterval, whichever comes first.
+				// This lets retry use a fresh RT epoch instead of looping on stale data.
+				rtReady := *c.routingUpdated.Load()
 				select {
+				case <-rtReady:
 				case <-time.After(c.cfg.RetryInterval):
 				case <-ctx.Done():
 					return zero, ctx.Err()
@@ -307,7 +321,9 @@ func (c *Client[Req, Resp]) Scan(ctx context.Context, startKey, endKey string, r
 			break
 		}
 
+		rtReady := *c.routingUpdated.Load()
 		select {
+		case <-rtReady:
 		case <-time.After(c.cfg.RetryInterval):
 		case <-ctx.Done():
 			return nil, ctx.Err()

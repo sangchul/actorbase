@@ -97,6 +97,9 @@ func (h *partitionHandler) Send(
 	}
 
 	// 6. Forward to the Actor via the dispatcher (includes deserialization).
+	if h.isLeaseExpired() {
+		return nil, status.Error(codes.Unavailable, provider.ErrPartitionNotOwned.Error())
+	}
 	payload, err := d.Send(ctx, req.PartitionId, req.Payload)
 	if err != nil {
 		return nil, transport.ToGRPCStatus(err)

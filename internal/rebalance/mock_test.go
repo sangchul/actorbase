@@ -92,14 +92,14 @@ type mockPSController struct {
 	statsErr  error
 }
 
-func (m *mockPSController) ExecuteSplit(_ context.Context, _, _, splitKey, _, _, _ string) (string, error) {
+func (m *mockPSController) ExecuteSplit(_ context.Context, _, _, splitKey, _, _, _ string, _ uint64) (string, error) {
 	if m.executeSplitKey != "" {
 		return m.executeSplitKey, m.executeSplitErr
 	}
 	return splitKey, m.executeSplitErr
 }
 
-func (m *mockPSController) ExecuteMigrateOut(_ context.Context, _, _, _, _ string) error {
+func (m *mockPSController) ExecuteMigrateOut(_ context.Context, _, _, _, _ string, _ uint64) error {
 	m.migrateOutCalled = true
 	return m.executeMigrateOutErr
 }
@@ -109,7 +109,7 @@ func (m *mockPSController) PreparePartition(_ context.Context, _, _, _, _ string
 	return m.preparePartitionErr
 }
 
-func (m *mockPSController) ExecuteMerge(_ context.Context, _, _, _ string) error {
+func (m *mockPSController) ExecuteMerge(_ context.Context, _, _, _ string, _ uint64) error {
 	m.mergeCalled = true
 	return m.executeMergeErr
 }

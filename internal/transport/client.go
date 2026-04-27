@@ -425,10 +425,10 @@ func (c *PMClient) EvictionComplete(ctx context.Context, nodeID string) error {
 // Using the interface allows tests to inject mock implementations without
 // requiring a real gRPC connection.
 type PSController interface {
-	ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error)
-	ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string) error
+	ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string, epoch uint64) (string, error)
+	ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string, epoch uint64) error
 	PreparePartition(ctx context.Context, actorType, partitionID, keyRangeStart, keyRangeEnd string, epoch uint64) error
-	ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error
+	ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string, epoch uint64) error
 	GetStats(ctx context.Context) (*pb.GetStatsResponse, error)
 	Ping(ctx context.Context) error
 }
@@ -474,7 +474,7 @@ func NewPSControlClient(conn *grpc.ClientConn) *PSControlClient {
 // ExecuteSplit instructs the PS to split a partition.
 // If splitKey is "", the PS determines it via SplitHinter or midpoint.
 // Returns the splitKey that was actually used.
-func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string) (string, error) {
+func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partitionID, splitKey, keyRangeStart, keyRangeEnd, newPartitionID string, epoch uint64) (string, error) {
 	resp, err := c.client.ExecuteSplit(ctx, &pb.ExecuteSplitRequest{
 		PartitionId:    partitionID,
 		SplitKey:       splitKey,
@@ -482,6 +482,7 @@ func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partition
 		KeyRangeEnd:    keyRangeEnd,
 		NewPartitionId: newPartitionID,
 		ActorType:      actorType,
+		Epoch:          epoch,
 	})
 	if err != nil {
 		return "", fromGRPCStatus(err)
@@ -490,12 +491,13 @@ func (c *PSControlClient) ExecuteSplit(ctx context.Context, actorType, partition
 }
 
 // ExecuteMigrateOut instructs the PS to move a partition to the target node.
-func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string) error {
+func (c *PSControlClient) ExecuteMigrateOut(ctx context.Context, actorType, partitionID, targetNodeID, targetAddr string, epoch uint64) error {
 	_, err := c.client.ExecuteMigrateOut(ctx, &pb.ExecuteMigrateOutRequest{
 		PartitionId:   partitionID,
 		TargetNodeId:  targetNodeID,
 		TargetAddress: targetAddr,
 		ActorType:     actorType,
+		Epoch:         epoch,
 	})
 	return fromGRPCStatus(err)
 }
@@ -540,11 +542,12 @@ type PartitionStats struct {
 
 // ExecuteMerge instructs the PS to merge two partitions.
 // The lower partition absorbs the state of the upper partition.
-func (c *PSControlClient) ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string) error {
+func (c *PSControlClient) ExecuteMerge(ctx context.Context, actorType, lowerPartitionID, upperPartitionID string, epoch uint64) error {
 	_, err := c.client.ExecuteMerge(ctx, &pb.ExecuteMergeRequest{
 		ActorType:        actorType,
 		LowerPartitionId: lowerPartitionID,
 		UpperPartitionId: upperPartitionID,
+		Epoch:            epoch,
 	})
 	return fromGRPCStatus(err)
 }

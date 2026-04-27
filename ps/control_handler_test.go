@@ -324,3 +324,73 @@ func TestControlHandler_PreparePartition_HigherEpochAccepted(t *testing.T) {
 		t.Errorf("expected stored epoch 11, got %v", val)
 	}
 }
+
+// ── Control RPC stale epoch rejection ────────────────────────────────────────
+
+func TestControlHandler_ExecuteSplit_StaleEpochRejected(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv", splitResult: "m"}
+	h := newCtrlHandler(map[string]actorDispatcher{"kv": d})
+	h.partitionEpochs.Store("p1", uint64(10))
+
+	_, err := h.ExecuteSplit(context.Background(), &pb.ExecuteSplitRequest{
+		ActorType: "kv", PartitionId: "p1", SplitKey: "m", Epoch: 5,
+	})
+	if grpcCode(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition for stale epoch, got %v", grpcCode(err))
+	}
+}
+
+func TestControlHandler_ExecuteMigrateOut_StaleEpochRejected(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	h := newCtrlHandler(map[string]actorDispatcher{"kv": d})
+	h.partitionEpochs.Store("p1", uint64(10))
+
+	_, err := h.ExecuteMigrateOut(context.Background(), &pb.ExecuteMigrateOutRequest{
+		ActorType: "kv", PartitionId: "p1", TargetNodeId: "node2", Epoch: 5,
+	})
+	if grpcCode(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition for stale epoch, got %v", grpcCode(err))
+	}
+}
+
+func TestControlHandler_ExecuteMerge_StaleEpochRejected(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	h := newCtrlHandler(map[string]actorDispatcher{"kv": d})
+	h.partitionEpochs.Store("lower", uint64(10))
+
+	_, err := h.ExecuteMerge(context.Background(), &pb.ExecuteMergeRequest{
+		ActorType: "kv", LowerPartitionId: "lower", UpperPartitionId: "upper", Epoch: 5,
+	})
+	if grpcCode(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition for stale epoch, got %v", grpcCode(err))
+	}
+}
+
+// ── hydrateEpochs blocks stale directive after PS restart ────────────────────
+
+func TestControlHandler_HydrateEpochs_BlocksStaleDirective(t *testing.T) {
+	d := &mockDispatcher{typeID: "kv"}
+	h := newCtrlHandler(map[string]actorDispatcher{"kv": d})
+
+	// Simulate RT loaded at PS boot: p1 was last assigned at epoch 10.
+	rt, err := domain.NewRoutingTable(10, []domain.RouteEntry{
+		{
+			Partition:       domain.Partition{ID: "p1", ActorType: "kv", KeyRange: domain.KeyRange{Start: "a", End: "z"}},
+			NodeID:          "node1",
+			Epoch:           10,
+			PartitionStatus: domain.PartitionStatusActive,
+		},
+	})
+	if err != nil {
+		t.Fatalf("build rt: %v", err)
+	}
+	h.hydrateEpochs(rt)
+
+	// Stale PM sends PreparePartition with epoch 5 (lower than stored 10).
+	_, err = h.PreparePartition(context.Background(), &pb.PreparePartitionRequest{
+		ActorType: "kv", PartitionId: "p1", Epoch: 5,
+	})
+	if grpcCode(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition after hydrateEpochs, got %v", grpcCode(err))
+	}
+}

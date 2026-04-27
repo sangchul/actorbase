@@ -105,13 +105,14 @@ func (m *Merger) Merge(ctx context.Context, actorType, lowerPartitionID, upperPa
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("connect to PS %s: %w", lowerAddr, err)
 	}
-	if err := psCtrl.ExecuteMerge(ctx, actorType, lowerPartitionID, upperPartitionID); err != nil {
+	if err := psCtrl.ExecuteMerge(ctx, actorType, lowerPartitionID, upperPartitionID, lowerEntry.Epoch); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("execute merge on PS: %w", err)
 	}
 
 	// 9. Update routing table: extend lower's KeyRange.End to upper's KeyRange.End and remove upper.
-	mergedRT, err := buildMergedTable(rt, lowerPartitionID, upperPartitionID, upperEntry.Partition.KeyRange.End)
+	newVer := rt.Version() + 1
+	mergedRT, err := buildMergedTable(rt, lowerPartitionID, upperPartitionID, upperEntry.Partition.KeyRange.End, newVer)
 	if err != nil {
 		return fmt.Errorf("build merged routing table: %w", err)
 	}
@@ -162,7 +163,7 @@ func (m *Merger) ResumeMerge(ctx context.Context, actorType, lowerID, upperID st
 	}
 
 	// Step 1: ExecuteMerge — treat ErrNotFound for upper as already merged.
-	if mergeErr := psCtrl.ExecuteMerge(ctx, actorType, lowerID, upperID); mergeErr != nil {
+	if mergeErr := psCtrl.ExecuteMerge(ctx, actorType, lowerID, upperID, lowerEntry.Epoch); mergeErr != nil {
 		if !errors.Is(mergeErr, provider.ErrNotFound) {
 			return fmt.Errorf("resume execute merge: %w", mergeErr)
 		}
@@ -170,7 +171,7 @@ func (m *Merger) ResumeMerge(ctx context.Context, actorType, lowerID, upperID st
 	}
 
 	// Step 2: Update routing: extend lower range to cover upper range, remove upper.
-	mergedRT, err := buildMergedTable(rt, lowerID, upperID, upperEntry.Partition.KeyRange.End)
+	mergedRT, err := buildMergedTable(rt, lowerID, upperID, upperEntry.Partition.KeyRange.End, rt.Version()+1)
 	if err != nil {
 		return fmt.Errorf("build merged routing table: %w", err)
 	}
@@ -205,7 +206,9 @@ func buildMergeDrainingTable(rt *domain.RoutingTable, lowerID, upperID string) (
 
 // buildMergedTable returns a new RoutingTable with the lower partition's
 // KeyRange extended and the upper partition removed.
-func buildMergedTable(rt *domain.RoutingTable, lowerID, upperID, newEnd string) (*domain.RoutingTable, error) {
+// newVer is the RT version the table will be stored at; the surviving lower
+// entry receives it as its Epoch (INVARIANT: entry.Epoch == RT version at last change).
+func buildMergedTable(rt *domain.RoutingTable, lowerID, upperID, newEnd string, newVer int64) (*domain.RoutingTable, error) {
 	entries := rt.Entries()
 	result := make([]domain.RouteEntry, 0, len(entries)-1)
 	for _, e := range entries {
@@ -215,10 +218,11 @@ func buildMergedTable(rt *domain.RoutingTable, lowerID, upperID, newEnd string) 
 		if e.Partition.ID == lowerID {
 			e.Partition.KeyRange.End = newEnd
 			e.PartitionStatus = domain.PartitionStatusActive
+			e.Epoch = uint64(newVer)
 		}
 		result = append(result, e)
 	}
-	newRT, err := domain.NewRoutingTable(rt.Version()+1, result)
+	newRT, err := domain.NewRoutingTable(newVer, result)
 	if err != nil {
 		return nil, err
 	}

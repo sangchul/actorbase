@@ -33,6 +33,39 @@ func (h *controlHandler) isFenced() bool {
 	return h.fenced != nil && h.fenced.Load()
 }
 
+// verifyEpoch rejects a control command whose epoch is lower than the stored
+// epoch for the partition, indicating that the commanding PM is stale.
+// epoch == 0 is treated as backward-compatible (no check performed).
+func (h *controlHandler) verifyEpoch(partitionID string, epoch uint64) error {
+	if epoch == 0 {
+		return nil
+	}
+	stored, exists := h.partitionEpochs.Load(partitionID)
+	if !exists {
+		return nil
+	}
+	if epoch < stored.(uint64) {
+		return status.Errorf(codes.FailedPrecondition,
+			"stale epoch %d for partition %s (current: %d)", epoch, partitionID, stored.(uint64))
+	}
+	return nil
+}
+
+// hydrateEpochs populates partitionEpochs from the given routing table.
+// Called on startup and on every RT update so partitionEpochs mirrors RT
+// entry epochs — PS restarts are therefore protected without a separate disk store.
+func (h *controlHandler) hydrateEpochs(rt *domain.RoutingTable) {
+	if rt == nil {
+		return
+	}
+	for _, e := range rt.Entries() {
+		if e.NodeID != h.nodeID || e.Epoch == 0 {
+			continue
+		}
+		h.partitionEpochs.Store(e.Partition.ID, e.Epoch)
+	}
+}
+
 // ExecuteSplit handles a split command from the PM.
 // If req.SplitKey is empty, the split key is determined via the Actor's SplitHint() or the key range midpoint.
 // The actually used split key is included in the response.
@@ -42,6 +75,9 @@ func (h *controlHandler) ExecuteSplit(
 ) (*pb.ExecuteSplitResponse, error) {
 	if h.isFenced() {
 		return nil, status.Error(codes.Unavailable, "node is fenced")
+	}
+	if err := h.verifyEpoch(req.PartitionId, req.Epoch); err != nil {
+		return nil, err
 	}
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
@@ -83,6 +119,9 @@ func (h *controlHandler) ExecuteMigrateOut(
 	if h.isFenced() {
 		return nil, status.Error(codes.Unavailable, "node is fenced")
 	}
+	if err := h.verifyEpoch(req.PartitionId, req.Epoch); err != nil {
+		return nil, err
+	}
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
@@ -105,6 +144,9 @@ func (h *controlHandler) ExecuteMerge(
 ) (*pb.ExecuteMergeResponse, error) {
 	if h.isFenced() {
 		return nil, status.Error(codes.Unavailable, "node is fenced")
+	}
+	if err := h.verifyEpoch(req.LowerPartitionId, req.Epoch); err != nil {
+		return nil, err
 	}
 	d, ok := h.dispatchers[req.ActorType]
 	if !ok {
@@ -171,18 +213,10 @@ func (h *controlHandler) PreparePartition(
 		return nil, status.Errorf(codes.NotFound, "unknown actor type: %s", req.ActorType)
 	}
 
-	// Validate epoch: reject commands from a stale PM (lower epoch than already stored).
-	if req.Epoch > 0 {
-		if stored, exists := h.partitionEpochs.Load(req.PartitionId); exists {
-			if req.Epoch < stored.(uint64) {
-				slog.Warn("ctrl: PreparePartition rejected: stale epoch",
-					"node", h.nodeID, "partition", req.PartitionId,
-					"request_epoch", req.Epoch, "stored_epoch", stored.(uint64))
-				return nil, status.Errorf(codes.FailedPrecondition,
-					"stale epoch %d for partition %s (current: %d)",
-					req.Epoch, req.PartitionId, stored.(uint64))
-			}
-		}
+	if err := h.verifyEpoch(req.PartitionId, req.Epoch); err != nil {
+		slog.Warn("ctrl: PreparePartition rejected: stale epoch",
+			"node", h.nodeID, "partition", req.PartitionId, "request_epoch", req.Epoch)
+		return nil, err
 	}
 
 	slog.Info("ctrl: PreparePartition", "node", h.nodeID, "actor_type", req.ActorType,

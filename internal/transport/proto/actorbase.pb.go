@@ -879,6 +879,7 @@ type ExecuteSplitRequest struct {
 	ActorType      string                 `protobuf:"bytes,4,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"`               // PS가 올바른 ActorHost로 라우팅하는 데 사용.
 	KeyRangeStart  string                 `protobuf:"bytes,5,opt,name=key_range_start,json=keyRangeStart,proto3" json:"key_range_start,omitempty"` // split_key 미제공 시 PS의 midpoint 계산용
 	KeyRangeEnd    string                 `protobuf:"bytes,6,opt,name=key_range_end,json=keyRangeEnd,proto3" json:"key_range_end,omitempty"`       // split_key 미제공 시 PS의 midpoint 계산용
+	Epoch          uint64                 `protobuf:"varint,7,opt,name=epoch,proto3" json:"epoch,omitempty"`                                       // fencing token; PS rejects commands from a stale PM
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -955,6 +956,13 @@ func (x *ExecuteSplitRequest) GetKeyRangeEnd() string {
 	return ""
 }
 
+func (x *ExecuteSplitRequest) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 type ExecuteSplitResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SplitKey      string                 `protobuf:"bytes,1,opt,name=split_key,json=splitKey,proto3" json:"split_key,omitempty"` // PS가 실제 사용한 split key (PM이 routing table 업데이트에 사용)
@@ -1005,6 +1013,7 @@ type ExecuteMigrateOutRequest struct {
 	TargetNodeId  string                 `protobuf:"bytes,2,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
 	TargetAddress string                 `protobuf:"bytes,3,opt,name=target_address,json=targetAddress,proto3" json:"target_address,omitempty"`
 	ActorType     string                 `protobuf:"bytes,4,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"` // PS가 올바른 ActorHost로 라우팅하는 데 사용.
+	Epoch         uint64                 `protobuf:"varint,5,opt,name=epoch,proto3" json:"epoch,omitempty"`                         // fencing token; PS rejects commands from a stale PM
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1065,6 +1074,13 @@ func (x *ExecuteMigrateOutRequest) GetActorType() string {
 		return x.ActorType
 	}
 	return ""
+}
+
+func (x *ExecuteMigrateOutRequest) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
 }
 
 type ExecuteMigrateOutResponse struct {
@@ -1380,6 +1396,7 @@ type ExecuteMergeRequest struct {
 	ActorType        string                 `protobuf:"bytes,1,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"`
 	LowerPartitionId string                 `protobuf:"bytes,2,opt,name=lower_partition_id,json=lowerPartitionId,proto3" json:"lower_partition_id,omitempty"`
 	UpperPartitionId string                 `protobuf:"bytes,3,opt,name=upper_partition_id,json=upperPartitionId,proto3" json:"upper_partition_id,omitempty"`
+	Epoch            uint64                 `protobuf:"varint,4,opt,name=epoch,proto3" json:"epoch,omitempty"` // fencing token; PS rejects commands from a stale PM
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1433,6 +1450,13 @@ func (x *ExecuteMergeRequest) GetUpperPartitionId() string {
 		return x.UpperPartitionId
 	}
 	return ""
+}
+
+func (x *ExecuteMergeRequest) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
 }
 
 type ExecuteMergeResponse struct {
@@ -3200,7 +3224,7 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\x13ListMembersResponse\x122\n" +
 	"\amembers\x18\x01 \x03(\v2\x18.actorbase.v1.MemberInfoR\amembers\"\r\n" +
 	"\vPingRequest\"\x0e\n" +
-	"\fPingResponse\"\xea\x01\n" +
+	"\fPingResponse\"\x80\x02\n" +
 	"\x13ExecuteSplitRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12\x1b\n" +
 	"\tsplit_key\x18\x02 \x01(\tR\bsplitKey\x12(\n" +
@@ -3208,15 +3232,17 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\n" +
 	"actor_type\x18\x04 \x01(\tR\tactorType\x12&\n" +
 	"\x0fkey_range_start\x18\x05 \x01(\tR\rkeyRangeStart\x12\"\n" +
-	"\rkey_range_end\x18\x06 \x01(\tR\vkeyRangeEnd\"3\n" +
+	"\rkey_range_end\x18\x06 \x01(\tR\vkeyRangeEnd\x12\x14\n" +
+	"\x05epoch\x18\a \x01(\x04R\x05epoch\"3\n" +
 	"\x14ExecuteSplitResponse\x12\x1b\n" +
-	"\tsplit_key\x18\x01 \x01(\tR\bsplitKey\"\xa9\x01\n" +
+	"\tsplit_key\x18\x01 \x01(\tR\bsplitKey\"\xbf\x01\n" +
 	"\x18ExecuteMigrateOutRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12$\n" +
 	"\x0etarget_node_id\x18\x02 \x01(\tR\ftargetNodeId\x12%\n" +
 	"\x0etarget_address\x18\x03 \x01(\tR\rtargetAddress\x12\x1d\n" +
 	"\n" +
-	"actor_type\x18\x04 \x01(\tR\tactorType\"\x1b\n" +
+	"actor_type\x18\x04 \x01(\tR\tactorType\x12\x14\n" +
+	"\x05epoch\x18\x05 \x01(\x04R\x05epoch\"\x1b\n" +
 	"\x19ExecuteMigrateOutResponse\"\xbd\x01\n" +
 	"\x17PreparePartitionRequest\x12!\n" +
 	"\fpartition_id\x18\x01 \x01(\tR\vpartitionId\x12&\n" +
@@ -3231,12 +3257,13 @@ const file_internal_transport_proto_actorbase_proto_rawDesc = "" +
 	"\x11HeartbeatResponse\"2\n" +
 	"\x17EvictionCompleteRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"\x1a\n" +
-	"\x18EvictionCompleteResponse\"\x90\x01\n" +
+	"\x18EvictionCompleteResponse\"\xa6\x01\n" +
 	"\x13ExecuteMergeRequest\x12\x1d\n" +
 	"\n" +
 	"actor_type\x18\x01 \x01(\tR\tactorType\x12,\n" +
 	"\x12lower_partition_id\x18\x02 \x01(\tR\x10lowerPartitionId\x12,\n" +
-	"\x12upper_partition_id\x18\x03 \x01(\tR\x10upperPartitionId\"\x16\n" +
+	"\x12upper_partition_id\x18\x03 \x01(\tR\x10upperPartitionId\x12\x14\n" +
+	"\x05epoch\x18\x04 \x01(\x04R\x05epoch\"\x16\n" +
 	"\x14ExecuteMergeResponse\"f\n" +
 	"\x11RoutingTableProto\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x03R\aversion\x127\n" +

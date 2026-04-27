@@ -78,14 +78,15 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey, 
 	if err != nil {
 		return "", fmt.Errorf("connect to source PS %s: %w", addr, err)
 	}
-	usedKey, err := psCtrl.ExecuteSplit(ctx, entry.Partition.ActorType, partitionID, splitKey, kr.Start, kr.End, newPartitionID)
+	usedKey, err := psCtrl.ExecuteSplit(ctx, entry.Partition.ActorType, partitionID, splitKey, kr.Start, kr.End, newPartitionID, entry.Epoch)
 	if err != nil {
 		return "", fmt.Errorf("execute split on PS: %w", err)
 	}
 
 	// 7. Update the routing table using the actual splitKey determined by the PS.
-	newEntries := buildSplitEntries(rt.Entries(), partitionID, usedKey, newPartitionID, entry)
-	newRT, err := domain.NewRoutingTable(rt.Version()+1, newEntries)
+	newVer := rt.Version() + 1
+	newEntries := buildSplitEntries(rt.Entries(), partitionID, usedKey, newPartitionID, entry, newVer)
+	newRT, err := domain.NewRoutingTable(newVer, newEntries)
 	if err != nil {
 		return "", fmt.Errorf("build new routing table: %w", err)
 	}
@@ -99,10 +100,13 @@ func (s *Splitter) Split(ctx context.Context, actorType, partitionID, splitKey, 
 }
 
 // buildSplitEntries removes partitionID from entries and appends two new entries.
+// newVer is the RT version the new table will be stored at; both new entries
+// receive it as their Epoch (INVARIANT: entry.Epoch == RT version at last change).
 func buildSplitEntries(
 	entries []domain.RouteEntry,
 	partitionID, splitKey, newPartitionID string,
 	original domain.RouteEntry,
+	newVer int64,
 ) []domain.RouteEntry {
 	result := make([]domain.RouteEntry, 0, len(entries)+1)
 	for _, e := range entries {
@@ -120,6 +124,7 @@ func buildSplitEntries(
 			KeyRange:  domain.KeyRange{Start: original.Partition.KeyRange.Start, End: splitKey},
 		},
 		NodeID:          original.NodeID,
+		Epoch:           uint64(newVer),
 		PartitionStatus: domain.PartitionStatusActive,
 	})
 
@@ -131,6 +136,7 @@ func buildSplitEntries(
 			KeyRange:  domain.KeyRange{Start: splitKey, End: original.Partition.KeyRange.End},
 		},
 		NodeID:          original.NodeID,
+		Epoch:           uint64(newVer),
 		PartitionStatus: domain.PartitionStatusActive,
 	})
 

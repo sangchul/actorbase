@@ -100,7 +100,7 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("connect to source PS %s: %w", sourceAddr, err)
 	}
-	if err := sourceCtrl.ExecuteMigrateOut(ctx, entry.Partition.ActorType, partitionID, targetNodeID, targetNode.Address); err != nil {
+	if err := sourceCtrl.ExecuteMigrateOut(ctx, entry.Partition.ActorType, partitionID, targetNodeID, targetNode.Address, entry.Epoch); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("execute migrate out: %w", err)
 	}
@@ -122,7 +122,7 @@ func (m *Migrator) Migrate(ctx context.Context, actorType, partitionID, targetNo
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
 	}
 	kr := entry.Partition.KeyRange
-	nextEpoch := entry.Epoch + 1
+	nextEpoch := uint64(rt.Version() + 1)
 	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End, nextEpoch); err != nil {
 		slog.Error("prepare partition failed, reverting routing", "partition", partitionID, "err", err)
 		m.revertToActive(ctx, rt)
@@ -243,7 +243,7 @@ func (m *Migrator) Failover(ctx context.Context, partitionID, targetNodeID strin
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
 	}
 	kr := entry.Partition.KeyRange
-	nextEpoch := entry.Epoch + 1
+	nextEpoch := uint64(rt.Version() + 1)
 	if err := targetCtrl.PreparePartition(ctx, entry.Partition.ActorType, partitionID, kr.Start, kr.End, nextEpoch); err != nil {
 		m.revertToActive(ctx, rt)
 		return fmt.Errorf("prepare partition on target PS: %w", err)
@@ -304,7 +304,7 @@ func (m *Migrator) ResumeMigrate(ctx context.Context, actorType, partitionID, ta
 		slog.Warn("rebalance: ResumeMigrate: cannot connect to source, assuming already evicted",
 			"source", sourceAddr, "err", err)
 	} else {
-		if evictErr := sourceCtrl.ExecuteMigrateOut(ctx, actorType, partitionID, targetNodeID, targetNode.Address); evictErr != nil {
+		if evictErr := sourceCtrl.ExecuteMigrateOut(ctx, actorType, partitionID, targetNodeID, targetNode.Address, entry.Epoch); evictErr != nil {
 			if isGoneErr(evictErr) {
 				slog.Info("rebalance: ResumeMigrate: source already evicted partition", "partition", partitionID)
 			} else {
@@ -319,7 +319,7 @@ func (m *Migrator) ResumeMigrate(ctx context.Context, actorType, partitionID, ta
 		return fmt.Errorf("connect to target PS %s: %w", targetNode.Address, err)
 	}
 	kr := entry.Partition.KeyRange
-	nextEpoch := entry.Epoch + 1
+	nextEpoch := uint64(rt.Version() + 1)
 	if err := targetCtrl.PreparePartition(ctx, actorType, partitionID, kr.Start, kr.End, nextEpoch); err != nil {
 		return fmt.Errorf("resume prepare partition: %w", err)
 	}

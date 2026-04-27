@@ -117,3 +117,45 @@ func TestSplitter_Split_ConnectionFailure(t *testing.T) {
 		t.Fatal("expected error on connection failure")
 	}
 }
+
+// ─── Epoch invariant ──────────────────────────────────────────────────────────
+
+func TestSplitter_Split_EpochInvariant(t *testing.T) {
+	// p1 (to be split) was last assigned at RT version 2.
+	// bystander lives on a different node and must not have its epoch changed.
+	p1 := makeEntry("p1", "kv", "a", "m", "node1", "addr1", domain.PartitionStatusActive)
+	p1.Epoch = 2
+	bystander := makeEntry("p2", "kv", "m", "z", "node2", "addr2", domain.PartitionStatusActive)
+	bystander.Epoch = 1
+
+	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{p1, bystander},
+		map[string]string{"node1": "addr1", "node2": "addr2"}))
+	ctrl := &mockPSController{executeSplitKey: "g"}
+	factory := newMockPSClientFactory(ctrl)
+
+	s := NewSplitter(store, factory)
+	newID, err := s.Split(context.Background(), "kv", "p1", "g", "p1-upper")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resultRT, _ := store.Load(context.Background())
+	wantEpoch := uint64(3) // rt.Version()+1 = 2+1
+
+	lower, _ := resultRT.LookupByPartition("p1")
+	if lower.Epoch != wantEpoch {
+		t.Errorf("lower epoch = %d, want %d", lower.Epoch, wantEpoch)
+	}
+	upper, ok := resultRT.LookupByPartition(newID)
+	if !ok {
+		t.Fatalf("upper partition %q not found", newID)
+	}
+	if upper.Epoch != wantEpoch {
+		t.Errorf("upper epoch = %d, want %d", upper.Epoch, wantEpoch)
+	}
+	// Bystander epoch must not change — this is the core false-rejection-prevention guarantee.
+	by, _ := resultRT.LookupByPartition("p2")
+	if by.Epoch != 1 {
+		t.Errorf("bystander epoch = %d, want 1 (unchanged entry must keep old epoch)", by.Epoch)
+	}
+}

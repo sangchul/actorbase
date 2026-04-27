@@ -162,3 +162,31 @@ func TestMerger_ResumeMerge_RPCRealError(t *testing.T) {
 		t.Fatal("expected error for non-gone merge error")
 	}
 }
+
+// ─── Epoch invariant ──────────────────────────────────────────────────────────
+
+func TestMerger_Merge_EpochInvariant(t *testing.T) {
+	lower := makeEntry("lower", "kv", "a", "m", "node1", "node1:9000", domain.PartitionStatusActive)
+	lower.Epoch = 2
+	upper := makeEntry("upper", "kv", "m", "z", "node1", "node1:9000", domain.PartitionStatusActive)
+	upper.Epoch = 2
+	store := newMockRoutingStore(makeRT(2, []domain.RouteEntry{lower, upper}, adjacentAddrs()))
+	ctrl := &mockPSController{}
+	factory := newMockPSClientFactory(ctrl)
+
+	m := NewMerger(store, factory)
+	if err := m.Merge(context.Background(), "kv", "lower", "upper"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resultRT, _ := store.Load(context.Background())
+	wantEpoch := uint64(3) // rt.Version()+1 = 2+1
+
+	merged, ok := resultRT.LookupByPartition("lower")
+	if !ok {
+		t.Fatal("lower partition not found after merge")
+	}
+	if merged.Epoch != wantEpoch {
+		t.Errorf("merged entry epoch = %d, want %d", merged.Epoch, wantEpoch)
+	}
+}

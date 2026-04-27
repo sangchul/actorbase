@@ -28,6 +28,7 @@ type RoutingEntry struct {
 	KeyRangeEnd   string
 	NodeID        string
 	NodeAddr      string
+	Epoch         uint64
 }
 
 // RoutingSnapshot is a point-in-time snapshot of the routing table.
@@ -139,6 +140,7 @@ func (c *Client) WatchRouting(ctx context.Context, clientID string) <-chan Routi
 					KeyRangeEnd:   e.Partition.KeyRange.End,
 					NodeID:        e.NodeID,
 					NodeAddr:      func() string { addr, _ := rt.NodeAddress(e.NodeID); return addr }(),
+					Epoch:         e.Epoch,
 				})
 			}
 			snap := RoutingSnapshot{Version: int64(rt.Version()), Entries: entries}
